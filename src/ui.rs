@@ -754,23 +754,38 @@ impl eframe::App for MusicPlayerApp {
                                     ui.columns(columns, |cols| {
                                         for (i, album) in albums.iter().enumerate() {
                                             let col = &mut cols[i % columns];
-                                            if let Some(path) = &album.cover_path {
-                                                let resp = col.add_sized(
-                                                    thumb_size,
-                                                    Image::new(format!("file://{}", path))
-                                                        .show_loading_spinner(false)
-                                                        .sense(egui::Sense::click()),
-                                                );
-                                                if resp.clicked() {
-                                                    self.current_level = NavLevel::Album;
-                                                    self.selected_album = i;
-                                                    self.scroll_to_selection = true;
-                                                }
-                                            } else {
-                                                col.add_space(thumb_size.y + 8.0);
-                                            }
-                                            col.add_space(4.0);
-                                            col.label(RichText::new(&album.title).size(14.0));
+
+                                            // FIX: Forceer een centrering layout binnen de kolom.
+                                            // Dit zorgt ervoor dat zowel de cover als de tekst netjes onder elkaar in het midden van de kolom staan.
+                                            col.with_layout(
+                                                egui::Layout::top_down(egui::Align::Center),
+                                                |col_ui| {
+                                                    if let Some(path) = &album.cover_path {
+                                                        let resp = col_ui.add_sized(
+                                                            thumb_size,
+                                                            Image::new(format!("file://{}", path))
+                                                                .show_loading_spinner(false)
+                                                                .sense(egui::Sense::click()),
+                                                        );
+                                                        if resp.clicked() {
+                                                            self.current_level = NavLevel::Album;
+                                                            self.selected_album = i;
+                                                            self.scroll_to_selection = true;
+                                                        }
+                                                    } else {
+                                                        // Ruimte reserveren als er geen cover is, zodat de tekst niet naar boven schuift
+                                                        col_ui.add_space(thumb_size.y);
+                                                    }
+
+                                                    col_ui.add_space(6.0);
+                                                    // De tekst wordt nu netjes gecentreerd onder de cover getoond
+                                                    col_ui.label(
+                                                        RichText::new(&album.title)
+                                                            .size(14.0)
+                                                            .color(Color32::WHITE), // Ook direct de tekst wit gemaakt voor beter contrast
+                                                    );
+                                                },
+                                            );
                                         }
                                     });
                                 }
