@@ -1,0 +1,48 @@
+[package]
+name = "ai-music-player"
+version = "0.1.0"
+edition = "2021"
+authors = ["JMWatte"]
+description = "Een minimalistische, toetsenbord-gestuurde hiërarchische muziekspeler"
+
+# Zorgt voor extra optimalisaties tijdens het compileren (kleinere en snellere exe)
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1
+
+[dependencies]
+# --- GUI Framework (egui via eframe) ---
+eframe = "0.28" # Bevat egui.
+egui_extras = { version = "0.28", features = ["all_loaders"] } # Noodzakelijk om images te renderen
+image = { version = "0.25", features = ["jpeg", "png"] } # Ondersteuning voor de album covers
+
+# --- Audio Weergave & Decodering ---
+# rodio regelt de WASAPI output op Windows. symphonia-all zorgt voor pure Rust decodering.
+rodio = { version = "0.19", features = ["symphonia-all"] }
+symphonia = "0.5"
+
+# --- Metadata (Tags uitlezen) ---
+lofty = "0.20" # Veel robuuster voor ID3/FLAC/MP4 tags dan symphonia's standaard tag reader
+
+# --- Configuratie (config.toml) ---
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# --- Bestandssysteem & Scannen ---
+walkdir = "2.5" # Voor het efficiënt en recursief doorzoeken van de bibliotheek
+
+# --- Zoeken & Interface ---
+fuzzy-matcher = "0.3" # Essentieel voor de '/' zoek-overlay (fuzzy search)
+
+# --- Concurrency, Caching & State Management ---
+tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "fs"] } # Async runtime
+crossbeam-channel = "0.5" # Lock-free kanalen om state (zoals huidig nummer) naar de GUI te sturen
+lru = "0.12" # Least-Recently-Used cache om RAM-gebruik van albumhoezen in toom te houden
+
+
+bincode = "1.3" # Voor razendsnelle binaire wegschrijving van de database
+nucleo = "0.2" # Ultra-snelle fuzzy search engine voor enorme datasets
+natord = "1.0"
+[workspace]
