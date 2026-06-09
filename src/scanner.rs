@@ -1,13 +1,18 @@
 use crate::models::{Album, Artist, Disk, Library, Track};
 use crossbeam_channel::Sender;
+use lofty::file::TaggedFileExt;
+use lofty::probe::Probe;
+use lofty::tag::Accessor;
+use rayon::prelude::*; // NIEUW: Rayon imports
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
+use std::sync::Mutex; // NIEUW: Mutex voor thread-safe schrijven
 use walkdir::WalkDir;
 
 pub enum ScannerMessage {
-    Progress(String), // Voor visuele feedback tijdens de eerste lange scan
+    Progress(String),
     LibraryLoaded(Library),
     ScanComplete,
 }
@@ -21,7 +26,7 @@ pub async fn load_or_scan_library(
     cover_exts: Vec<String>,
     tx: Sender<ScannerMessage>,
 ) {
-    // 1. Probeer de cache in te laden voor een bliksemsnelle start
+    // 1. Probeer de cache in te laden
     if Path::new(CACHE_FILE).exists() {
         let _ = tx.send(ScannerMessage::Progress("Cache laden...".into()));
         if let Ok(file) = File::open(CACHE_FILE) {
@@ -34,175 +39,196 @@ pub async fn load_or_scan_library(
         }
     }
 
-    // 2. Als er geen cache is (of deze corrupt is), start de volledige scan op de achtergrond
     let _ = tx.send(ScannerMessage::Progress(
-        "Eerste indexering gestart (dit kan even duren bij 2TB)...".into(),
+        "Eerste indexering gestart (parallel met Rayon)... ".into(),
     ));
 
-    // We gebruiken HashMaps tijdelijk om de hiërarchie op te bouwen
-    let mut artists_map: HashMap<String, HashMap<String, HashMap<String, Vec<Track>>>> =
-        HashMap::new();
-    let mut album_covers: HashMap<String, String> = HashMap::new();
+    // NIEUW: Wrap de HashMaps in een Mutex zodat meerdere threads er veilig in kunnen schrijven
+    let artists_map = Mutex::new(HashMap::<
+        String,
+        HashMap<String, HashMap<String, Vec<Track>>>,
+    >::new());
+    let album_covers = Mutex::new(HashMap::<String, String>::new());
 
-    // Loop door alle bestanden in de map
-    for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
-        let ext = path
-            .extension()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_lowercase();
-        let file_name = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_lowercase();
-        let parent_dir = path.parent().unwrap_or(Path::new(""));
-
-        // Check of het een albumhoes is
-        if cover_exts.contains(&ext) {
-            // Kijk of de bestandsnaam (bijv. "AHardDaysNight_front") een van onze cover_names ("front", "cover") BEVAT
-            let is_cover = cover_names.iter().any(|name| file_name.contains(name));
-
-            if is_cover {
-                let dir_str = parent_dir.to_string_lossy().to_string();
-                album_covers.insert(dir_str, path.to_string_lossy().to_string());
-                continue;
+    // NIEUW: par_bridge() maakt de WalkDir iterator parallel
+    WalkDir::new(&dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .par_bridge()
+        .for_each(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return;
             }
-        }
 
-        // Check of het een audiobestand is
-        // Check of het een audiobestand is
-        if audio_exts.contains(&ext) {
-            // Bereken het pad relatief ten opzichte van de hoofdmap (bijv. H:\MUSIC)
-            let base_dir = Path::new(&dir);
-            if let Ok(rel_path) = path.strip_prefix(base_dir) {
-                let components: Vec<String> = rel_path
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                    .collect();
+            let ext = path
+                .extension()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            let file_name = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
+            let parent_dir = path.parent().unwrap_or(Path::new(" "));
 
-                let mut artist_name = "Onbekende Artiest".to_string();
-                let mut album_name = "Onbekend Album".to_string();
-                let mut disk_name = "Default".to_string();
+            // Check albumhoes
+            if cover_exts.contains(&ext) {
+                let is_cover = cover_names.iter().any(|name| file_name.contains(name));
+                if is_cover {
+                    let dir_str = parent_dir.to_string_lossy().to_string();
+                    album_covers
+                        .lock()
+                        .unwrap()
+                        .insert(dir_str, path.to_string_lossy().to_string());
+                    return;
+                }
+            }
 
-                if components.len() == 1 {
-                    // Bestand staat direct in H:\MUSIC\
-                } else if components.len() == 2 {
-                    // H:\MUSIC\Artiest\track.flac
-                    artist_name = components[0].clone();
-                } else {
-                    // H:\MUSIC\Artiest\...\track.flac
-                    artist_name = components[0].clone();
+            // Check audiobestand
+            if audio_exts.contains(&ext) {
+                let base_dir = Path::new(&dir);
+                if let Ok(rel_path) = path.strip_prefix(base_dir) {
+                    let components: Vec<String> = rel_path
+                        .components()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect();
 
-                    // Alle mappen tussen de Artiest en het Audiobestand
-                    let folder_chain = &components[1..components.len() - 1];
+                    let mut artist_name = "Onbekende Artiest".to_string();
+                    let mut album_name = "Onbekend Album".to_string();
+                    let mut disk_name = "Default".to_string();
+                    let mut genre: String = "Unknown Genre".to_string();
 
-                    if let Some(last_folder) = folder_chain.last() {
-                        let is_cd = last_folder.to_lowercase().starts_with("cd")
-                            || last_folder.to_lowercase().starts_with("disc");
+                    if components.len() == 1 {
+                        // Bestand staat direct in H:\MUSIC\
+                    } else if components.len() == 2 {
+                        artist_name = components[0].clone();
+                    } else {
+                        artist_name = components[0].clone();
+                        let folder_chain = &components[1..components.len() - 1];
 
-                        if is_cd && folder_chain.len() > 1 {
-                            disk_name = last_folder.clone();
-                            // Voeg alle tussenliggende boxset-mappen samen tot 1 album titel (bijv: "Mozart Requiem Box - 01 Sussmayr Edition")
-                            album_name = folder_chain[..folder_chain.len() - 1].join(" - ");
-                        } else {
-                            // Geen CD map, alles is onderdeel van de albumnaam
-                            album_name = folder_chain.join(" - ");
+                        if let Some(last_folder) = folder_chain.last() {
+                            let is_cd = last_folder.to_lowercase().starts_with("cd")
+                                || last_folder.to_lowercase().starts_with("disc");
+
+                            if is_cd && folder_chain.len() > 1 {
+                                disk_name = last_folder.clone();
+                                album_name = folder_chain[..folder_chain.len() - 1].join(" - ");
+                            } else {
+                                album_name = folder_chain.join(" - ");
+                            }
                         }
                     }
+
+                    // Lees Genre tag
+                    if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+                        if let Some(tag) = tagged_file.primary_tag() {
+                            if let Some(g) = tag.genre() {
+                                genre = g.to_string();
+                            }
+                        }
+                    }
+
+                    let track = Track {
+                        path: path.to_string_lossy().to_string(),
+                        title: path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string(),
+                        track_number: 0,
+                        duration_secs: 0,
+                        genre: Some(genre),
+                    };
+
+                    // NIEUW: Lock de mutex kort om de track toe te voegen
+                    artists_map
+                        .lock()
+                        .unwrap()
+                        .entry(artist_name)
+                        .or_default()
+                        .entry(album_name)
+                        .or_default()
+                        .entry(disk_name)
+                        .or_default()
+                        .push(track);
                 }
-
-                let track = Track {
-                    path: path.to_string_lossy().to_string(),
-                    title: path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
-                    track_number: 0,
-                    duration_secs: 0,
-                };
-
-                artists_map
-                    .entry(artist_name)
-                    .or_default()
-                    .entry(album_name)
-                    .or_default()
-                    .entry(disk_name)
-                    .or_default()
-                    .push(track);
             }
-        }
-    }
+        });
 
-    // 3. Converteer de HashMaps naar onze uiteindelijke, efficiënte `Library` struct
-    let mut library = Library::default();
+    // Unwrap de mutexes terug naar normale HashMaps
+    let artists_map = artists_map.into_inner().unwrap();
+    let album_covers = album_covers.into_inner().unwrap();
 
-    for (artist_name, albums_map) in artists_map {
-        let mut artist = Artist {
-            name: artist_name,
-            albums: Vec::new(),
-        };
+    let _ = tx.send(ScannerMessage::Progress(
+        "Bibliotheek structureren... ".into(),
+    ));
 
-        for (album_name, disks_map) in albums_map {
-            let mut album = Album {
-                title: album_name.clone(),
-                cover_path: None,
-                disks: Vec::new(),
+    // NIEUW: Parallelle conversie van HashMap naar Library struct
+    let mut artists_vec: Vec<Artist> = artists_map
+        .par_iter()
+        .map(|(artist_name, albums_map)| {
+            let mut artist = Artist {
+                name: artist_name.clone(),
+                albums: Vec::new(),
             };
 
-            for (disk_name, tracks) in disks_map {
-                let mut sorted_tracks = tracks;
-                sorted_tracks.sort_by(|a, b| natord::compare(&a.title, &b.title));
-                album.disks.push(Disk {
-                    name: disk_name,
-                    tracks: sorted_tracks,
-                });
-            }
+            for (album_name, disks_map) in albums_map {
+                let mut album = Album {
+                    title: album_name.clone(),
+                    cover_path: None,
+                    disks: Vec::new(),
+                };
 
-            // KOPPEL DE ALBUMHOES: Zoek de cover op basis van de map van de eerste track
-            if let Some(first_disk) = album.disks.first() {
-                if let Some(first_track) = first_disk.tracks.first() {
-                    let track_path = Path::new(&first_track.path);
+                for (disk_name, tracks) in disks_map {
+                    let mut sorted_tracks = tracks.clone();
+                    sorted_tracks.sort_by(|a, b| natord::compare(&a.title, &b.title));
 
-                    // Check de map van de track zelf
-                    if let Some(parent) = track_path.parent() {
-                        let parent_str = parent.to_string_lossy().to_string();
-                        album.cover_path = album_covers.get(&parent_str).cloned();
+                    album.disks.push(Disk {
+                        name: disk_name.clone(),
+                        tracks: sorted_tracks,
+                    });
+                }
 
-                        // Als er geen cover is, en we zitten in een "CD 1" map, check dan de hoofdmap erboven!
-                        if album.cover_path.is_none() {
-                            if let Some(grandparent) = parent.parent() {
-                                let grand_str = grandparent.to_string_lossy().to_string();
-                                album.cover_path = album_covers.get(&grand_str).cloned();
+                // Cover koppelen
+                if let Some(first_disk) = album.disks.first() {
+                    if let Some(first_track) = first_disk.tracks.first() {
+                        let track_path = Path::new(&first_track.path);
+                        if let Some(parent) = track_path.parent() {
+                            let parent_str = parent.to_string_lossy().to_string();
+                            album.cover_path = album_covers.get(&parent_str).cloned();
+
+                            if album.cover_path.is_none() {
+                                if let Some(grandparent) = parent.parent() {
+                                    let grand_str = grandparent.to_string_lossy().to_string();
+                                    album.cover_path = album_covers.get(&grand_str).cloned();
+                                }
                             }
                         }
                     }
                 }
+                artist.albums.push(album);
             }
+            artist.albums.sort_by(|a, b| a.title.cmp(&b.title));
+            artist
+        })
+        .collect();
 
-            artist.albums.push(album);
-        }
-        // Sorteer albums alfabetisch
-        artist.albums.sort_by(|a, b| a.title.cmp(&b.title));
-        library.artists.push(artist);
-    }
     // Sorteer artiesten alfabetisch
-    library.artists.sort_by(|a, b| a.name.cmp(&b.name));
+    artists_vec.sort_by(|a, b| a.name.cmp(&b.name));
+    let library = Library {
+        artists: artists_vec,
+    };
 
-    // 4. Sla de gecompileerde bibliotheek op naar de binaire cache
-    let _ = tx.send(ScannerMessage::Progress("Bibliotheek opslaan...".into()));
+    // 4. Sla de cache op
+    let _ = tx.send(ScannerMessage::Progress("Bibliotheek opslaan... ".into()));
     if let Ok(file) = File::create(CACHE_FILE) {
         let writer = BufWriter::new(file);
         let _ = bincode::serialize_into(writer, &library);
     }
 
-    // 5. Stuur het eindresultaat naar de UI
+    // 5. Stuur het eindresultaat
     let _ = tx.send(ScannerMessage::LibraryLoaded(library));
     let _ = tx.send(ScannerMessage::ScanComplete);
 }

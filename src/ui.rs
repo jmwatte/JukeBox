@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::models::Library;
 use crate::player::{PlayerCommand, PlayerEvent};
 use crate::scanner::ScannerMessage;
-use crate::search::filter_library;
+use crate::search::{collect_genres, filter_by_genre, filter_library};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, Image, Key, RichText, ScrollArea};
 use std::path::Path;
@@ -19,6 +19,12 @@ pub enum NavLevel {
 pub enum ViewMode {
     Tracklist,
     AlbumCover,
+}
+
+#[derive(PartialEq, Clone)]
+pub enum BrowseMode {
+    Library,
+    Genre,
 }
 
 pub struct MusicPlayerApp {
@@ -48,6 +54,13 @@ pub struct MusicPlayerApp {
     is_search_active: bool,
     search_input_id: egui::Id,
     filtered_library: Option<Library>,
+
+    // Genre browsing
+    browse_mode: BrowseMode,
+    genres: Vec<(String, usize)>,
+    selected_genre: usize,
+    genre_filtered_library: Option<Library>,
+    selected_genre_name: String,
 }
 
 impl MusicPlayerApp {
@@ -88,12 +101,58 @@ impl MusicPlayerApp {
             // selected_search_index: 0,
             is_search_active: false,
             search_input_id: egui::Id::new("global_search_input"),
+            browse_mode: BrowseMode::Library,
+            genres: Vec::new(),
+            selected_genre: 0,
+            genre_filtered_library: None,
+            selected_genre_name: String::new(),
         }
     }
 
+    /// Returns the currently active library (search-filtered, genre-filtered, or full)
     // fn active_library(&self) -> Option<&Library> {
-    //     self.filtered_library.as_ref().or(self.library.as_ref())
+    //     self.filtered_library
+    //         .as_ref()
+    //         .or(self.genre_filtered_library.as_ref())
+    //         .or(self.library.as_ref())
     // }
+
+    fn enter_genre_mode(&mut self) {
+        if let Some(lib) = &self.library {
+            self.genres = collect_genres(lib);
+            self.selected_genre = 0;
+            self.browse_mode = BrowseMode::Genre;
+            self.genre_filtered_library = None;
+            self.selected_genre_name.clear();
+            self.current_level = NavLevel::Artist;
+            self.scroll_to_selection = true;
+        }
+    }
+
+    fn exit_genre_mode(&mut self) {
+        self.browse_mode = BrowseMode::Library;
+        self.genre_filtered_library = None;
+        self.selected_genre_name.clear();
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.selected_album = 0;
+        self.selected_disk = 0;
+        self.selected_track = 0;
+        self.scroll_to_selection = true;
+    }
+
+    fn select_genre(&mut self, genre: &str) {
+        if let Some(lib) = &self.library {
+            self.selected_genre_name = genre.to_string();
+            self.genre_filtered_library = Some(filter_by_genre(lib, genre));
+            self.current_level = NavLevel::Artist;
+            self.selected_artist = 0;
+            self.selected_album = 0;
+            self.selected_disk = 0;
+            self.selected_track = 0;
+            self.scroll_to_selection = true;
+        }
+    }
 
     fn play_selected_item(&self, lib: &Library, replace: bool) {
         let mut queue = Vec::new();
@@ -159,6 +218,10 @@ impl MusicPlayerApp {
                 self.selected_track = 0;
                 return;
             }
+            if self.browse_mode == BrowseMode::Genre {
+                self.exit_genre_mode();
+                return;
+            }
         }
 
         // --- HELP SCHERM (?) of (H) ---
@@ -176,6 +239,8 @@ impl MusicPlayerApp {
             let _ = std::fs::remove_file("library_cache.bin");
             self.library = None;
             self.filtered_library = None;
+            self.genre_filtered_library = None;
+            self.browse_mode = BrowseMode::Library;
             let tx = self.scanner_tx.clone();
             let config = self.config.clone();
             std::thread::spawn(move || {
@@ -195,7 +260,40 @@ impl MusicPlayerApp {
             return;
         }
 
-        let lib = self.filtered_library.as_ref().or(self.library.as_ref());
+        // --- G-TOETS GENRE BROWSING ---
+        if ctx.input(|i| i.key_pressed(Key::G)) {
+            if self.browse_mode == BrowseMode::Library {
+                self.enter_genre_mode();
+            } else {
+                self.exit_genre_mode();
+            }
+            return;
+        }
+
+        // Genre picker navigation
+        if self.browse_mode == BrowseMode::Genre && self.genre_filtered_library.is_none() {
+            if ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
+                if self.selected_genre + 1 < self.genres.len() {
+                    self.selected_genre += 1;
+                    self.scroll_to_selection = true;
+                }
+            }
+            if ctx.input(|i| i.key_pressed(Key::ArrowUp)) {
+                if self.selected_genre > 0 {
+                    self.selected_genre -= 1;
+                    self.scroll_to_selection = true;
+                }
+            }
+            return;
+        }
+        // Disjoint borrowing: only borrows the specific fields, allowing us to mutate self later
+        let lib = self
+            .filtered_library
+            .as_ref()
+            .or(self.genre_filtered_library.as_ref())
+            .or(self.library.as_ref());
+
+        //let lib = self.active_library();
         let Some(lib) = lib else {
             return;
         };
@@ -413,15 +511,6 @@ impl eframe::App for MusicPlayerApp {
         }
         self.handle_keyboard_navigation(ctx);
 
-        // if !ctx.wants_keyboard_input()
-        //     && ctx.input(|i| i.key_pressed(egui::Key::Slash))
-        //     && !self.is_search_active
-        // {
-        //     self.is_search_active = true;
-        //     self.search_query.clear();
-        //     self.search_results.clear();
-        //     self.selected_search_index = 0;
-        // }
         // --- HELP SCHERM TEKENEN ---
         if self.show_help {
             egui::Window::new("Sneltoetsen & Help")
@@ -440,6 +529,7 @@ impl eframe::App for MusicPlayerApp {
                     ui.add_space(5.0);
                     ui.label(RichText::new("Extra").strong());
                     ui.label("• R : Selecteer een willekeurig album");
+                    ui.label("• G : Bladeren per genre");
                     ui.label("• F5 : Forceer een rescan van de bibliotheek");
                     ui.label("• ? of H : Toon / verberg dit helpvenster");
                     ui.separator();
@@ -450,13 +540,40 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // Check of de initiële scan klaar is
+        // Check of de initiële scan klaar is
+        // We vangen hier ook de Progress messages op om de gebruiker te laten zien dat we bezig zijn
+        while let Ok(msg) = self.scanner_rx.try_recv() {
+            match msg {
+                ScannerMessage::LibraryLoaded(lib) => {
+                    self.library = Some(lib);
+                    if !self.search_query.is_empty() {
+                        self.filtered_library = Some(crate::search::filter_library(
+                            self.library.as_ref().unwrap(),
+                            &self.search_query,
+                        ));
+                    }
+                }
+                ScannerMessage::Progress(text) => {
+                    self._status_message = text; // We gebruiken je bestaande _status_message variabele
+                }
+                ScannerMessage::ScanComplete => {
+                    self._status_message = "Klaar!".to_string();
+                }
+            }
+        }
+
         if self.library.is_none() {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
-                    ui.label(RichText::new("Bibliotheek scannen...").size(24.0));
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Bibliotheek indexeren...").size(24.0));
+                        ui.add_space(10.0);
+                        // Toon de live status (bijv. "Eerste indexering gestart...")
+                        ui.label(RichText::new(&self._status_message).color(Color32::GRAY));
+                    });
                 });
             });
-            ctx.request_repaint();
+            ctx.request_repaint(); // Blijf verversen totdat de library geladen is
             return;
         }
 
@@ -513,6 +630,7 @@ impl eframe::App for MusicPlayerApp {
                             }
                         }
                     }
+
                     if response.has_focus() {
                         // ESC: Annuleer, wis filter, sluit venster
                         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
@@ -530,71 +648,17 @@ impl eframe::App for MusicPlayerApp {
                             ctx.memory_mut(|m| m.surrender_focus(self.search_input_id));
                         }
                     }
-
-                    // egui::ScrollArea::vertical()
-                    //     .max_height(300.0)
-                    //     .show(ui, |ui| {
-                    //         if self.search_results.is_empty() && !self.search_query.is_empty() {
-                    //             ui.label("Geen resultaten gevonden.");
-                    //         }
-
-                    //         for (index, result) in self.search_results.iter().enumerate() {
-                    //             let is_selected = index == self.selected_search_index;
-                    //             let bg_color = if is_selected {
-                    //                 ui.visuals().selection.bg_fill
-                    //             } else {
-                    //                 ui.visuals().widgets.inactive.weak_bg_fill
-                    //             };
-
-                    //             ui.horizontal(|ui| {
-                    //                 ui.painter().rect_filled(
-                    //                     ui.available_rect_before_wrap(),
-                    //                     egui::Rounding::same(4.0),
-                    //                     bg_color,
-                    //                 );
-
-                    //                 let text_color = if is_selected {
-                    //                     ui.visuals().selection.stroke.color
-                    //                 } else {
-                    //                     ui.visuals().text_color()
-                    //                 };
-
-                    //                 ui.label(
-                    //                     egui::RichText::new(&result.track.title).color(text_color),
-                    //                 );
-                    //                 ui.label(
-                    //                     egui::RichText::new(format!(
-                    //                         " - {} • {}",
-                    //                         result.artist_name, result.album_title
-                    //                     ))
-                    //                     .color(text_color)
-                    //                     .size(12.0),
-                    //                 );
-                    //             });
-
-                    //             if ui
-                    //                 .interact(
-                    //                     ui.available_rect_before_wrap(),
-                    //                     ui.id().with(index),
-                    //                     egui::Sense::click(),
-                    //                 )
-                    //                 .clicked()
-                    //             {
-                    //                 let _ = self.player_tx.send(
-                    //                     crate::player::PlayerCommand::ReplaceQueue(vec![result
-                    //                         .track
-                    //                         .path
-                    //                         .clone()]),
-                    //                 );
-                    //                 self.is_search_active = false;
-                    //             }
-                    //         }
-                    //     });
                 });
         }
 
         // --- HOOFDSCHERM ---
-        let current_lib = self.filtered_library.as_ref().or(self.library.as_ref());
+        // Disjoint borrowing for the UI rendering
+        let current_lib = self
+            .filtered_library
+            .as_ref()
+            .or(self.genre_filtered_library.as_ref())
+            .or(self.library.as_ref());
+        // let current_lib = self.active_library();
         let Some(current_lib) = current_lib else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -632,16 +696,6 @@ impl eframe::App for MusicPlayerApp {
                             .max_height(600.0),
                     );
 
-                    // OPTIE B: Extern bestand (makkelijker om te vervangen zonder hercompileren)
-                    // let image_path = "assets/no_results.png";
-                    // if std::path::Path::new(image_path).exists() {
-                    //     ui.add(
-                    //         egui::Image::new(format!("file://{}", image_path))
-                    //             .max_width(400.0)
-                    //             .max_height(400.0),
-                    //     );
-                    // }
-
                     ui.add_space(30.0);
                     ui.label(
                         egui::RichText::new("Druk op Esc om terug te gaan")
@@ -653,6 +707,57 @@ impl eframe::App for MusicPlayerApp {
             ctx.request_repaint();
             return;
         }
+
+        // --- GENRE PICKER UI ---
+        if self.browse_mode == BrowseMode::Genre && self.genre_filtered_library.is_none() {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.heading("Genres");
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new("Druk op Esc of G om terug te gaan")
+                        .size(12.0)
+                        .color(Color32::GRAY),
+                );
+                ui.add_space(12.0);
+                ScrollArea::vertical().show(ui, |ui| {
+                    // 1. Bepaal eerst welk genre er geselecteerd moet worden (zonder self te muteren)
+                    let mut genre_to_select: Option<String> = None;
+
+                    for (i, (genre, count)) in self.genres.iter().enumerate() {
+                        let selected = i == self.selected_genre;
+                        let resp = ui.selectable_label(
+                            selected,
+                            RichText::new(format!("{} ({})", genre, count)).size(16.0),
+                        );
+
+                        if resp.clicked() {
+                            genre_to_select = Some(genre.clone());
+                        }
+
+                        if selected
+                            && ctx.input(|i| {
+                                i.key_pressed(Key::Enter) || i.key_pressed(Key::ArrowRight)
+                            })
+                        {
+                            genre_to_select = Some(genre.clone());
+                        }
+
+                        if selected && self.scroll_to_selection {
+                            resp.scroll_to_me(None);
+                        }
+                    }
+
+                    // 2. Voer nu pas de mutatie uit, nadat de lening van self.genres is vrijgegeven
+                    if let Some(genre) = genre_to_select {
+                        self.select_genre(&genre);
+                    }
+                });
+            });
+            self.scroll_to_selection = false;
+            ctx.request_repaint();
+            return;
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal(|ui| {
                 // Visuele indicator dat we aan het zoeken zijn
@@ -682,6 +787,11 @@ impl eframe::App for MusicPlayerApp {
                     );
                 } else {
                     ui.label(egui::RichText::new("Bibliotheek").color(egui::Color32::GRAY));
+                    // Show genre context if browsing by genre
+                    if self.browse_mode == BrowseMode::Genre && !self.selected_genre_name.is_empty()
+                    {
+                        ui.label(format!(" > Genre: {}", self.selected_genre_name));
+                    }
                 }
 
                 // Breadcrumb navigatie (aangepast om met current_lib te werken)
@@ -933,197 +1043,7 @@ impl eframe::App for MusicPlayerApp {
                             }
                         }
                     });
-                } // _ => {
-                  //     ScrollArea::vertical().show(ui, |ui| match self.current_level {
-                  //         NavLevel::Artist => {
-                  //             // Wrap the loop in a centered layout
-                  //             ui.with_layout(
-                  //                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                  //                 |ui| {
-                  //                     for (i, artist) in current_lib.artists.iter().enumerate() {
-                  //                         let resp = ui.selectable_label(
-                  //                             i == self.selected_artist,
-                  //                             RichText::new(&artist.name).size(18.0),
-                  //                         );
-                  //                         if resp.clicked() {
-                  //                             self.selected_artist = i;
-                  //                             self.scroll_to_selection = true;
-                  //                         }
-                  //                         if i == self.selected_artist && self.scroll_to_selection {
-                  //                             resp.scroll_to_me(None);
-                  //                         }
-                  //                     }
-                  //                 },
-                  //             );
-                  //         }
-                  //         NavLevel::Album => {
-                  //             ui.with_layout(
-                  //                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                  //                 |ui| {
-                  //                     for (i, album) in current_lib.artists[self.selected_artist]
-                  //                         .albums
-                  //                         .iter()
-                  //                         .enumerate()
-                  //                     {
-                  //                         let resp = ui.selectable_label(
-                  //                             i == self.selected_album,
-                  //                             RichText::new(&album.title).size(18.0),
-                  //                         );
-                  //                         if resp.clicked() {
-                  //                             self.selected_album = i;
-                  //                             self.scroll_to_selection = true;
-                  //                         }
-                  //                         if i == self.selected_album && self.scroll_to_selection {
-                  //                             resp.scroll_to_me(None);
-                  //                         }
-                  //                     }
-                  //                 },
-                  //             );
-                  //         }
-                  //         NavLevel::Disk => {
-                  //             ui.with_layout(
-                  //                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                  //                 |ui| {
-                  //                     for (i, disk) in current_lib.artists[self.selected_artist]
-                  //                         .albums[self.selected_album]
-                  //                         .disks
-                  //                         .iter()
-                  //                         .enumerate()
-                  //                     {
-                  //                         let resp = ui.selectable_label(
-                  //                             i == self.selected_disk,
-                  //                             RichText::new(format!("CD: {}", disk.name)).size(16.0),
-                  //                         );
-                  //                         if resp.clicked() {
-                  //                             self.selected_disk = i;
-                  //                             self.scroll_to_selection = true;
-                  //                         }
-                  //                         if i == self.selected_disk && self.scroll_to_selection {
-                  //                             resp.scroll_to_me(None);
-                  //                         }
-                  //                     }
-                  //                 },
-                  //             );
-                  //         }
-                  //         NavLevel::Track => {
-                  //             ui.with_layout(
-                  //                 egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                  //                 |ui| {
-                  //                     for (i, track) in current_lib.artists[self.selected_artist]
-                  //                         .albums[self.selected_album]
-                  //                         .disks[self.selected_disk]
-                  //                         .tracks
-                  //                         .iter()
-                  //                         .enumerate()
-                  //                     {
-                  //                         let resp = ui.selectable_label(
-                  //                             i == self.selected_track,
-                  //                             RichText::new(&track.title).size(16.0),
-                  //                         );
-                  //                         if resp.clicked() {
-                  //                             self.selected_track = i;
-                  //                             self.scroll_to_selection = true;
-                  //                         }
-                  //                         if i == self.selected_track && self.scroll_to_selection {
-                  //                             resp.scroll_to_me(None);
-                  //                         }
-                  //                     }
-                  //                 },
-                  //             );
-                  //         }
-                  //     });
-                  // }
-
-                  // _ => {
-                  //     ScrollArea::vertical().show(ui, |ui| match self.current_level {
-                  //         NavLevel::Artist => {
-                  //             for (i, artist) in current_lib.artists.iter().enumerate() {
-                  //                 let resp = ui.selectable_label(
-                  //                     i == self.selected_artist,
-                  //                     RichText::new(&artist.name).size(18.0),
-                  //                 );
-                  //                 if resp.clicked() {
-                  //                     self.selected_artist = i;
-                  //                     self.scroll_to_selection = true;
-                  //                 }
-                  //                 if i == self.selected_artist && self.scroll_to_selection {
-                  //                     resp.scroll_to_me(None);
-                  //                 }
-                  //             }
-                  //         }
-                  //         NavLevel::Album => {
-                  //             for (i, album) in current_lib.artists[self.selected_artist]
-                  //                 .albums
-                  //                 .iter()
-                  //                 .enumerate()
-                  //             {
-                  //                 let resp = ui.selectable_label(
-                  //                     i == self.selected_album,
-                  //                     RichText::new(&album.title).size(18.0),
-                  //                 );
-                  //                 if resp.clicked() {
-                  //                     self.selected_album = i;
-                  //                     self.scroll_to_selection = true;
-                  //                 }
-                  //                 if i == self.selected_album && self.scroll_to_selection {
-                  //                     resp.scroll_to_me(None);
-                  //                 }
-                  //             }
-                  //         }
-                  //         NavLevel::Disk => {
-                  //             for (i, disk) in current_lib.artists[self.selected_artist].albums
-                  //                 [self.selected_album]
-                  //                 .disks
-                  //                 .iter()
-                  //                 .enumerate()
-                  //             {
-                  //                 let resp = ui.selectable_label(
-                  //                     i == self.selected_disk,
-                  //                     RichText::new(format!("CD: {}", disk.name)).size(16.0),
-                  //                 );
-                  //                 if resp.clicked() {
-                  //                     self.selected_disk = i;
-                  //                     self.scroll_to_selection = true;
-                  //                 }
-                  //                 if i == self.selected_disk && self.scroll_to_selection {
-                  //                     resp.scroll_to_me(None);
-                  //                 }
-                  //             }
-                  //         }
-                  //         NavLevel::Track => {
-                  //             for (i, track) in current_lib.artists[self.selected_artist].albums
-                  //                 [self.selected_album]
-                  //                 .disks[self.selected_disk]
-                  //                 .tracks
-                  //                 .iter()
-                  //                 .enumerate()
-                  //             {
-                  //                 // Center each track item
-                  //                 ui.horizontal(|ui| {
-                  //                     ui.with_layout(
-                  //                         egui::Layout::centered_and_justified(
-                  //                             egui::Direction::TopDown,
-                  //                         ),
-                  //                         |ui| {
-                  //                             let resp = ui.selectable_label(
-                  //                                 i == self.selected_track,
-                  //                                 RichText::new(&track.title).size(16.0),
-                  //                             );
-                  //                             if resp.clicked() {
-                  //                                 self.selected_track = i;
-                  //                                 self.scroll_to_selection = true;
-                  //                             }
-                  //                             if i == self.selected_track && self.scroll_to_selection
-                  //                             {
-                  //                                 resp.scroll_to_me(None);
-                  //                             }
-                  //                         },
-                  //                     );
-                  //                 });
-                  //             }
-                  //         }
-                  //     });
-                  // }
+                }
             }
         });
 

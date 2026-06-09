@@ -6,6 +6,7 @@ pub struct Track {
     pub title: String,
     pub track_number: u32,
     pub duration_secs: u32,
+    pub genre: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
