@@ -179,18 +179,38 @@ pub async fn load_or_scan_library(
                     title: album_name.clone(),
                     cover_path: None,
                     disks: Vec::new(),
+                    added_timestamp: 0,
                 };
-
+                let mut max_time = 0;
                 for (disk_name, tracks) in disks_map {
                     let mut sorted_tracks = tracks.clone();
                     sorted_tracks.sort_by(|a, b| natord::compare(&a.title, &b.title));
+
+                    for track in &sorted_tracks {
+                        if let Ok(meta) = std::fs::metadata(&track.path) {
+                            // Try created date first, fallback to modified date
+                            let time = meta
+                                .created()
+                                .or_else(|_| meta.modified())
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+
+                            let secs = time
+                                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs();
+
+                            if secs > max_time {
+                                max_time = secs;
+                            }
+                        }
+                    }
 
                     album.disks.push(Disk {
                         name: disk_name.clone(),
                         tracks: sorted_tracks,
                     });
                 }
-
+                album.added_timestamp = max_time;
                 // Cover koppelen
                 if let Some(first_disk) = album.disks.first() {
                     if let Some(first_track) = first_disk.tracks.first() {

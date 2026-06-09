@@ -20,6 +20,8 @@ pub struct Album {
     pub title: String,
     pub cover_path: Option<String>,
     pub disks: Vec<Disk>, // Niveau 3: CD/Disk-niveau of Albums-in-box
+    #[serde(default)] // Fallback just in case
+    pub added_timestamp: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

@@ -55,6 +55,7 @@ pub fn filter_library(library: &Library, query: &str) -> Library {
                     title: album.title.clone(),
                     cover_path: album.cover_path.clone(),
                     disks: filtered_disks,
+                    added_timestamp: album.added_timestamp, //
                 });
             }
         }
@@ -158,6 +159,7 @@ pub fn filter_by_genre(library: &Library, genre: &str) -> Library {
                     title: album.title.clone(),
                     cover_path: album.cover_path.clone(),
                     disks: filtered_disks,
+                    added_timestamp: album.added_timestamp,
                 });
             }
         }
