@@ -2,10 +2,11 @@ use crate::models::{Album, Artist, Disk, Library, Track};
 use crossbeam_channel::Sender;
 use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
-use lofty::tag::Accessor;
+//use lofty::tag::Accessor;
 use rayon::prelude::*; // NIEUW: Rayon imports
 use std::collections::HashMap;
 use std::fs::File;
+//use std::hash::Hash;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
 use std::sync::Mutex; // NIEUW: Mutex voor thread-safe schrijven
@@ -98,7 +99,7 @@ pub async fn load_or_scan_library(
                     let mut artist_name = "Onbekende Artiest".to_string();
                     let mut album_name = "Onbekend Album".to_string();
                     let mut disk_name = "Default".to_string();
-                    let mut genre: String = "Unknown Genre".to_string();
+                    let mut genre: String = "".to_string();
 
                     if components.len() == 1 {
                         // Bestand staat direct in H:\MUSIC\
@@ -120,16 +121,70 @@ pub async fn load_or_scan_library(
                             }
                         }
                     }
+                    // Temporary debug for OGG files
+                    // if ext == "ogg" {
+                    //     println!("--- DEBUGGING OGG FILE: {:?} ---", path.file_name());
 
+                    //     // We vangen het resultaat op in een variabele om de exacte fout te kunnen printen
+                    //     let result = Probe::open(path).and_then(|p| p.read());
+
+                    //     match result {
+                    //         Ok(tagged_file) => {
+                    //             for tag in tagged_file.tags() {
+                    //                 println!("  Tag Type: {:?}", tag.tag_type());
+                    //                 for item in tag.items() {
+                    //                     println!(
+                    //                         "    Key: {:?} | Value: {:?}",
+                    //                         item.key(),
+                    //                         item.value()
+                    //                     );
+                    //                 }
+                    //             }
+                    //         }
+                    //         Err(e) => {
+                    //             // HIER ZIEN WE DE ECHTE OORZAAK!
+                    //             println!("  ERROR: Lofty weigert dit bestand. Reden: {:?}", e);
+                    //         }
+                    //     }
+                    // }
                     // Lees Genre tag
+                    // Lees Genre tag (inclusief custom iTunes genres)
+                    // Lees ALLE Genre tags (niet alleen de eerste!)
                     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
-                        if let Some(tag) = tagged_file.primary_tag() {
-                            if let Some(g) = tag.genre() {
-                                genre = g.to_string();
+                        let mut all_genres = Vec::new();
+
+                        for tag in tagged_file.tags() {
+                            // 1. Verzamel alle standaard genre tags
+                            // tag.genre() geeft alleen de eerste, dus we moeten zelf itereren
+                            for item in tag.items() {
+                                match item.key() {
+                                    // 1. Standaard Genre tag
+                                    lofty::tag::ItemKey::Genre => {
+                                        if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                            all_genres.push(text.clone());
+                                        }
+                                    }
+
+                                    // 2. Custom iTunes Genre tag (hoofdletterongevoelig)
+                                    lofty::tag::ItemKey::Unknown(key)
+                                        if key.to_lowercase() == "----:com.apple.itunes:genre" =>
+                                    {
+                                        if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                            all_genres.push(text.clone());
+                                        }
+                                    }
+
+                                    // 3. Alle andere tags negeren
+                                    _ => {}
+                                }
                             }
                         }
-                    }
 
+                        // Voeg alle gevonden genres samen met een separator
+                        if !all_genres.is_empty() {
+                            genre = all_genres.join(";");
+                        }
+                    }
                     let track = Track {
                         path: path.to_string_lossy().to_string(),
                         title: path

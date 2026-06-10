@@ -5,6 +5,11 @@ use crate::scanner::ScannerMessage;
 use crate::search::{collect_genres, filter_by_genre, filter_library};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, Image, Key, RichText, ScrollArea};
+//use lofty::file::TaggedFile;
+//use lofty::file::{AudioFile, TaggedFileExt}; // <--- WriteOptions toegevoegd
+//use lofty::probe::Probe;
+//use lofty::tag::{Accessor, Tag};
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(PartialEq, Clone)]
@@ -66,6 +71,23 @@ pub struct MusicPlayerApp {
     // NEW: Recent Albums
     recent_albums: Vec<(String, Album)>, // (Artist Name, Album)
     selected_recent: usize,
+
+    // Track Details Popup
+    show_track_details: bool,
+    editing_track_path: Option<String>,
+    edit_title: String,
+    edit_artist: String,
+    edit_album: String,
+    edit_genre: String,
+    save_status: Option<String>, // Om "Saved!" of errors te tonen
+    raw_tags_display: String,    // NIEUW: Om alle tags als tekst te tonen
+    read_error: Option<String>,  // NIEUW: Om de lofty error te tonen
+    update_title: bool,
+    update_artist: bool,
+    update_album: bool,
+    update_genre: bool,
+    selected_tracks: HashSet<String>,
+    tracks_to_edit: Vec<String>,
 }
 
 impl MusicPlayerApp {
@@ -114,6 +136,21 @@ impl MusicPlayerApp {
             recent_albums: Vec::new(),
             selected_recent: 0,
             sort_by_date: false,
+            show_track_details: false,
+            editing_track_path: None,
+            edit_title: String::new(),
+            edit_artist: String::new(),
+            edit_album: String::new(),
+            edit_genre: String::new(),
+            save_status: None,
+            raw_tags_display: String::new(),
+            read_error: None,
+            update_title: false,
+            update_artist: false,
+            update_album: false,
+            update_genre: false,
+            selected_tracks: HashSet::new(),
+            tracks_to_edit: Vec::new(),
         }
     }
 
@@ -284,12 +321,158 @@ impl MusicPlayerApp {
             }
         }
     }
+    // Helper om veilig het pad van de huidige track op te halen
+    fn get_current_track_path(&self, lib: &Library) -> Option<String> {
+        lib.artists
+            .get(self.selected_artist)
+            .and_then(|a| a.albums.get(self.selected_album))
+            .and_then(|al| al.disks.get(self.selected_disk))
+            .and_then(|d| d.tracks.get(self.selected_track))
+            .map(|t| t.path.clone())
+    }
+
+    // De zware functie: Tags wegschrijven met lofty
+    fn save_track_tags(&mut self) {
+        use lofty::config::WriteOptions;
+        use lofty::file::{AudioFile, TaggedFileExt};
+        use lofty::probe::Probe;
+        use lofty::tag::{Accessor, Tag, TagType};
+        use std::path::Path;
+
+        if self.tracks_to_edit.is_empty() {
+            return;
+        }
+
+        let mut success_count = 0;
+        let mut error_count = 0;
+
+        // FIX: We loopen nu direct over de paden (Strings), geen indices meer!
+        for path in &self.tracks_to_edit {
+            let result = (|| -> Result<(), String> {
+                let mut tagged_file = Probe::open(path)
+                    .map_err(|e| format!("Open: {:?}", e))?
+                    .read()
+                    .map_err(|e| format!("Read: {:?}", e))?;
+
+                // Bepaal het correcte tag-type op basis van de bestandsextensie
+                let ext = Path::new(path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                let target_tag_type = match ext.as_str() {
+                    "mp3" => TagType::Id3v2,
+                    "flac" | "ogg" | "opus" => TagType::VorbisComments,
+                    "m4a" | "mp4" => TagType::Mp4Ilst,
+                    "wav" => TagType::RiffInfo,
+                    _ => TagType::Id3v2,
+                };
+
+                // Zoek de bestaande tag van dit type
+                let mut tag = Tag::new(target_tag_type);
+                for existing_tag in tagged_file.tags() {
+                    if existing_tag.tag_type() == target_tag_type {
+                        tag = existing_tag.clone();
+                        break;
+                    }
+                }
+
+                // Update alleen de aangevinkte velden
+                if self.update_title {
+                    tag.set_title(self.edit_title.clone());
+                }
+                if self.update_artist {
+                    tag.set_artist(self.edit_artist.clone());
+                }
+                if self.update_album {
+                    tag.set_album(self.edit_album.clone());
+                }
+                if self.update_genre {
+                    tag.set_genre(self.edit_genre.clone());
+                }
+
+                tagged_file.insert_tag(tag);
+                tagged_file
+                    .save_to_path(path, WriteOptions::default())
+                    .map_err(|e| format!("Save: {:?}", e))?;
+
+                Ok(())
+            })();
+
+            match result {
+                Ok(_) => {
+                    success_count += 1;
+
+                    // Update de in-memory library door te zoeken op het pad
+                    if let Some(lib) = &mut self.library {
+                        for artist in &mut lib.artists {
+                            for album in &mut artist.albums {
+                                for disk in &mut album.disks {
+                                    for track in &mut disk.tracks {
+                                        if track.path == *path {
+                                            if self.update_title {
+                                                track.title = self.edit_title.clone();
+                                            }
+                                            if self.update_genre {
+                                                track.genre = Some(self.edit_genre.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    error_count += 1;
+                    println!("LOFTY SAVE ERROR voor {:?}: {}", path, e);
+                }
+            }
+        }
+
+        // Ververs raw_tags_display alleen bij single track edit
+        if success_count > 0 && self.tracks_to_edit.len() == 1 {
+            if let Some(path) = &self.editing_track_path {
+                self.raw_tags_display.clear();
+                if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+                    let mut raw_text = String::new();
+                    for tag in tagged_file.tags() {
+                        raw_text.push_str(&format!("--- Tag Type: {:?} ---\n", tag.tag_type()));
+                        for item in tag.items() {
+                            raw_text.push_str(&format!("{:?}: {:?}\n", item.key(), item.value()));
+                        }
+                    }
+                    self.raw_tags_display = if raw_text.is_empty() {
+                        "Geen tags gevonden.".to_string()
+                    } else {
+                        raw_text
+                    };
+                }
+            }
+        }
+
+        if error_count == 0 {
+            self.save_status = Some(format!(
+                "Succesvol opgeslagen in {} bestand(en)!",
+                success_count
+            ));
+        } else {
+            self.save_status = Some(format!(
+                "{} opgeslagen, {} faalden.",
+                success_count, error_count
+            ));
+        }
+
+        self.selected_tracks.clear();
+    }
 
     fn handle_keyboard_navigation(&mut self, ctx: &egui::Context) {
         if ctx.wants_keyboard_input() {
             return;
         }
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.selected_tracks.clear();
             if self.is_search_active || self.filtered_library.is_some() {
                 self.is_search_active = false;
                 self.filtered_library = None;
@@ -305,6 +488,11 @@ impl MusicPlayerApp {
                 self.exit_browse_mode();
                 return;
             }
+        }
+        // --- F6 TOETS: HERSTEL AUDIO VERBINDING ---
+        if ctx.input(|i| i.key_pressed(Key::F6)) {
+            let _ = self.player_tx.send(PlayerCommand::ReconnectAudio);
+            self.now_playing = Some("Audio verbinding herstellen...".to_string());
         }
 
         // --- HELP SCHERM (?) of (H) ---
@@ -462,6 +650,122 @@ impl MusicPlayerApp {
         }
         if ctx.input(|i| i.key_pressed(Key::N)) {
             let _ = self.player_tx.send(PlayerCommand::Skip);
+        }
+
+        // --- O-TOETS: OPEN FOLDER ---
+        if ctx.input(|i| i.key_pressed(Key::O)) {
+            if let Some(track_path) = self.get_current_track_path(lib) {
+                if let Some(parent) = Path::new(&track_path).parent() {
+                    // Opent de verkenner in de map van het bestand
+                    let _ = std::process::Command::new("explorer").arg(parent).spawn();
+                }
+            }
+        }
+
+        // --- I-TOETS: TRACK DETAILS & EDITING (SINGLE OR BATCH) ---
+        // --- I-TOETS: TRACK DETAILS & EDITING (SINGLE OR BATCH) ---
+        if ctx.input(|i| i.key_pressed(Key::I)) {
+            if self.current_level == NavLevel::Track {
+                self.save_status = None;
+                self.raw_tags_display.clear();
+                self.read_error = None;
+                self.edit_title.clear();
+                self.edit_artist.clear();
+                self.edit_album.clear();
+                self.edit_genre.clear();
+                self.update_title = false;
+                self.update_artist = false;
+                self.update_album = false;
+                self.update_genre = false;
+
+                use lofty::file::TaggedFileExt;
+                use lofty::probe::Probe;
+                use lofty::tag::Accessor;
+
+                // FIX: Gebruik de actieve bibliotheek (Genre, Search, of Library)
+                let active_lib = self
+                    .genre_filtered_library
+                    .as_ref()
+                    .or(self.filtered_library.as_ref())
+                    .or(self.library.as_ref());
+
+                if let Some(lib) = active_lib {
+                    // Bepaal welke paden we gaan editten
+                    if self.selected_tracks.is_empty() {
+                        // Geen selectie, gebruik de huidige track
+                        if let Some(track_path) = self.get_current_track_path(lib) {
+                            self.tracks_to_edit = vec![track_path];
+                        }
+                    } else {
+                        // Kopieer de geselecteerde paden direct
+                        self.tracks_to_edit = self.selected_tracks.iter().cloned().collect();
+                        self.tracks_to_edit.sort();
+                    }
+
+                    // Laad de tags van het EERSTE pad om de velden in te vullen
+                    if let Some(first_path) = self.tracks_to_edit.first() {
+                        self.editing_track_path = Some(first_path.clone());
+
+                        match Probe::open(first_path).and_then(|p| p.read()) {
+                            Ok(tagged_file) => {
+                                let mut raw_text = String::new();
+                                for tag in tagged_file.tags() {
+                                    raw_text.push_str(&format!(
+                                        "--- Tag Type: {:?} ---\n",
+                                        tag.tag_type()
+                                    ));
+                                    for item in tag.items() {
+                                        raw_text.push_str(&format!(
+                                            "{:?}: {:?}\n",
+                                            item.key(),
+                                            item.value()
+                                        ));
+                                    }
+                                }
+                                self.raw_tags_display = if raw_text.is_empty() {
+                                    "Geen tags gevonden.".to_string()
+                                } else {
+                                    raw_text
+                                };
+
+                                if let Some(t) = tagged_file
+                                    .primary_tag()
+                                    .or_else(|| tagged_file.first_tag())
+                                {
+                                    self.edit_title =
+                                        t.title().map(|s| s.to_string()).unwrap_or_default();
+                                    self.edit_artist =
+                                        t.artist().map(|s| s.to_string()).unwrap_or_default();
+                                    self.edit_album =
+                                        t.album().map(|s| s.to_string()).unwrap_or_default();
+                                    self.edit_genre =
+                                        t.genre().map(|s| s.to_string()).unwrap_or_default();
+                                }
+                            }
+                            Err(e) => {
+                                self.read_error = Some(format!("{:?}", e));
+                                self.raw_tags_display =
+                                    "Fout bij het parsen van de audio-container.".to_string();
+                            }
+                        }
+                    }
+                }
+                self.show_track_details = true;
+            }
+        }
+
+        // --- M-TOETS: MARK TRACK FOR BATCH EDITING ---
+        if ctx.input(|i| i.key_pressed(Key::M)) {
+            if self.current_level == NavLevel::Track {
+                // Haal het unieke pad op van de huidige track
+                if let Some(track_path) = self.get_current_track_path(lib) {
+                    if self.selected_tracks.contains(&track_path) {
+                        self.selected_tracks.remove(&track_path);
+                    } else {
+                        self.selected_tracks.insert(track_path);
+                    }
+                }
+            }
         }
 
         // --- NAVIGATIE PIJLTJES ---
@@ -625,8 +929,7 @@ impl eframe::App for MusicPlayerApp {
                     if let Some(file_name) = Path::new(&path).file_name() {
                         self.now_playing = Some(file_name.to_string_lossy().into_owned());
                     }
-                }
-                PlayerEvent::Stopped => self.now_playing = None,
+                } // PlayerEvent::Stopped => self.now_playing = None,
             }
         }
         if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Slash)) {
@@ -659,7 +962,10 @@ impl eframe::App for MusicPlayerApp {
                     ui.label("• G : Bladeren per genre");
                     ui.label("• B : Toon nieuwste albums (Recent) ");
                     ui.label("• S : Sorteer op datum (Descending)");
+                    ui.label("• O : Open de map van de huidige track ");
+                    ui.label("• I : Track Details & Tags bewerken ");
                     ui.label("• F5 : Forceer een rescan van de bibliotheek");
+                    ui.label("• F6 : Herstel audio verbinding");
                     ui.label("• ? of H : Toon / verberg dit helpvenster");
                     ui.separator();
                     if ui.button("Sluiten").clicked() {
@@ -668,7 +974,6 @@ impl eframe::App for MusicPlayerApp {
                 });
         }
 
-        // Check of de initiële scan klaar is
         // Check of de initiële scan klaar is
         // We vangen hier ook de Progress messages op om de gebruiker te laten zien dat we bezig zijn
         while let Ok(msg) = self.scanner_rx.try_recv() {
@@ -903,6 +1208,7 @@ impl eframe::App for MusicPlayerApp {
                     }
                 });
             });
+
             self.scroll_to_selection = false;
             ctx.request_repaint();
             return;
@@ -1231,6 +1537,18 @@ impl eframe::App for MusicPlayerApp {
                                 .iter()
                                 .enumerate()
                             {
+                                let is_selected = i == self.selected_track;
+                                // FIX: Check of het pad van deze track in de set staat
+                                let is_marked = self.selected_tracks.contains(&track.path);
+
+                                // Voeg het vinkje toe aan de string, net als bij de genres
+                                let display_title = if is_marked {
+                                    format!("☑ {}", track.title)
+                                } else {
+                                    track.title.clone()
+                                };
+
+                                // EXACT DEZELFDE STRUCTUUR ALS BIJ DE GENRES
                                 ui.horizontal(|ui| {
                                     ui.with_layout(
                                         egui::Layout::centered_and_justified(
@@ -1238,15 +1556,16 @@ impl eframe::App for MusicPlayerApp {
                                         ),
                                         |ui| {
                                             let resp = ui.selectable_label(
-                                                i == self.selected_track,
-                                                RichText::new(&track.title).size(16.0),
+                                                is_selected,
+                                                RichText::new(&display_title).size(16.0),
                                             );
+
                                             if resp.clicked() {
                                                 self.selected_track = i;
                                                 self.scroll_to_selection = true;
                                             }
-                                            if i == self.selected_track && self.scroll_to_selection
-                                            {
+
+                                            if is_selected && self.scroll_to_selection {
                                                 resp.scroll_to_me(None);
                                             }
                                         },
@@ -1258,6 +1577,118 @@ impl eframe::App for MusicPlayerApp {
                 }
             }
         });
+
+        // ---  : TRACK DETAILS POPUP ---
+        if self.show_track_details {
+            let mut _is_open = self.show_track_details;
+            // --- TRACK DETAILS POPUP ---
+            if self.show_track_details {
+                let mut is_open = self.show_track_details;
+                let popup_title = if self.tracks_to_edit.len() > 1 {
+                    format!(
+                        "Batch Edit: {} tracks geselecteerd",
+                        self.tracks_to_edit.len()
+                    )
+                } else {
+                    "Track Details & Tags".to_string()
+                };
+
+                egui::Window::new(popup_title)
+                    .open(&mut is_open)
+                    .collapsible(false)
+                    .resizable(false)
+                    .default_width(500.0)
+                    .show(ctx, |ui| {
+                        if let Some(path) = &self.editing_track_path {
+                            ui.label(RichText::new("File:").strong());
+                            ui.label(RichText::new(path).size(12.0).color(Color32::GRAY));
+                            ui.add_space(10.0);
+
+                            // NIEUW: Toon de error in het rood als het bestand corrupt is
+                            if let Some(err) = &self.read_error {
+                                ui.label(
+                                    RichText::new(format!("⚠️ Leesfout: {}", err))
+                                        .color(Color32::RED)
+                                        .strong(),
+                                );
+                                ui.add_space(5.0);
+                            }
+
+                            // De bestaande editable velden
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.update_title, "");
+                                ui.label("Title:");
+                                ui.add_sized(
+                                    [400.0, 20.0],
+                                    egui::TextEdit::singleline(&mut self.edit_title)
+                                        .interactive(self.update_title),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.update_artist, "");
+                                ui.label("Artist:");
+                                ui.add_sized(
+                                    [400.0, 20.0],
+                                    egui::TextEdit::singleline(&mut self.edit_artist)
+                                        .interactive(self.update_artist),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.update_album, "");
+                                ui.label("Album:");
+                                ui.add_sized(
+                                    [400.0, 20.0],
+                                    egui::TextEdit::singleline(&mut self.edit_album)
+                                        .interactive(self.update_album),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.update_genre, "");
+                                ui.label("Genre:");
+                                ui.add_sized(
+                                    [400.0, 20.0],
+                                    egui::TextEdit::singleline(&mut self.edit_genre)
+                                        .interactive(self.update_genre),
+                                );
+                            });
+
+                            ui.add_space(15.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("💾 Save to File").clicked() {
+                                    self.save_track_tags();
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.show_track_details = false;
+                                }
+                                if let Some(status) = &self.save_status {
+                                    let color = if status.contains("Error") {
+                                        Color32::RED
+                                    } else {
+                                        Color32::GREEN
+                                    };
+                                    ui.label(RichText::new(status).color(color));
+                                }
+                            });
+
+                            // NIEUW: Scheidingslijn en het Raw Tags overzicht
+                            ui.add_space(15.0);
+                            ui.separator();
+                            ui.add_space(5.0);
+
+                            ui.label(RichText::new("Alle Ruwe Tags (Read-Only):").strong());
+                            ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.raw_tags_display)
+                                        .font(egui::TextStyle::Monospace) // Mooier lettertype voor data
+                                        .desired_width(f32::INFINITY)
+                                        .interactive(false), // Maakt het veld alleen-lezen
+                                );
+                            });
+                        }
+                    });
+                self.show_track_details = is_open;
+            }
+        }
 
         self.scroll_to_selection = false;
         ctx.request_repaint();

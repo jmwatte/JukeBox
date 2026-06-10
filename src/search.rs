@@ -3,7 +3,7 @@ use crate::models::{Album, Artist, Disk, Library, Track};
 /// Helper function to split a genre string into individual genres
 fn split_genres(genre_str: &str) -> Vec<String> {
     genre_str
-        .split(&[';', '/', ',', '|'][..])
+        .split(&[';', '/', ',', '|', '\\'][..])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
@@ -32,7 +32,6 @@ pub fn filter_library(library: &Library, query: &str) -> Library {
                     let track_lower = track.title.to_lowercase();
                     let path_lower = track.path.to_lowercase();
 
-                    // Simple substring search - much more predictable!
                     if track_lower.contains(&query_lower)
                         || album_lower.contains(&query_lower)
                         || artist_lower.contains(&query_lower)
@@ -55,7 +54,7 @@ pub fn filter_library(library: &Library, query: &str) -> Library {
                     title: album.title.clone(),
                     cover_path: album.cover_path.clone(),
                     disks: filtered_disks,
-                    added_timestamp: album.added_timestamp, //
+                    added_timestamp: album.added_timestamp,
                 });
             }
         }
@@ -124,7 +123,6 @@ pub fn filter_by_genre(library: &Library, genre: &str) -> Library {
                     .iter()
                     .filter(|track| {
                         if genre == "Unknown" {
-                            // Match tracks with no genre or empty genre string
                             track.genre.is_none()
                                 || track
                                     .genre
@@ -132,7 +130,6 @@ pub fn filter_by_genre(library: &Library, genre: &str) -> Library {
                                     .map(|g| split_genres(g).is_empty())
                                     .unwrap_or(false)
                         } else {
-                            // Match if the track's split genres contain the selected genre (case-insensitive)
                             if let Some(g) = &track.genre {
                                 let track_genres = split_genres(g);
                                 track_genres
