@@ -1548,155 +1548,164 @@ impl eframe::App for MusicPlayerApp {
         });
 
         // ---  : TRACK DETAILS POPUP ---
+        // --- TRACK DETAILS POPUP ---
         if self.show_track_details {
-            let mut _is_open = self.show_track_details;
-            // --- TRACK DETAILS POPUP ---
-            if self.show_track_details {
-                let mut is_open = self.show_track_details;
-                let popup_title = if self.tracks_to_edit.len() > 1 {
-                    format!(
-                        "Batch Edit: {} tracks geselecteerd",
-                        self.tracks_to_edit.len()
-                    )
-                } else {
-                    "Track Details & Tags".to_string()
-                };
+            let mut is_open = self.show_track_details;
+            let popup_title = if self.tracks_to_edit.len() > 1 {
+                format!(
+                    "Batch Edit: {} tracks geselecteerd",
+                    self.tracks_to_edit.len()
+                )
+            } else {
+                "Track Details & Tags".to_string()
+            };
 
-                egui::Window::new(popup_title)
-                    .open(&mut is_open)
-                    .collapsible(false)
-                    .resizable(false)
-                    .default_width(500.0)
-                    .show(ctx, |ui| {
-                        if let Some(path) = &self.editing_track_path {
-                            ui.label(RichText::new("File:").strong());
-                            ui.label(RichText::new(path).size(12.0).color(Color32::GRAY));
-                            ui.add_space(10.0);
+            // NIEUW: Variabele om bij te houden welk pad we moeten verwijderen NA het tekenen
+            let mut path_to_remove: Option<String> = None;
 
-                            // NIEUW: Lijstje met geselecteerde bestanden (alleen als er meer dan 1 is)
-                            if self.tracks_to_edit.len() > 1 {
-                                ui.label(
-                                    RichText::new("Geselecteerde bestanden:")
-                                        .strong()
-                                        .size(14.0),
-                                );
-                                ScrollArea::vertical()
-                                    .max_height(120.0) // Beperk de hoogte zodat het venster niet explodeert
-                                    .show(ui, |ui| {
-                                        // We clonen de lijst even om borrow-checker problemen te voorkomen tijdens het verwijderen
-                                        let current_paths: Vec<String> =
-                                            self.tracks_to_edit.clone();
+            egui::Window::new(popup_title)
+                .open(&mut is_open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(500.0)
+                // FIX: Anchor het venster zodat het perfect gecentreerd blijft, ook als de grootte verandert
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    if let Some(path) = &self.editing_track_path {
+                        ui.label(RichText::new("File:").strong());
+                        ui.label(RichText::new(path).size(12.0).color(Color32::GRAY));
+                        ui.add_space(10.0);
 
-                                        for (i, path) in current_paths.iter().enumerate() {
-                                            ui.horizontal(|ui| {
-                                                // Toon alleen de bestandsnaam voor een schone look
-                                                let filename = Path::new(path)
-                                                    .file_name()
-                                                    .unwrap_or_default()
-                                                    .to_string_lossy();
+                        if let Some(err) = &self.read_error {
+                            ui.label(
+                                RichText::new(format!("⚠️ Leesfout: {}", err))
+                                    .color(Color32::RED)
+                                    .strong(),
+                            );
+                            ui.add_space(5.0);
+                        }
 
-                                                ui.label(
-                                                    RichText::new(filename.to_string())
-                                                        .size(12.0)
-                                                        .color(Color32::GRAY),
-                                                );
-                                                ui.add_space(10.0);
+                        // NIEUW: Lijstje met geselecteerde bestanden
+                        if self.tracks_to_edit.len() > 1 {
+                            ui.label(
+                                RichText::new("Geselecteerde bestanden:")
+                                    .strong()
+                                    .size(14.0),
+                            );
+                            ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
+                                for track_path in &self.tracks_to_edit {
+                                    ui.horizontal(|ui| {
+                                        let filename = Path::new(track_path)
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy();
 
-                                                // Het "untag" knopje
-                                                if ui.small_button("❌").clicked() {
-                                                    self.selected_tracks.remove(path);
-                                                    self.tracks_to_edit.remove(i);
-                                                }
-                                            });
+                                        ui.label(
+                                            RichText::new(filename.to_string())
+                                                .size(12.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                        ui.add_space(10.0);
+
+                                        // FIX: Sla het pad op in plaats van direct te verwijderen!
+                                        if ui.small_button("❌").clicked() {
+                                            path_to_remove = Some(track_path.clone());
                                         }
                                     });
-                                ui.separator();
-                                ui.add_space(5.0);
-                            }
-
-                            // NIEUW: Toon de error in het rood als het bestand corrupt is
-                            if let Some(err) = &self.read_error {
-                                ui.label(
-                                    RichText::new(format!("⚠️ Leesfout: {}", err))
-                                        .color(Color32::RED)
-                                        .strong(),
-                                );
-                                ui.add_space(5.0);
-                            }
-
-                            // De bestaande editable velden
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut self.update_title, "");
-                                ui.label("Title:");
-                                ui.add_sized(
-                                    [400.0, 20.0],
-                                    egui::TextEdit::singleline(&mut self.edit_title)
-                                        .interactive(self.update_title),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut self.update_artist, "");
-                                ui.label("Artist:");
-                                ui.add_sized(
-                                    [400.0, 20.0],
-                                    egui::TextEdit::singleline(&mut self.edit_artist)
-                                        .interactive(self.update_artist),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut self.update_album, "");
-                                ui.label("Album:");
-                                ui.add_sized(
-                                    [400.0, 20.0],
-                                    egui::TextEdit::singleline(&mut self.edit_album)
-                                        .interactive(self.update_album),
-                                );
-                            });
-                            ui.horizontal(|ui| {
-                                ui.checkbox(&mut self.update_genre, "");
-                                ui.label("Genre:");
-                                ui.add_sized(
-                                    [400.0, 20.0],
-                                    egui::TextEdit::singleline(&mut self.edit_genre)
-                                        .interactive(self.update_genre),
-                                );
-                            });
-
-                            ui.add_space(15.0);
-                            ui.horizontal(|ui| {
-                                if ui.button("💾 Save to File").clicked() {
-                                    self.save_track_tags();
-                                }
-                                if ui.button("Cancel").clicked() {
-                                    self.show_track_details = false;
-                                }
-                                if let Some(status) = &self.save_status {
-                                    let color = if status.contains("Error") {
-                                        Color32::RED
-                                    } else {
-                                        Color32::GREEN
-                                    };
-                                    ui.label(RichText::new(status).color(color));
                                 }
                             });
-
-                            // NIEUW: Scheidingslijn en het Raw Tags overzicht
-                            ui.add_space(15.0);
                             ui.separator();
                             ui.add_space(5.0);
-
-                            ui.label(RichText::new("Alle Ruwe Tags (Read-Only):").strong());
-                            ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.raw_tags_display)
-                                        .font(egui::TextStyle::Monospace) // Mooier lettertype voor data
-                                        .desired_width(f32::INFINITY)
-                                        .interactive(false), // Maakt het veld alleen-lezen
-                                );
-                            });
                         }
-                    });
-                self.show_track_details = is_open;
+
+                        // De bestaande editable velden (Title, Artist, Album, Genre)
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.update_title, "");
+                            ui.label("Title:");
+                            ui.add_sized(
+                                [400.0, 20.0],
+                                egui::TextEdit::singleline(&mut self.edit_title)
+                                    .interactive(self.update_title),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.update_artist, "");
+                            ui.label("Artist:");
+                            ui.add_sized(
+                                [400.0, 20.0],
+                                egui::TextEdit::singleline(&mut self.edit_artist)
+                                    .interactive(self.update_artist),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.update_album, "");
+                            ui.label("Album:");
+                            ui.add_sized(
+                                [400.0, 20.0],
+                                egui::TextEdit::singleline(&mut self.edit_album)
+                                    .interactive(self.update_album),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.update_genre, "");
+                            ui.label("Genre:");
+                            ui.add_sized(
+                                [400.0, 20.0],
+                                egui::TextEdit::singleline(&mut self.edit_genre)
+                                    .interactive(self.update_genre),
+                            );
+                        });
+
+                        ui.add_space(15.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("💾 Save to File").clicked() {
+                                self.save_track_tags();
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.show_track_details = false;
+                            }
+                            if let Some(status) = &self.save_status {
+                                let color = if status.contains("Error") {
+                                    Color32::RED
+                                } else {
+                                    Color32::GREEN
+                                };
+                                ui.label(RichText::new(status).color(color));
+                            }
+                        });
+
+                        ui.add_space(15.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        ui.label(RichText::new("Alle Ruwe Tags (Read-Only):").strong());
+                        ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.raw_tags_display)
+                                    .font(egui::TextStyle::Monospace)
+                                    .desired_width(f32::INFINITY)
+                                    .interactive(false),
+                            );
+                        });
+                    }
+                });
+
+            self.show_track_details = is_open;
+
+            // FIX: Voer de verwijdering NU pas uit, BUITEN de show-closure!
+            if let Some(path) = path_to_remove {
+                self.selected_tracks.remove(&path);
+                self.tracks_to_edit.retain(|p| p != &path);
+
+                // Als we de track aan het editten waren verwijderen, update de editing_track_path naar de volgende
+                if self.editing_track_path.as_deref() == Some(&path) {
+                    if let Some(first_path) = self.tracks_to_edit.first() {
+                        self.editing_track_path = Some(first_path.clone());
+                        // (Optioneel: hier de tags opnieuw inladen voor de nieuwe eerste track)
+                    } else {
+                        self.show_track_details = false; // Sluit popup als de lijst leeg is
+                    }
+                }
             }
         }
 
