@@ -37,8 +37,3 @@ pub struct Library {
 
 //#[derive(Debug, Clone)]
 // pub struct SearchResult {
-//     pub track: Track,
-//     pub artist_name: String,
-//     pub album_title: String,
-//     pub score: i64, // Hoe hoger, hoe beter de match
-// }

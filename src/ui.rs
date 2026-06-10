@@ -5,10 +5,6 @@ use crate::scanner::ScannerMessage;
 use crate::search::{collect_genres, filter_by_genre, filter_library};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, Image, Key, RichText, ScrollArea};
-//use lofty::file::TaggedFile;
-//use lofty::file::{AudioFile, TaggedFileExt}; // <--- WriteOptions toegevoegd
-//use lofty::probe::Probe;
-//use lofty::tag::{Accessor, Tag};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -114,7 +110,6 @@ impl MusicPlayerApp {
             show_help: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
             filtered_library: None,
-            // _search_active: false,
             search_query: String::new(),
             current_level: NavLevel::Artist,
             view_mode,
@@ -123,9 +118,6 @@ impl MusicPlayerApp {
             selected_disk: 0,
             selected_track: 0,
             scroll_to_selection: true,
-            // search_query: String::new(),
-            // search_results: Vec::new(),
-            // selected_search_index: 0,
             is_search_active: false,
             search_input_id: egui::Id::new("global_search_input"),
             browse_mode: BrowseMode::Library,
@@ -154,13 +146,6 @@ impl MusicPlayerApp {
         }
     }
 
-    /// Returns the currently active library (search-filtered, genre-filtered, or full)
-    // fn active_library(&self) -> Option<&Library> {
-    //     self.filtered_library
-    //         .as_ref()
-    //         .or(self.genre_filtered_library.as_ref())
-    //         .or(self.library.as_ref())
-    // }
     fn toggle_sort(&mut self) {
         self.sort_by_date = !self.sort_by_date;
 
@@ -607,8 +592,6 @@ impl MusicPlayerApp {
             .as_ref()
             .or(self.genre_filtered_library.as_ref())
             .or(self.library.as_ref());
-
-        //let lib = self.active_library();
         let Some(lib) = lib else {
             return;
         };
@@ -682,7 +665,6 @@ impl MusicPlayerApp {
                 use lofty::probe::Probe;
                 use lofty::tag::Accessor;
 
-                // FIX: Gebruik de actieve bibliotheek (Genre, Search, of Library)
                 let active_lib = self
                     .genre_filtered_library
                     .as_ref()
@@ -913,20 +895,6 @@ impl MusicPlayerApp {
 
 impl eframe::App for MusicPlayerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Update Library Status
-        while let Ok(msg) = self.scanner_rx.try_recv() {
-            if let ScannerMessage::LibraryLoaded(lib) = msg {
-                self.library = Some(lib);
-                // Als we aan het zoeken waren, herbereken de filter op de nieuwe library
-                if !self.search_query.is_empty() {
-                    self.filtered_library = Some(filter_library(
-                        self.library.as_ref().unwrap(),
-                        &self.search_query,
-                    ));
-                }
-            }
-        }
-
         // Update Now Playing Status
         while let Ok(event) = self.player_event_rx.try_recv() {
             match event {
@@ -1099,13 +1067,12 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- HOOFDSCHERM ---
-        // Disjoint borrowing for the UI rendering
+        // Disjoint borrowing: only borrows the specific fields, allowing us to mutate self later
         let current_lib = self
             .filtered_library
             .as_ref()
             .or(self.genre_filtered_library.as_ref())
             .or(self.library.as_ref());
-        // let current_lib = self.active_library();
         let Some(current_lib) = current_lib else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {

@@ -57,12 +57,26 @@ impl Config {
     pub fn load_or_create() -> Self {
         let config_path = Path::new("config.toml");
         if config_path.exists() {
-            let config_str = fs::read_to_string(config_path).unwrap_or_default();
-            toml::from_str(&config_str).unwrap_or_else(|_| Self::default())
+            match fs::read_to_string(config_path) {
+                Ok(config_str) => match toml::from_str(&config_str) {
+                    Ok(config) => return config,
+                    Err(e) => eprintln!(
+                        "Fout bij parsen van config.toml: {}. Gebruik standaardwaarden.",
+                        e
+                    ),
+                },
+                Err(e) => eprintln!(
+                    "Kon config.toml niet lezen: {}. Gebruik standaardwaarden.",
+                    e
+                ),
+            }
+            Self::default()
         } else {
             let default_config = Self::default();
             let toml_str = toml::to_string(&default_config).unwrap();
-            let _ = fs::write(config_path, toml_str);
+            if let Err(e) = fs::write(config_path, toml_str) {
+                eprintln!("Kon standaard config.toml niet schrijven: {}", e);
+            }
             default_config
         }
     }

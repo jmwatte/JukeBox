@@ -2,14 +2,12 @@ use crate::models::{Album, Artist, Disk, Library, Track};
 use crossbeam_channel::Sender;
 use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
-//use lofty::tag::Accessor;
-use rayon::prelude::*; // NIEUW: Rayon imports
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::File;
-//use std::hash::Hash;
 use std::io::{BufReader, BufWriter};
 use std::path::Path;
-use std::sync::Mutex; // NIEUW: Mutex voor thread-safe schrijven
+use std::sync::Mutex;
 use walkdir::WalkDir;
 
 pub enum ScannerMessage {
@@ -121,34 +119,6 @@ pub async fn load_or_scan_library(
                             }
                         }
                     }
-                    // Temporary debug for OGG files
-                    // if ext == "ogg" {
-                    //     println!("--- DEBUGGING OGG FILE: {:?} ---", path.file_name());
-
-                    //     // We vangen het resultaat op in een variabele om de exacte fout te kunnen printen
-                    //     let result = Probe::open(path).and_then(|p| p.read());
-
-                    //     match result {
-                    //         Ok(tagged_file) => {
-                    //             for tag in tagged_file.tags() {
-                    //                 println!("  Tag Type: {:?}", tag.tag_type());
-                    //                 for item in tag.items() {
-                    //                     println!(
-                    //                         "    Key: {:?} | Value: {:?}",
-                    //                         item.key(),
-                    //                         item.value()
-                    //                     );
-                    //                 }
-                    //             }
-                    //         }
-                    //         Err(e) => {
-                    //             // HIER ZIEN WE DE ECHTE OORZAAK!
-                    //             println!("  ERROR: Lofty weigert dit bestand. Reden: {:?}", e);
-                    //         }
-                    //     }
-                    // }
-                    // Lees Genre tag
-                    // Lees Genre tag (inclusief custom iTunes genres)
                     // Lees ALLE Genre tags (niet alleen de eerste!)
                     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
                         let mut all_genres = Vec::new();

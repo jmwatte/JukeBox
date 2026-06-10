@@ -33,17 +33,12 @@ toml = "0.8"
 # --- Bestandssysteem & Scannen ---
 walkdir = "2.5" # Voor het efficiënt en recursief doorzoeken van de bibliotheek
 
-# --- Zoeken & Interface ---
-fuzzy-matcher = "0.3" # Essentieel voor de '/' zoek-overlay (fuzzy search)
-
 # --- Concurrency, Caching & State Management ---
 tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "fs"] } # Async runtime
 crossbeam-channel = "0.5" # Lock-free kanalen om state (zoals huidig nummer) naar de GUI te sturen
 lru = "0.12" # Least-Recently-Used cache om RAM-gebruik van albumhoezen in toom te houden
 
-
 bincode = "1.3" # Voor razendsnelle binaire wegschrijving van de database
-nucleo = "0.2" # Ultra-snelle fuzzy search engine voor enorme datasets
 natord = "1.0"
 rayon = "1.8"
 [workspace]
