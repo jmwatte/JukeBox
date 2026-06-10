@@ -767,6 +767,11 @@ impl MusicPlayerApp {
                 }
             }
         }
+        // --- SHIFT + M: WIS ALLE MARKERINGEN ---
+        if ctx.input(|i| i.key_pressed(Key::M) && i.modifiers.shift) {
+            self.selected_tracks.clear();
+            self.tracks_to_edit.clear();
+        }
 
         // --- NAVIGATIE PIJLTJES ---
         if ctx.input(|i| i.key_pressed(Key::ArrowDown)) {
@@ -1278,7 +1283,6 @@ impl eframe::App for MusicPlayerApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                // Visuele indicator dat we aan het zoeken zijn
                 // Visuele indicator dat we aan het zoeken zijn + HIT COUNTER
                 if self.filtered_library.is_some() {
                     // Tel het totale aantal tracks in de gefilterde bibliotheek
@@ -1444,135 +1448,100 @@ impl eframe::App for MusicPlayerApp {
                     }
                 }
                 _ => {
-                    ScrollArea::vertical().show(ui, |ui| match self.current_level {
-                        NavLevel::Artist => {
-                            for (i, artist) in current_lib.artists.iter().enumerate() {
-                                ui.horizontal(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::centered_and_justified(
-                                            egui::Direction::TopDown,
-                                        ),
-                                        |ui| {
-                                            let resp = ui.selectable_label(
-                                                i == self.selected_artist,
-                                                RichText::new(&artist.name).size(18.0),
-                                            );
-                                            if resp.clicked() {
-                                                self.selected_artist = i;
-                                                self.scroll_to_selection = true;
-                                            }
-                                            if i == self.selected_artist && self.scroll_to_selection
-                                            {
-                                                resp.scroll_to_me(None);
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                        }
-                        NavLevel::Album => {
-                            for (i, album) in current_lib.artists[self.selected_artist]
-                                .albums
-                                .iter()
-                                .enumerate()
-                            {
-                                ui.horizontal(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::centered_and_justified(
-                                            egui::Direction::TopDown,
-                                        ),
-                                        |ui| {
-                                            let resp = ui.selectable_label(
-                                                i == self.selected_album,
-                                                RichText::new(&album.title).size(18.0),
-                                            );
-                                            if resp.clicked() {
-                                                self.selected_album = i;
-                                                self.scroll_to_selection = true;
-                                            }
-                                            if i == self.selected_album && self.scroll_to_selection
-                                            {
-                                                resp.scroll_to_me(None);
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                        }
-                        NavLevel::Disk => {
-                            for (i, disk) in current_lib.artists[self.selected_artist].albums
-                                [self.selected_album]
-                                .disks
-                                .iter()
-                                .enumerate()
-                            {
-                                ui.horizontal(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::centered_and_justified(
-                                            egui::Direction::TopDown,
-                                        ),
-                                        |ui| {
-                                            let resp = ui.selectable_label(
-                                                i == self.selected_disk,
-                                                RichText::new(format!("CD: {}", disk.name))
-                                                    .size(16.0),
-                                            );
-                                            if resp.clicked() {
-                                                self.selected_disk = i;
-                                                self.scroll_to_selection = true;
-                                            }
-                                            if i == self.selected_disk && self.scroll_to_selection {
-                                                resp.scroll_to_me(None);
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                        }
-                        NavLevel::Track => {
-                            for (i, track) in current_lib.artists[self.selected_artist].albums
-                                [self.selected_album]
-                                .disks[self.selected_disk]
-                                .tracks
-                                .iter()
-                                .enumerate()
-                            {
-                                let is_selected = i == self.selected_track;
-                                // FIX: Check of het pad van deze track in de set staat
-                                let is_marked = self.selected_tracks.contains(&track.path);
+                    ScrollArea::vertical().show(ui, |ui| {
+                        // FIX: Pas de centrering layout ÉÉN KEER toe op de hele lijst!
+                        // Dit is véél sneller dan het per item te doen.
+                        ui.with_layout(
+                            egui::Layout::top_down(egui::Align::Center),
+                            |ui| match self.current_level {
+                                NavLevel::Artist => {
+                                    for (i, artist) in current_lib.artists.iter().enumerate() {
+                                        let resp = ui.selectable_label(
+                                            i == self.selected_artist,
+                                            RichText::new(&artist.name).size(18.0),
+                                        );
+                                        if resp.clicked() {
+                                            self.selected_artist = i;
+                                            self.scroll_to_selection = true;
+                                        }
+                                        if i == self.selected_artist && self.scroll_to_selection {
+                                            resp.scroll_to_me(None);
+                                        }
+                                    }
+                                }
+                                NavLevel::Album => {
+                                    for (i, album) in current_lib.artists[self.selected_artist]
+                                        .albums
+                                        .iter()
+                                        .enumerate()
+                                    {
+                                        let resp = ui.selectable_label(
+                                            i == self.selected_album,
+                                            RichText::new(&album.title).size(18.0),
+                                        );
+                                        if resp.clicked() {
+                                            self.selected_album = i;
+                                            self.scroll_to_selection = true;
+                                        }
+                                        if i == self.selected_album && self.scroll_to_selection {
+                                            resp.scroll_to_me(None);
+                                        }
+                                    }
+                                }
+                                NavLevel::Disk => {
+                                    for (i, disk) in current_lib.artists[self.selected_artist]
+                                        .albums[self.selected_album]
+                                        .disks
+                                        .iter()
+                                        .enumerate()
+                                    {
+                                        let resp = ui.selectable_label(
+                                            i == self.selected_disk,
+                                            RichText::new(format!("CD: {}", disk.name)).size(16.0),
+                                        );
+                                        if resp.clicked() {
+                                            self.selected_disk = i;
+                                            self.scroll_to_selection = true;
+                                        }
+                                        if i == self.selected_disk && self.scroll_to_selection {
+                                            resp.scroll_to_me(None);
+                                        }
+                                    }
+                                }
+                                NavLevel::Track => {
+                                    for (i, track) in current_lib.artists[self.selected_artist]
+                                        .albums[self.selected_album]
+                                        .disks[self.selected_disk]
+                                        .tracks
+                                        .iter()
+                                        .enumerate()
+                                    {
+                                        let is_selected = i == self.selected_track;
+                                        let is_marked = self.selected_tracks.contains(&track.path);
 
-                                // Voeg het vinkje toe aan de string, net als bij de genres
-                                let display_title = if is_marked {
-                                    format!("☑ {}", track.title)
-                                } else {
-                                    track.title.clone()
-                                };
+                                        let display_title = if is_marked {
+                                            format!("☑ {}", track.title)
+                                        } else {
+                                            track.title.clone()
+                                        };
 
-                                // EXACT DEZELFDE STRUCTUUR ALS BIJ DE GENRES
-                                ui.horizontal(|ui| {
-                                    ui.with_layout(
-                                        egui::Layout::centered_and_justified(
-                                            egui::Direction::TopDown,
-                                        ),
-                                        |ui| {
-                                            let resp = ui.selectable_label(
-                                                is_selected,
-                                                RichText::new(&display_title).size(16.0),
-                                            );
+                                        let resp = ui.selectable_label(
+                                            is_selected,
+                                            RichText::new(&display_title).size(16.0),
+                                        );
 
-                                            if resp.clicked() {
-                                                self.selected_track = i;
-                                                self.scroll_to_selection = true;
-                                            }
+                                        if resp.clicked() {
+                                            self.selected_track = i;
+                                            self.scroll_to_selection = true;
+                                        }
 
-                                            if is_selected && self.scroll_to_selection {
-                                                resp.scroll_to_me(None);
-                                            }
-                                        },
-                                    );
-                                });
-                            }
-                        }
+                                        if is_selected && self.scroll_to_selection {
+                                            resp.scroll_to_me(None);
+                                        }
+                                    }
+                                }
+                            },
+                        );
                     });
                 }
             }
@@ -1603,6 +1572,47 @@ impl eframe::App for MusicPlayerApp {
                             ui.label(RichText::new("File:").strong());
                             ui.label(RichText::new(path).size(12.0).color(Color32::GRAY));
                             ui.add_space(10.0);
+
+                            // NIEUW: Lijstje met geselecteerde bestanden (alleen als er meer dan 1 is)
+                            if self.tracks_to_edit.len() > 1 {
+                                ui.label(
+                                    RichText::new("Geselecteerde bestanden:")
+                                        .strong()
+                                        .size(14.0),
+                                );
+                                ScrollArea::vertical()
+                                    .max_height(120.0) // Beperk de hoogte zodat het venster niet explodeert
+                                    .show(ui, |ui| {
+                                        // We clonen de lijst even om borrow-checker problemen te voorkomen tijdens het verwijderen
+                                        let current_paths: Vec<String> =
+                                            self.tracks_to_edit.clone();
+
+                                        for (i, path) in current_paths.iter().enumerate() {
+                                            ui.horizontal(|ui| {
+                                                // Toon alleen de bestandsnaam voor een schone look
+                                                let filename = Path::new(path)
+                                                    .file_name()
+                                                    .unwrap_or_default()
+                                                    .to_string_lossy();
+
+                                                ui.label(
+                                                    RichText::new(filename.to_string())
+                                                        .size(12.0)
+                                                        .color(Color32::GRAY),
+                                                );
+                                                ui.add_space(10.0);
+
+                                                // Het "untag" knopje
+                                                if ui.small_button("❌").clicked() {
+                                                    self.selected_tracks.remove(path);
+                                                    self.tracks_to_edit.remove(i);
+                                                }
+                                            });
+                                        }
+                                    });
+                                ui.separator();
+                                ui.add_space(5.0);
+                            }
 
                             // NIEUW: Toon de error in het rood als het bestand corrupt is
                             if let Some(err) = &self.read_error {
