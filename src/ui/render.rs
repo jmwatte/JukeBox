@@ -332,17 +332,22 @@ impl eframe::App for MusicPlayerApp {
 
         // --- GENRE PICKER ---
         if self.browse_mode == BrowseMode::Genre && self.genre_filtered_library.is_none() {
+            let genre_sel_count = self.selected_tracks.len();
+
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                    ui.heading("Genres");
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("Druk op Esc of G om terug te gaan")
-                            .size(12.0)
-                            .color(Color32::GRAY),
-                    );
-                    ui.add_space(12.0);
+                // Consequente balk zoals in library view
+                ui.horizontal(|ui| {
+                    if genre_sel_count > 0 {
+                        ui.label(
+                            RichText::new(format!("📋 {} geselecteerd", genre_sel_count))
+                                .color(Color32::LIGHT_BLUE)
+                                .strong(),
+                        );
+                        ui.separator();
+                    }
+                    ui.label(RichText::new("Genres").color(Color32::GRAY));
                 });
+                ui.separator();
 
                 ScrollArea::vertical().show(ui, |ui| {
                     let mut genre_to_select: Option<String> = None;
@@ -504,12 +509,8 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(egui::RichText::new("Bibliotheek").color(egui::Color32::GRAY));
                     if is_selection_mode {
                         ui.label(" > Selectie".to_string());
-                    }
-                    if browse_mode == BrowseMode::Genre && !selected_genre_name.is_empty() {
+                    } else if browse_mode == BrowseMode::Genre && !selected_genre_name.is_empty() {
                         ui.label(format!(" > Genre: {}", selected_genre_name));
-                    }
-                    if is_selection_mode {
-                        ui.label(" > Selectie".to_string());
                     }
                 }
 

@@ -100,10 +100,9 @@ impl MusicPlayerApp {
 
         // --- Z: SELECTION BROWSE ---
         if shortcuts::check_action(&cfg, ctx, "SelectionBrowse") {
-            if self.browse_mode == BrowseMode::Library || self.browse_mode == BrowseMode::Selection
-            {
+            if self.browse_mode == BrowseMode::Library && !self.selected_tracks.is_empty() {
                 self.enter_selection_mode();
-            } else {
+            } else if self.browse_mode == BrowseMode::Selection {
                 self.exit_browse_mode();
             }
             return;
