@@ -98,6 +98,17 @@ impl MusicPlayerApp {
             return;
         }
 
+        // --- Z: SELECTION BROWSE ---
+        if shortcuts::check_action(&cfg, ctx, "SelectionBrowse") {
+            if self.browse_mode == BrowseMode::Library || self.browse_mode == BrowseMode::Selection
+            {
+                self.enter_selection_mode();
+            } else {
+                self.exit_browse_mode();
+            }
+            return;
+        }
+
         // Recent albums navigation
         if self.browse_mode == BrowseMode::Recent {
             if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
@@ -180,6 +191,7 @@ impl MusicPlayerApp {
             .filtered_library
             .as_ref()
             .or(self.genre_filtered_library.as_ref())
+            .or(self.selection_library.as_ref())
             .or(self.library.as_ref());
         let Some(lib) = lib else {
             return;
@@ -329,6 +341,7 @@ impl MusicPlayerApp {
                     .filtered_library
                     .as_ref()
                     .or(self.genre_filtered_library.as_ref())
+                    .or(self.selection_library.as_ref())
                     .or(self.library.as_ref());
                 lib.map(|l| self.get_tracks_at_level(l, &self.current_level))
                     .unwrap_or_default()

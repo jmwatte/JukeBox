@@ -64,6 +64,9 @@ pub struct MusicPlayerApp {
     pub update_genre: bool,
     pub selected_tracks: HashSet<String>,
     pub tracks_to_edit: Vec<String>,
+
+    // Selection browse (Z-mode)
+    pub selection_library: Option<Library>,
 }
 
 impl MusicPlayerApp {
@@ -123,6 +126,7 @@ impl MusicPlayerApp {
             update_genre: false,
             selected_tracks: HashSet::new(),
             tracks_to_edit: Vec::new(),
+            selection_library: None,
         }
     }
 
@@ -208,6 +212,7 @@ impl MusicPlayerApp {
         self.genre_filtered_library = None;
         self.selected_genre_name.clear();
         self.recent_albums.clear();
+        self.selection_library = None;
         self.current_level = NavLevel::Artist;
         self.selected_artist = 0;
         self.selected_album = 0;
@@ -220,6 +225,67 @@ impl MusicPlayerApp {
         if let Some(lib) = &self.library {
             self.selected_genre_name = genre.to_string();
             self.genre_filtered_library = Some(filter_by_genre(lib, genre));
+            self.current_level = NavLevel::Artist;
+            self.selected_artist = 0;
+            self.selected_album = 0;
+            self.selected_disk = 0;
+            self.selected_track = 0;
+            self.scroll_to_selection = true;
+        }
+    }
+
+    /// Bouw een virtuele Library uit de geselecteerde tracks en ga in Selection-mode.
+    pub fn enter_selection_mode(&mut self) {
+        if self.selected_tracks.is_empty() {
+            return;
+        }
+        if let Some(lib) = &self.library {
+            let mut artist_map: std::collections::HashMap<
+                String,
+                std::collections::HashMap<String, Vec<crate::models::Track>>,
+            > = std::collections::HashMap::new();
+
+            for artist in &lib.artists {
+                for album in &artist.albums {
+                    for disk in &album.disks {
+                        for track in &disk.tracks {
+                            if self.selected_tracks.contains(&track.path) {
+                                artist_map
+                                    .entry(artist.name.clone())
+                                    .or_default()
+                                    .entry(album.title.clone())
+                                    .or_default()
+                                    .push(track.clone());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut artists = Vec::new();
+            for (artist_name, albums_map) in artist_map {
+                let mut albums = Vec::new();
+                for (album_title, tracks) in albums_map {
+                    albums.push(crate::models::Album {
+                        title: album_title,
+                        cover_path: None,
+                        disks: vec![crate::models::Disk {
+                            name: "Default".into(),
+                            tracks,
+                        }],
+                        added_timestamp: 0,
+                    });
+                }
+                albums.sort_by(|a, b| a.title.cmp(&b.title));
+                artists.push(crate::models::Artist {
+                    name: artist_name,
+                    albums,
+                });
+            }
+            artists.sort_by(|a, b| a.name.cmp(&b.name));
+
+            self.selection_library = Some(Library { artists });
+            self.browse_mode = BrowseMode::Selection;
             self.current_level = NavLevel::Artist;
             self.selected_artist = 0;
             self.selected_album = 0;

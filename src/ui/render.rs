@@ -242,10 +242,12 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- KIES ACTIEVE LIBRARY ---
+        // Prioriteit: gefilterd (search) > genre-filtered > selection-browse > volledige library
         let current_lib = self
             .filtered_library
             .as_ref()
             .or(self.genre_filtered_library.as_ref())
+            .or(self.selection_library.as_ref())
             .or(self.library.as_ref());
         let Some(current_lib) = current_lib else {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -453,6 +455,7 @@ impl eframe::App for MusicPlayerApp {
         let browse_mode = self.browse_mode.clone();
         let selected_genre_name = self.selected_genre_name.clone();
         let search_query = self.search_query.clone();
+        let is_selection_mode = self.browse_mode == BrowseMode::Selection;
         let sel_count = self.selected_tracks.len();
 
         let mut sa = self.selected_artist;
@@ -499,8 +502,14 @@ impl eframe::App for MusicPlayerApp {
                     );
                 } else {
                     ui.label(egui::RichText::new("Bibliotheek").color(egui::Color32::GRAY));
+                    if is_selection_mode {
+                        ui.label(" > Selectie".to_string());
+                    }
                     if browse_mode == BrowseMode::Genre && !selected_genre_name.is_empty() {
                         ui.label(format!(" > Genre: {}", selected_genre_name));
+                    }
+                    if is_selection_mode {
+                        ui.label(" > Selectie".to_string());
                     }
                 }
 
