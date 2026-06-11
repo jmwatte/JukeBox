@@ -133,6 +133,16 @@ impl eframe::App for MusicPlayerApp {
                     if ui.button("Sluiten").clicked() {
                         self.show_help = false;
                     }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Bladeren op metadata").strong());
+                    ui.label(format!(
+                        "• {} : Bladeren op jaartal",
+                        shortcuts::get_key_display(s, "YearBrowse")
+                    ));
+                    ui.label(format!(
+                        "• {} : Bladeren op componist",
+                        shortcuts::get_key_display(s, "ComposerBrowse")
+                    ));
                 });
         }
 
@@ -424,6 +434,118 @@ impl eframe::App for MusicPlayerApp {
                                 resp.scroll_to_me(None);
                             }
                         });
+                    }
+                });
+            });
+            self.scroll_to_selection = false;
+            ctx.request_repaint();
+            return;
+        }
+
+        // Year picker
+        if self.filter_stack.last() == Some(&Layer::YearPicker) {
+            let y_sel_count = self.selected_tracks.len();
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if y_sel_count > 0 {
+                        ui.label(
+                            RichText::new(format!("📋 {} geselecteerd", y_sel_count))
+                                .color(Color32::LIGHT_BLUE)
+                                .strong(),
+                        );
+                        ui.separator();
+                    }
+                    ui.label(RichText::new("Jaartallen").color(Color32::GRAY));
+                });
+                ui.separator();
+                ScrollArea::vertical().show(ui, |ui| {
+                    let mut year_to_select: Option<u32> = None;
+                    for (i, (year, count)) in self.years.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                |ui| {
+                                    let selected = i == self.selected_year;
+                                    let resp = ui.selectable_label(
+                                        selected,
+                                        RichText::new(format!("{} ({})", year, count)).size(16.0),
+                                    );
+                                    if resp.clicked() {
+                                        year_to_select = Some(*year);
+                                    }
+                                    if selected
+                                        && (ctx.input(|i| {
+                                            i.key_pressed(Key::Enter)
+                                                || i.key_pressed(Key::ArrowRight)
+                                        }))
+                                    {
+                                        year_to_select = Some(*year);
+                                    }
+                                    if selected && self.scroll_to_selection {
+                                        resp.scroll_to_me(None);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(year) = year_to_select {
+                        self.select_year(year);
+                    }
+                });
+            });
+            self.scroll_to_selection = false;
+            ctx.request_repaint();
+            return;
+        }
+
+        // Composer picker
+        if self.filter_stack.last() == Some(&Layer::ComposerPicker) {
+            let c_sel_count = self.selected_tracks.len();
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if c_sel_count > 0 {
+                        ui.label(
+                            RichText::new(format!("📋 {} geselecteerd", c_sel_count))
+                                .color(Color32::LIGHT_BLUE)
+                                .strong(),
+                        );
+                        ui.separator();
+                    }
+                    ui.label(RichText::new("Componisten").color(Color32::GRAY));
+                });
+                ui.separator();
+                ScrollArea::vertical().show(ui, |ui| {
+                    let mut composer_to_select: Option<String> = None;
+                    for (i, (name, count)) in self.composers.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                                |ui| {
+                                    let selected = i == self.selected_composer;
+                                    let resp = ui.selectable_label(
+                                        selected,
+                                        RichText::new(format!("{} ({})", name, count)).size(16.0),
+                                    );
+                                    if resp.clicked() {
+                                        composer_to_select = Some(name.clone());
+                                    }
+                                    if selected
+                                        && (ctx.input(|i| {
+                                            i.key_pressed(Key::Enter)
+                                                || i.key_pressed(Key::ArrowRight)
+                                        }))
+                                    {
+                                        composer_to_select = Some(name.clone());
+                                    }
+                                    if selected && self.scroll_to_selection {
+                                        resp.scroll_to_me(None);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    if let Some(name) = composer_to_select {
+                        self.select_composer(&name);
                     }
                 });
             });
