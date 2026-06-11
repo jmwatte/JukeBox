@@ -453,6 +453,7 @@ impl eframe::App for MusicPlayerApp {
         let browse_mode = self.browse_mode.clone();
         let selected_genre_name = self.selected_genre_name.clone();
         let search_query = self.search_query.clone();
+        let sel_count = self.selected_tracks.len();
 
         let mut sa = self.selected_artist;
         let mut sal = self.selected_album;
@@ -464,6 +465,16 @@ impl eframe::App for MusicPlayerApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
+                // Selectieteller
+                if sel_count > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("📋 {} geselecteerd", sel_count))
+                            .color(egui::Color32::LIGHT_BLUE)
+                            .strong(),
+                    );
+                    ui.separator();
+                }
+
                 if has_filter {
                     let hit_count: usize = current_lib
                         .artists
@@ -695,9 +706,32 @@ impl MusicPlayerApp {
                 |ui| match *current_level {
                     NavLevel::Artist => {
                         for (i, artist) in current_lib.artists.iter().enumerate() {
+                            // Bepaal selectiestatus voor deze artist
+                            let all_tracks: Vec<String> = artist
+                                .albums
+                                .iter()
+                                .flat_map(|al| {
+                                    al.disks
+                                        .iter()
+                                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
+                                })
+                                .collect();
+                            let total = all_tracks.len();
+                            let sel = all_tracks
+                                .iter()
+                                .filter(|p| selected_tracks.contains(p.as_str()))
+                                .count();
+                            let prefix = if sel == 0 {
+                                ""
+                            } else if sel == total {
+                                "☑ "
+                            } else {
+                                "⊡ "
+                            };
+                            let display = format!("{}{}", prefix, artist.name);
                             let resp = ui.selectable_label(
                                 i == *selected_artist,
-                                RichText::new(&artist.name).size(18.0),
+                                RichText::new(&display).size(18.0),
                             );
                             if resp.clicked() {
                                 *selected_artist = i;
@@ -714,9 +748,27 @@ impl MusicPlayerApp {
                             .iter()
                             .enumerate()
                         {
+                            let all_tracks: Vec<String> = album
+                                .disks
+                                .iter()
+                                .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
+                                .collect();
+                            let total = all_tracks.len();
+                            let sel = all_tracks
+                                .iter()
+                                .filter(|p| selected_tracks.contains(p.as_str()))
+                                .count();
+                            let prefix = if sel == 0 {
+                                ""
+                            } else if sel == total {
+                                "☑ "
+                            } else {
+                                "⊡ "
+                            };
+                            let display = format!("{}{}", prefix, album.title);
                             let resp = ui.selectable_label(
                                 i == *selected_album,
-                                RichText::new(&album.title).size(18.0),
+                                RichText::new(&display).size(18.0),
                             );
                             if resp.clicked() {
                                 *selected_album = i;
@@ -734,9 +786,24 @@ impl MusicPlayerApp {
                             .iter()
                             .enumerate()
                         {
+                            let all_tracks: Vec<String> =
+                                disk.tracks.iter().map(|t| t.path.clone()).collect();
+                            let total = all_tracks.len();
+                            let sel = all_tracks
+                                .iter()
+                                .filter(|p| selected_tracks.contains(p.as_str()))
+                                .count();
+                            let prefix = if sel == 0 {
+                                ""
+                            } else if sel == total {
+                                "☑ "
+                            } else {
+                                "⊡ "
+                            };
+                            let display = format!("{}{}", prefix, disk.name);
                             let resp = ui.selectable_label(
                                 i == *selected_disk,
-                                RichText::new(format!("CD: {}", disk.name)).size(16.0),
+                                RichText::new(&display).size(16.0),
                             );
                             if resp.clicked() {
                                 *selected_disk = i;

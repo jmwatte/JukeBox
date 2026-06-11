@@ -285,4 +285,45 @@ impl MusicPlayerApp {
             .and_then(|d| d.tracks.get(self.selected_track))
             .map(|t| t.path.clone())
     }
+
+    // === MARKERING OP ALLE NIVEAUS ===
+
+    /// Verzamel alle track-paden voor de huidige selectie op het gegeven niveau.
+    pub fn get_tracks_at_level(&self, lib: &Library, level: &NavLevel) -> Vec<String> {
+        match level {
+            NavLevel::Track => self.get_current_track_path(lib).into_iter().collect(),
+            NavLevel::Disk => lib
+                .artists
+                .get(self.selected_artist)
+                .and_then(|a| a.albums.get(self.selected_album))
+                .and_then(|al| al.disks.get(self.selected_disk))
+                .map(|d| d.tracks.iter().map(|t| t.path.clone()).collect())
+                .unwrap_or_default(),
+            NavLevel::Album => lib
+                .artists
+                .get(self.selected_artist)
+                .and_then(|a| a.albums.get(self.selected_album))
+                .map(|al| {
+                    al.disks
+                        .iter()
+                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            NavLevel::Artist => lib
+                .artists
+                .get(self.selected_artist)
+                .map(|a| {
+                    a.albums
+                        .iter()
+                        .flat_map(|al| {
+                            al.disks
+                                .iter()
+                                .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
 }
