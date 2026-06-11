@@ -16,12 +16,6 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let mut shortcuts = HashMap::new();
-        shortcuts.insert("NextAlbum".into(), "Right".into());
-        shortcuts.insert("PreviousAlbum".into(), "Left".into());
-        shortcuts.insert("PlayPause".into(), "Space".into());
-        shortcuts.insert("SearchMode".into(), "/".into());
-
         Self {
             // Aangepast naar jouw exacte map:
             music_directory: "H:\\music".to_string(),
@@ -47,7 +41,7 @@ impl Default for Config {
                 "alac".into(),
             ],
             window_size: [800, 600],
-            shortcuts,
+            shortcuts: crate::ui::shortcuts::default_shortcuts(),
             startup_view: "cover".into(),
         }
     }

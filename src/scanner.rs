@@ -30,12 +30,18 @@ pub async fn load_or_scan_library(
         let _ = tx.send(ScannerMessage::Progress("Cache laden...".into()));
         if let Ok(file) = File::open(CACHE_FILE) {
             let reader = BufReader::new(file);
-            if let Ok(library) = bincode::deserialize_from(reader) {
-                let _ = tx.send(ScannerMessage::LibraryLoaded(library));
-                let _ = tx.send(ScannerMessage::ScanComplete);
-                return;
+            if let Ok(library) = bincode::deserialize_from::<_, Library>(reader) {
+                // Alleen cache gebruiken als er ook echt artiesten in zitten.
+                // Anders was de cache van een lege/dode map en moeten we opnieuw scannen.
+                if !library.artists.is_empty() {
+                    let _ = tx.send(ScannerMessage::LibraryLoaded(library));
+                    let _ = tx.send(ScannerMessage::ScanComplete);
+                    return;
+                }
             }
         }
+        // Cache was leeg of corrupt — verwijder hem en scan opnieuw
+        let _ = std::fs::remove_file(CACHE_FILE);
     }
 
     let _ = tx.send(ScannerMessage::Progress(
