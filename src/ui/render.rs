@@ -3,7 +3,7 @@ use crate::player::{PlayerCommand, PlayerEvent};
 use crate::scanner::ScannerMessage;
 use crate::search::filter_library;
 use crate::ui::shortcuts;
-use crate::ui::types::{BrowseMode, NavLevel, ViewMode};
+use crate::ui::types::{Layer, NavLevel, ViewMode};
 use eframe::egui::{self, Color32, Image, Key, RichText, ScrollArea};
 use std::path::Path;
 
@@ -114,6 +114,10 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "ClearMarks")
                     ));
                     ui.label(format!(
+                        "• {} : Browse selectie",
+                        shortcuts::get_key_display(s, "SelectionBrowse")
+                    ));
+                    ui.label(format!(
                         "• {} : Forceer een rescan van de bibliotheek",
                         shortcuts::get_key_display(s, "Rescan")
                     ));
@@ -137,6 +141,7 @@ impl eframe::App for MusicPlayerApp {
             match msg {
                 ScannerMessage::LibraryLoaded(lib) => {
                     self.library = Some(lib);
+                    self.recompute();
                     if !self.search_query.is_empty() {
                         self.filtered_library = Some(filter_library(
                             self.library.as_ref().unwrap(),
@@ -210,17 +215,14 @@ impl eframe::App for MusicPlayerApp {
                         self.selected_disk = 0;
                         self.selected_track = 0;
 
-                        let base_lib = self
-                            .genre_filtered_library
-                            .as_ref()
-                            .or(self.library.as_ref());
-
+                        // Search binnen de actieve gefilterde set
+                        let base_lib = self.active_library().cloned();
                         if let Some(base_lib) = base_lib {
                             if self.search_query.trim().is_empty() {
                                 self.filtered_library = None;
                             } else {
                                 self.filtered_library =
-                                    Some(filter_library(base_lib, &self.search_query));
+                                    Some(filter_library(&base_lib, &self.search_query));
                             }
                         }
                     }
@@ -232,7 +234,6 @@ impl eframe::App for MusicPlayerApp {
                             self.search_query.clear();
                             ctx.memory_mut(|m| m.surrender_focus(self.search_input_id));
                         }
-
                         if ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
                             self.is_search_active = false;
                             ctx.memory_mut(|m| m.surrender_focus(self.search_input_id));
@@ -242,13 +243,7 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- KIES ACTIEVE LIBRARY ---
-        // Prioriteit: gefilterd (search) > genre-filtered > selection-browse > volledige library
-        let current_lib = self
-            .filtered_library
-            .as_ref()
-            .or(self.genre_filtered_library.as_ref())
-            .or(self.selection_library.as_ref())
-            .or(self.library.as_ref());
+        let current_lib = self.active_library().cloned();
         let Some(current_lib) = current_lib else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -259,8 +254,11 @@ impl eframe::App for MusicPlayerApp {
             return;
         };
 
-        // --- LEEGE BIBLIOTHEEK (geen muziek gevonden) ---
-        if current_lib.artists.is_empty() && self.filtered_library.is_none() {
+        // --- LEEGE BIBLIOTHEEK ---
+        if current_lib.artists.is_empty()
+            && self.filtered_library.is_none()
+            && !self.is_picker_active()
+        {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
@@ -295,6 +293,7 @@ impl eframe::App for MusicPlayerApp {
 
         // --- LEEGE ZOEKRESULTATEN ---
         if current_lib.artists.is_empty() && self.filtered_library.is_some() {
+            let search_q = self.search_query.clone();
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
@@ -305,19 +304,17 @@ impl eframe::App for MusicPlayerApp {
                     );
                     ui.add_space(10.0);
                     ui.label(
-                        egui::RichText::new(format!("voor: \"{}\"", self.search_query))
+                        egui::RichText::new(format!("voor: \"{}\"", search_q))
                             .size(16.0)
                             .color(egui::Color32::GRAY),
                     );
                     ui.add_space(30.0);
-
                     let image_bytes = include_bytes!("../../assets/no_results.png");
                     ui.add(
                         egui::Image::from_bytes("bytes://no_results.png", image_bytes.as_ref())
                             .max_width(600.0)
                             .max_height(600.0),
                     );
-
                     ui.add_space(30.0);
                     ui.label(
                         egui::RichText::new("Druk op Esc om terug te gaan")
@@ -330,12 +327,12 @@ impl eframe::App for MusicPlayerApp {
             return;
         }
 
-        // --- GENRE PICKER ---
-        if self.browse_mode == BrowseMode::Genre && self.genre_filtered_library.is_none() {
-            let genre_sel_count = self.selected_tracks.len();
+        // --- PICKER VIEWS ---
 
+        // Genre picker
+        if self.filter_stack.last() == Some(&Layer::GenrePicker) {
+            let genre_sel_count = self.selected_tracks.len();
             egui::CentralPanel::default().show(ctx, |ui| {
-                // Consequente balk zoals in library view
                 ui.horizontal(|ui| {
                     if genre_sel_count > 0 {
                         ui.label(
@@ -348,10 +345,8 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(RichText::new("Genres").color(Color32::GRAY));
                 });
                 ui.separator();
-
                 ScrollArea::vertical().show(ui, |ui| {
                     let mut genre_to_select: Option<String> = None;
-
                     for (i, (genre, count)) in self.genres.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.with_layout(
@@ -362,20 +357,17 @@ impl eframe::App for MusicPlayerApp {
                                         selected,
                                         RichText::new(format!("{} ({})", genre, count)).size(16.0),
                                     );
-
                                     if resp.clicked() {
                                         genre_to_select = Some(genre.clone());
                                     }
-
                                     if selected
-                                        && ctx.input(|i| {
+                                        && (ctx.input(|i| {
                                             i.key_pressed(Key::Enter)
                                                 || i.key_pressed(Key::ArrowRight)
-                                        })
+                                        }))
                                     {
                                         genre_to_select = Some(genre.clone());
                                     }
-
                                     if selected && self.scroll_to_selection {
                                         resp.scroll_to_me(None);
                                     }
@@ -383,38 +375,27 @@ impl eframe::App for MusicPlayerApp {
                             );
                         });
                     }
-
                     if let Some(genre) = genre_to_select {
                         self.select_genre(&genre);
                     }
                 });
             });
-
             self.scroll_to_selection = false;
             ctx.request_repaint();
             return;
         }
 
-        // --- RECENT ALBUMS ---
-        if self.browse_mode == BrowseMode::Recent {
+        // Recent albums
+        if self.filter_stack.last() == Some(&Layer::RecentAlbums) {
             let recent = self.recent_albums.clone();
-
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                    ui.heading("Nieuwste Albums");
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new("Druk op Esc of B om terug te gaan")
-                            .size(12.0)
-                            .color(Color32::GRAY),
-                    );
-                    ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Nieuwste Albums").color(Color32::GRAY));
                 });
-
+                ui.separator();
                 ScrollArea::vertical().show(ui, |ui| {
                     for (i, (artist_name, album)) in recent.iter().enumerate() {
                         let selected = i == self.selected_recent;
-
                         ui.horizontal(|ui| {
                             if let Some(path) = &album.cover_path {
                                 ui.add(
@@ -424,13 +405,11 @@ impl eframe::App for MusicPlayerApp {
                             } else {
                                 ui.add_space(40.0);
                             }
-
                             let resp = ui.selectable_label(
                                 selected,
                                 RichText::new(format!("{} - {}", artist_name, album.title))
                                     .size(16.0),
                             );
-
                             if resp.clicked() {
                                 self.selected_recent = i;
                                 let mut queue = Vec::new();
@@ -441,7 +420,6 @@ impl eframe::App for MusicPlayerApp {
                                 }
                                 let _ = self.player_tx.send(PlayerCommand::ReplaceQueue(queue));
                             }
-
                             if selected && self.scroll_to_selection {
                                 resp.scroll_to_me(None);
                             }
@@ -454,14 +432,11 @@ impl eframe::App for MusicPlayerApp {
             return;
         }
 
-        // --- HOOFD PANEL ---
-        // Kopieer velden om borrow-conflict met current_lib te voorkomen
+        // --- HOOFD PANEL (library navigatie) ---
         let has_filter = self.filtered_library.is_some();
-        let browse_mode = self.browse_mode.clone();
-        let selected_genre_name = self.selected_genre_name.clone();
         let search_query = self.search_query.clone();
-        let is_selection_mode = self.browse_mode == BrowseMode::Selection;
         let sel_count = self.selected_tracks.len();
+        let breadcrumb = self.breadcrumb();
 
         let mut sa = self.selected_artist;
         let mut sal = self.selected_album;
@@ -473,16 +448,14 @@ impl eframe::App for MusicPlayerApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                // Selectieteller
                 if sel_count > 0 {
                     ui.label(
-                        egui::RichText::new(format!("📋 {} geselecteerd", sel_count))
+                        RichText::new(format!("📋 {} geselecteerd", sel_count))
                             .color(egui::Color32::LIGHT_BLUE)
                             .strong(),
                     );
                     ui.separator();
                 }
-
                 if has_filter {
                     let hit_count: usize = current_lib
                         .artists
@@ -494,7 +467,6 @@ impl eframe::App for MusicPlayerApp {
                                 .sum::<usize>()
                         })
                         .sum::<usize>();
-
                     ui.label(
                         egui::RichText::new(format!("🔍 {} resultaten voor: ", hit_count))
                             .color(egui::Color32::YELLOW),
@@ -506,15 +478,9 @@ impl eframe::App for MusicPlayerApp {
                             .color(egui::Color32::GRAY),
                     );
                 } else {
-                    ui.label(egui::RichText::new("Bibliotheek").color(egui::Color32::GRAY));
-                    if is_selection_mode {
-                        ui.label(" > Selectie".to_string());
-                    } else if browse_mode == BrowseMode::Genre && !selected_genre_name.is_empty() {
-                        ui.label(format!(" > Genre: {}", selected_genre_name));
-                    }
+                    ui.label(egui::RichText::new(&breadcrumb).color(egui::Color32::GRAY));
                 }
-
-                // Breadcrumb
+                // Breadcrumb artist/album
                 if let Some(artist) = current_lib.artists.get(sa) {
                     ui.label(format!(" > {}", artist.name));
                     if matches!(cl, NavLevel::Album | NavLevel::Disk | NavLevel::Track) {
@@ -532,13 +498,12 @@ impl eframe::App for MusicPlayerApp {
 
             ui.separator();
 
-            // Render: album cover view of tracklist view
             match vm {
                 ViewMode::AlbumCover if cl != NavLevel::Track => {
                     Self::render_cover_view_inline(
                         ui,
                         ctx,
-                        current_lib,
+                        &current_lib,
                         &mut sa,
                         &mut sal,
                         &mut cl,
@@ -549,7 +514,7 @@ impl eframe::App for MusicPlayerApp {
                     Self::render_tracklist_view_inline(
                         ui,
                         ctx,
-                        current_lib,
+                        &current_lib,
                         &mut sa,
                         &mut sal,
                         &mut sd,
@@ -562,7 +527,6 @@ impl eframe::App for MusicPlayerApp {
             }
         });
 
-        // Schrijf de lokale kopieën terug naar self
         self.selected_artist = sa;
         self.selected_album = sal;
         self.selected_disk = sd;
@@ -597,7 +561,6 @@ impl MusicPlayerApp {
             }
             let albums = &current_lib.artists[*selected_artist].albums;
             let num_albums = albums.len();
-
             if num_albums == 0 {
                 ui.centered_and_justified(|ui| {
                     ui.label("Geen albums");
@@ -641,7 +604,6 @@ impl MusicPlayerApp {
                         ui.columns(columns, |cols| {
                             for (i, album) in albums.iter().enumerate() {
                                 let col = &mut cols[i % columns];
-
                                 col.with_layout(
                                     egui::Layout::top_down(egui::Align::Center),
                                     |col_ui| {
@@ -660,7 +622,6 @@ impl MusicPlayerApp {
                                         } else {
                                             col_ui.add_space(thumb_size.y);
                                         }
-
                                         col_ui.add_space(6.0);
                                         col_ui.label(
                                             RichText::new(&album.title)
@@ -716,7 +677,6 @@ impl MusicPlayerApp {
                 |ui| match *current_level {
                     NavLevel::Artist => {
                         for (i, artist) in current_lib.artists.iter().enumerate() {
-                            // Bepaal selectiestatus voor deze artist
                             let all_tracks: Vec<String> = artist
                                 .albums
                                 .iter()
@@ -834,23 +794,19 @@ impl MusicPlayerApp {
                         {
                             let is_selected = i == *selected_track;
                             let is_marked = selected_tracks.contains(&track.path);
-
                             let display_title = if is_marked {
                                 format!("☑ {}", track.title)
                             } else {
                                 track.title.clone()
                             };
-
                             let resp = ui.selectable_label(
                                 is_selected,
                                 RichText::new(&display_title).size(16.0),
                             );
-
                             if resp.clicked() {
                                 *selected_track = i;
                                 *scroll_to_selection = true;
                             }
-
                             if is_selected && *scroll_to_selection {
                                 resp.scroll_to_me(None);
                             }

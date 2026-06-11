@@ -1,6 +1,6 @@
 use crate::player::PlayerCommand;
 use crate::ui::shortcuts;
-use crate::ui::types::{BrowseMode, NavLevel, ViewMode};
+use crate::ui::types::{Layer, NavLevel, ViewMode};
 use eframe::egui;
 use std::path::Path;
 
@@ -12,12 +12,19 @@ impl MusicPlayerApp {
             return;
         }
 
-        // Clone de shortcuts om borrow-conflict met mutable self te voorkomen
         let cfg = self.config.shortcuts.clone();
 
         // --- ESCAPE ---
         if shortcuts::check_action(&cfg, ctx, "Escape") {
             self.selected_tracks.clear();
+
+            // 1. Eerst picker wegpoppen (bv. GenrePicker, RecentAlbums)
+            if self.is_picker_active() {
+                self.pop_layer();
+                return;
+            }
+
+            // 2. Dan search wissen
             if self.is_search_active || self.filtered_library.is_some() {
                 self.is_search_active = false;
                 self.filtered_library = None;
@@ -29,8 +36,10 @@ impl MusicPlayerApp {
                 self.selected_track = 0;
                 return;
             }
-            if self.browse_mode != BrowseMode::Library {
-                self.exit_browse_mode();
+
+            // 3. Dan filterlagen poppen
+            if !self.filter_stack.is_empty() {
+                self.pop_layer();
                 return;
             }
         }
@@ -40,8 +49,8 @@ impl MusicPlayerApp {
             let _ = std::fs::remove_file("library_cache.bin");
             self.library = None;
             self.filtered_library = None;
-            self.genre_filtered_library = None;
-            self.browse_mode = BrowseMode::Library;
+            self.cached_filtered = None;
+            self.filter_stack.clear();
             let tx = self.scanner_tx.clone();
             let config = self.config.clone();
             std::thread::spawn(move || {
@@ -72,12 +81,13 @@ impl MusicPlayerApp {
             self.show_help = !self.show_help;
         }
 
-        // --- G: GENRE BROWSING ---
+        // --- G: GENRE PICKER ---
         if shortcuts::check_action(&cfg, ctx, "GenreBrowse") {
-            if self.browse_mode == BrowseMode::Library {
-                self.enter_genre_mode();
+            if self.is_picker_active() && self.filter_stack.last() == Some(&Layer::GenrePicker) {
+                // Al in genre picker, ga terug
+                self.pop_layer();
             } else {
-                self.exit_browse_mode();
+                self.enter_genre_picker();
             }
             return;
         }
@@ -90,26 +100,26 @@ impl MusicPlayerApp {
 
         // --- B: RECENT ALBUMS ---
         if shortcuts::check_action(&cfg, ctx, "RecentAlbums") {
-            if self.browse_mode == BrowseMode::Library {
-                self.enter_recent_mode();
+            if self.filter_stack.last() == Some(&Layer::RecentAlbums) {
+                self.pop_layer();
             } else {
-                self.exit_browse_mode();
+                self.enter_recent_mode();
             }
             return;
         }
 
         // --- Z: SELECTION BROWSE ---
         if shortcuts::check_action(&cfg, ctx, "SelectionBrowse") {
-            if self.browse_mode == BrowseMode::Library && !self.selected_tracks.is_empty() {
+            if self.filter_stack.last() == Some(&Layer::Selection) {
+                self.pop_layer();
+            } else if !self.selected_tracks.is_empty() {
                 self.enter_selection_mode();
-            } else if self.browse_mode == BrowseMode::Selection {
-                self.exit_browse_mode();
             }
             return;
         }
 
         // Recent albums navigation
-        if self.browse_mode == BrowseMode::Recent {
+        if self.filter_stack.last() == Some(&Layer::RecentAlbums) {
             if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
                 if self.selected_recent + 1 < self.recent_albums.len() {
                     self.selected_recent += 1;
@@ -137,7 +147,7 @@ impl MusicPlayerApp {
         }
 
         // Genre picker navigation
-        if self.browse_mode == BrowseMode::Genre && self.genre_filtered_library.is_none() {
+        if self.filter_stack.last() == Some(&Layer::GenrePicker) {
             if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
                 if self.selected_genre + 1 < self.genres.len() {
                     self.selected_genre += 1;
@@ -150,11 +160,12 @@ impl MusicPlayerApp {
                     self.scroll_to_selection = true;
                 }
             }
-            // --- M op genre: alle tracks van dit genre selecteren ---
+            // M op genre: alle tracks van dit genre markeren
             if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                if let Some(lib) = &self.library {
-                    if let Some((genre_name, _)) = self.genres.get(self.selected_genre) {
-                        let genre_lib = crate::search::filter_by_genre(lib, genre_name);
+                if let Some((genre_name, _)) = self.genres.get(self.selected_genre) {
+                    let base_lib = self.library_before_top_picker();
+                    if let Some(lib) = base_lib {
+                        let genre_lib = crate::search::filter_by_genre(&lib, genre_name);
                         let paths: Vec<String> = genre_lib
                             .artists
                             .iter()
@@ -167,8 +178,9 @@ impl MusicPlayerApp {
                             })
                             .collect();
                         if !paths.is_empty() {
-                            let all_selected =
-                                paths.iter().all(|p| self.selected_tracks.contains(p));
+                            let all_selected = paths
+                                .iter()
+                                .all(|p| self.selected_tracks.contains(p.as_str()));
                             if all_selected {
                                 for p in &paths {
                                     self.selected_tracks.remove(p);
@@ -185,14 +197,8 @@ impl MusicPlayerApp {
             return;
         }
 
-        // Kies de actieve library
-        let lib = self
-            .filtered_library
-            .as_ref()
-            .or(self.genre_filtered_library.as_ref())
-            .or(self.selection_library.as_ref())
-            .or(self.library.as_ref());
-        let Some(lib) = lib else {
+        // Kies de actieve library voor navigatie
+        let Some(lib) = self.active_library().cloned() else {
             return;
         };
 
@@ -227,10 +233,10 @@ impl MusicPlayerApp {
             let _ = self.player_tx.send(PlayerCommand::PlayPause);
         }
         if shortcuts::check_action(&cfg, ctx, "Select") {
-            self.play_selected_item(lib, true);
+            self.play_selected_item(&lib, true);
         }
         if shortcuts::check_action(&cfg, ctx, "AppendQueue") {
-            self.play_selected_item(lib, false);
+            self.play_selected_item(&lib, false);
         }
         if shortcuts::check_action(&cfg, ctx, "Skip") {
             let _ = self.player_tx.send(PlayerCommand::Skip);
@@ -238,14 +244,14 @@ impl MusicPlayerApp {
 
         // --- O: OPEN FOLDER ---
         if shortcuts::check_action(&cfg, ctx, "OpenFolder") {
-            if let Some(track_path) = self.get_current_track_path(lib) {
+            if let Some(track_path) = self.get_current_track_path(&lib) {
                 if let Some(parent) = Path::new(&track_path).parent() {
                     let _ = std::process::Command::new("explorer").arg(parent).spawn();
                 }
             }
         }
 
-        // --- I: TRACK DETAILS (ook bij selectie op elk niveau) ---
+        // --- I: TRACK DETAILS ---
         if shortcuts::check_action(&cfg, ctx, "TrackDetails") {
             let has_selection = !self.selected_tracks.is_empty();
             if has_selection || self.current_level == NavLevel::Track {
@@ -265,66 +271,56 @@ impl MusicPlayerApp {
                 use lofty::probe::Probe;
                 use lofty::tag::Accessor;
 
-                let active_lib = self
-                    .genre_filtered_library
-                    .as_ref()
-                    .or(self.filtered_library.as_ref())
-                    .or(self.library.as_ref());
-
-                if let Some(lib) = active_lib {
-                    if self.selected_tracks.is_empty() {
-                        if let Some(track_path) = self.get_current_track_path(lib) {
-                            self.tracks_to_edit = vec![track_path];
-                        }
-                    } else {
-                        self.tracks_to_edit = self.selected_tracks.iter().cloned().collect();
-                        self.tracks_to_edit.sort();
+                if self.selected_tracks.is_empty() {
+                    if let Some(track_path) = self.get_current_track_path(&lib) {
+                        self.tracks_to_edit = vec![track_path];
                     }
+                } else {
+                    self.tracks_to_edit = self.selected_tracks.iter().cloned().collect();
+                    self.tracks_to_edit.sort();
+                }
 
-                    if let Some(first_path) = self.tracks_to_edit.first() {
-                        self.editing_track_path = Some(first_path.clone());
+                if let Some(first_path) = self.tracks_to_edit.first() {
+                    self.editing_track_path = Some(first_path.clone());
 
-                        match Probe::open(first_path).and_then(|p| p.read()) {
-                            Ok(tagged_file) => {
-                                let mut raw_text = String::new();
-                                for tag in tagged_file.tags() {
+                    match Probe::open(first_path).and_then(|p| p.read()) {
+                        Ok(tagged_file) => {
+                            let mut raw_text = String::new();
+                            for tag in tagged_file.tags() {
+                                raw_text
+                                    .push_str(&format!("--- Tag Type: {:?} ---\n", tag.tag_type()));
+                                for item in tag.items() {
                                     raw_text.push_str(&format!(
-                                        "--- Tag Type: {:?} ---\n",
-                                        tag.tag_type()
+                                        "{:?}: {:?}\n",
+                                        item.key(),
+                                        item.value()
                                     ));
-                                    for item in tag.items() {
-                                        raw_text.push_str(&format!(
-                                            "{:?}: {:?}\n",
-                                            item.key(),
-                                            item.value()
-                                        ));
-                                    }
                                 }
-                                self.raw_tags_display = if raw_text.is_empty() {
-                                    "Geen tags gevonden.".to_string()
-                                } else {
-                                    raw_text
-                                };
+                            }
+                            self.raw_tags_display = if raw_text.is_empty() {
+                                "Geen tags gevonden.".to_string()
+                            } else {
+                                raw_text
+                            };
 
-                                if let Some(t) = tagged_file
-                                    .primary_tag()
-                                    .or_else(|| tagged_file.first_tag())
-                                {
-                                    self.edit_title =
-                                        t.title().map(|s| s.to_string()).unwrap_or_default();
-                                    self.edit_artist =
-                                        t.artist().map(|s| s.to_string()).unwrap_or_default();
-                                    self.edit_album =
-                                        t.album().map(|s| s.to_string()).unwrap_or_default();
-                                    self.edit_genre =
-                                        t.genre().map(|s| s.to_string()).unwrap_or_default();
-                                }
+                            if let Some(t) = tagged_file
+                                .primary_tag()
+                                .or_else(|| tagged_file.first_tag())
+                            {
+                                self.edit_title =
+                                    t.title().map(|s| s.to_string()).unwrap_or_default();
+                                self.edit_artist =
+                                    t.artist().map(|s| s.to_string()).unwrap_or_default();
+                                self.edit_album =
+                                    t.album().map(|s| s.to_string()).unwrap_or_default();
+                                self.edit_genre =
+                                    t.genre().map(|s| s.to_string()).unwrap_or_default();
                             }
-                            Err(e) => {
-                                self.read_error = Some(format!("{:?}", e));
-                                self.raw_tags_display =
-                                    "Fout bij het parsen van de audio-container.".to_string();
-                            }
+                        }
+                        Err(e) => {
+                            self.read_error = Some(format!("{:?}", e));
+                            self.raw_tags_display =
+                                "Fout bij het parsen van de audio-container.".to_string();
                         }
                     }
                 }
@@ -334,19 +330,16 @@ impl MusicPlayerApp {
 
         // --- M: MARK / UNMARK OP HUIDIG NIVEAU ---
         if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-            // Verzamel de track-paden in een aparte scope om borrow-conflict te voorkomen
             let tracks = {
-                let lib = self
-                    .filtered_library
-                    .as_ref()
-                    .or(self.genre_filtered_library.as_ref())
-                    .or(self.selection_library.as_ref())
-                    .or(self.library.as_ref());
-                lib.map(|l| self.get_tracks_at_level(l, &self.current_level))
+                let act_lib = self.active_library().cloned();
+                act_lib
+                    .map(|l| self.get_tracks_at_level(&l, &self.current_level))
                     .unwrap_or_default()
             };
             if !tracks.is_empty() {
-                let all_selected = tracks.iter().all(|p| self.selected_tracks.contains(p));
+                let all_selected = tracks
+                    .iter()
+                    .all(|p| self.selected_tracks.contains(p.as_str()));
                 if all_selected {
                     for p in &tracks {
                         self.selected_tracks.remove(p);
@@ -496,7 +489,18 @@ impl MusicPlayerApp {
                     }
                     self.scroll_to_selection = true;
                 }
-                _ => {}
+                // Op Artist-niveau: ga terug naar de picker van het bovenste filter
+                NavLevel::Artist => {
+                    // Zoek de bovenste niet-picker layer en push de bijbehorende picker
+                    if let Some(top_filter) =
+                        self.filter_stack.iter().rev().find(|l| !l.is_picker())
+                    {
+                        match top_filter {
+                            Layer::Genre(_) => self.enter_genre_picker(),
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
     }

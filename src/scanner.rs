@@ -126,6 +126,9 @@ pub async fn load_or_scan_library(
                         }
                     }
                     // Lees ALLE Genre tags (niet alleen de eerste!)
+                    let mut year: Option<u32> = None;
+                    let mut composer: Option<String> = None;
+
                     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
                         let mut all_genres = Vec::new();
 
@@ -150,7 +153,40 @@ pub async fn load_or_scan_library(
                                         }
                                     }
 
-                                    // 3. Alle andere tags negeren
+                                    // 3. Year tag
+                                    lofty::tag::ItemKey::Year => {
+                                        if year.is_none() {
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                year = text.parse::<u32>().ok();
+                                            }
+                                        }
+                                    }
+
+                                    // 4. OriginalYear als fallback (niet in alle lofty versies beschikbaar)
+                                    lofty::tag::ItemKey::Unknown(key)
+                                        if key.to_lowercase() == "originalyear"
+                                            || key.to_lowercase() == "toryear" =>
+                                    {
+                                        if year.is_none() {
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                year = text.parse::<u32>().ok();
+                                            }
+                                        }
+                                    }
+
+                                    // 5. Composer
+                                    lofty::tag::ItemKey::Composer => {
+                                        if composer.is_none() {
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                composer = Some(text.to_string());
+                                            }
+                                        }
+                                    }
+
+                                    // 6. Alle andere tags negeren
                                     _ => {}
                                 }
                             }
@@ -171,6 +207,8 @@ pub async fn load_or_scan_library(
                         track_number: 0,
                         duration_secs: 0,
                         genre: Some(genre),
+                        year,
+                        composer,
                     };
 
                     // NIEUW: Lock de mutex kort om de track toe te voegen
