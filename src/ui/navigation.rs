@@ -1,6 +1,6 @@
 use crate::player::PlayerCommand;
 use crate::ui::shortcuts;
-use crate::ui::types::{Layer, NavLevel, ViewMode};
+use crate::ui::types::{FilterNode, NavLevel, ViewMode};
 use eframe::egui;
 use std::path::Path;
 
@@ -18,9 +18,17 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "Escape") {
             self.selected_tracks.clear();
 
-            // 1. Eerst picker wegpoppen (bv. GenrePicker, RecentAlbums)
+            // 1. Eerst picker wissen (Gooi de openstaande picker echt uit het pad)
             if self.is_picker_active() {
-                self.pop_layer();
+                self.filter_path.remove(self.filter_step); // Verwijder de "None" node
+
+                // Herbereken zonder deze picker
+                self.recompute();
+                self.populate_current_picker();
+
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.scroll_to_selection = true;
                 return;
             }
 
@@ -37,9 +45,9 @@ impl MusicPlayerApp {
                 return;
             }
 
-            // 3. Dan filterlagen poppen
-            if !self.filter_stack.is_empty() {
-                self.pop_layer();
+            // 3. Dan filterpath wissen
+            if !self.filter_path.is_empty() {
+                self.reset_filters();
                 return;
             }
         }
@@ -50,7 +58,8 @@ impl MusicPlayerApp {
             self.library = None;
             self.filtered_library = None;
             self.cached_filtered = None;
-            self.filter_stack.clear();
+            self.filter_path.clear();
+            self.filter_step = 0;
             let tx = self.scanner_tx.clone();
             let config = self.config.clone();
             std::thread::spawn(move || {
@@ -83,73 +92,19 @@ impl MusicPlayerApp {
 
         // --- G: GENRE PICKER ---
         if shortcuts::check_action(&cfg, ctx, "GenreBrowse") {
-            let top = self.filter_stack.last().cloned();
-
-            if top == Some(Layer::GenrePicker) {
-                self.pop_layer(); // toggle uit
-            } else if matches!(top, Some(Layer::Genre(_))) {
-                self.pop_layer(); // toggle uit
-            } else if top.as_ref().map_or(false, |l| l.is_picker()) {
-                // Top is andere picker (Year/Composer) -> vervang met GenrePicker
-                self.pop_layer();
-                self.enter_genre_picker();
-            } else {
-                // Top is een filter (of Root/lege stack)
-                let has_genre_filter = self
-                    .filter_stack
-                    .iter()
-                    .any(|l| matches!(l, Layer::Genre(_)));
-                if !has_genre_filter {
-                    self.enter_genre_picker();
-                }
-                // else: Genre filter zit dieper in stack -> niets doen
-            }
+            self.toggle_genre_picker();
             return;
         }
 
         // --- Y: YEAR PICKER ---
         if shortcuts::check_action(&cfg, ctx, "YearBrowse") {
-            let top = self.filter_stack.last().cloned();
-
-            if top == Some(Layer::YearPicker) {
-                self.pop_layer();
-            } else if matches!(top, Some(Layer::Year(_))) {
-                self.pop_layer();
-            } else if top.as_ref().map_or(false, |l| l.is_picker()) {
-                self.pop_layer();
-                self.enter_year_picker();
-            } else {
-                let has_year_filter = self
-                    .filter_stack
-                    .iter()
-                    .any(|l| matches!(l, Layer::Year(_)));
-                if !has_year_filter {
-                    self.enter_year_picker();
-                }
-            }
+            self.toggle_year_picker();
             return;
         }
 
         // --- C: COMPOSER PICKER ---
         if shortcuts::check_action(&cfg, ctx, "ComposerBrowse") {
-            let top = self.filter_stack.last().cloned();
-
-            if top == Some(Layer::ComposerPicker) {
-                self.pop_layer();
-            } else if matches!(top, Some(Layer::Composer(_))) {
-                self.pop_layer();
-            } else if top.as_ref().map_or(false, |l| l.is_picker()) {
-                self.pop_layer();
-                self.enter_composer_picker();
-            } else {
-                let has_composer_filter = self
-                    .filter_stack
-                    .iter()
-                    .any(|l| matches!(l, Layer::Composer(_)));
-                if !has_composer_filter {
-                    self.enter_composer_picker();
-                }
-            }
+            self.toggle_composer_picker();
             return;
         }
 
@@ -161,8 +116,12 @@ impl MusicPlayerApp {
 
         // --- B: RECENT ALBUMS ---
         if shortcuts::check_action(&cfg, ctx, "RecentAlbums") {
-            if self.filter_stack.last() == Some(&Layer::RecentAlbums) {
-                self.pop_layer();
+            // Toggle: bij tweede B terug naar bibliotheek
+            if !self.recent_albums.is_empty() {
+                self.recent_albums.clear();
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.scroll_to_selection = true;
             } else {
                 self.enter_recent_mode();
             }
@@ -171,16 +130,28 @@ impl MusicPlayerApp {
 
         // --- Z: SELECTION BROWSE ---
         if shortcuts::check_action(&cfg, ctx, "SelectionBrowse") {
-            if self.filter_stack.last() == Some(&Layer::Selection) {
-                self.pop_layer();
-            } else if !self.selected_tracks.is_empty() {
-                self.enter_selection_mode();
+            if self.selected_tracks.is_empty() {
+                return;
+            }
+            // Gebruik selection-filter: maak een gefilterde library van alleen geselecteerde tracks
+            if let Some(lib) = &self.cached_filtered {
+                let selection_lib =
+                    MusicPlayerApp::build_selection_library(lib, &self.selected_tracks);
+                if !selection_lib.artists.is_empty() {
+                    self.filtered_library = Some(selection_lib);
+                    self.current_level = NavLevel::Artist;
+                    self.selected_artist = 0;
+                    self.selected_album = 0;
+                    self.selected_disk = 0;
+                    self.selected_track = 0;
+                    self.scroll_to_selection = true;
+                }
             }
             return;
         }
 
-        // Recent albums navigation
-        if self.filter_stack.last() == Some(&Layer::RecentAlbums) {
+        // --- Recent albums navigation ---
+        if !self.recent_albums.is_empty() {
             if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
                 if self.selected_recent + 1 < self.recent_albums.len() {
                     self.selected_recent += 1;
@@ -204,184 +175,203 @@ impl MusicPlayerApp {
                     let _ = self.player_tx.send(PlayerCommand::ReplaceQueue(queue));
                 }
             }
+            // Escape verlaat recent albums
+            if shortcuts::check_action(&cfg, ctx, "Escape") {
+                self.recent_albums.clear();
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.scroll_to_selection = true;
+            }
+            return;
+        }
+        // --- NAVIGATE LEFT (Binnen een picker) ---
+        // Voorkom dat de 'return' in PICKER NAVIGATION de linkerpijl opslokt!
+        // B: Navigeer links in een picker: ga een stap terug
+        if self.is_picker_active() && shortcuts::check_action(&cfg, ctx, "NavigateLeft") {
+            self.step_back_filter();
             return;
         }
 
-        // Genre picker navigation
-        if self.filter_stack.last() == Some(&Layer::GenrePicker) {
-            if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                if self.selected_genre + 1 < self.genres.len() {
-                    self.selected_genre += 1;
-                    self.scroll_to_selection = true;
-                }
-            }
-            if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                if self.selected_genre > 0 {
-                    self.selected_genre -= 1;
-                    self.scroll_to_selection = true;
-                }
-            }
-            if shortcuts::check_action(&cfg, ctx, "Select")
-                || shortcuts::check_action(&cfg, ctx, "NavigateRight")
-            {
-                if let Some(genre_name) =
-                    self.genres.get(self.selected_genre).map(|(n, _)| n.clone())
-                {
-                    self.select_genre(&genre_name);
-                }
-            }
-            // M op genre: alle tracks van dit genre markeren
-            if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                if let Some((genre_name, _)) = self.genres.get(self.selected_genre).cloned() {
-                    if let Some(lib) = self.library_before_top_picker() {
-                        let genre_lib = crate::search::filter_by_genre(&lib, &genre_name);
-                        let paths: Vec<String> = genre_lib
-                            .artists
-                            .iter()
-                            .flat_map(|a| {
-                                a.albums.iter().flat_map(|al| {
-                                    al.disks
+        // --- PICKER NAVIGATION ---
+        // Alleen actief als we op een picker staan (None-waarde node)
+        if let Some(node) = self.filter_path.get(self.filter_step) {
+            match node {
+                FilterNode::Genre(_) if self.is_picker_active() => {
+                    let len = self.genres.len();
+                    if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
+                        if self.selected_genre + 1 < len {
+                            self.selected_genre += 1;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
+                        if self.selected_genre > 0 {
+                            self.selected_genre -= 1;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    if shortcuts::check_action(&cfg, ctx, "Select")
+                        || shortcuts::check_action(&cfg, ctx, "NavigateRight")
+                    {
+                        if let Some(genre_name) =
+                            self.genres.get(self.selected_genre).map(|(n, _)| n.clone())
+                        {
+                            self.select_genre(&genre_name);
+                        }
+                    }
+                    // M op genre: alle tracks van dit genre markeren
+                    if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
+                        if let Some((genre_name, _)) = self.genres.get(self.selected_genre).cloned()
+                        {
+                            if let Some(ref lib) = self.cached_filtered {
+                                let genre_lib = crate::search::filter_by_genre(lib, &genre_name);
+                                let paths: Vec<String> = genre_lib
+                                    .artists
+                                    .iter()
+                                    .flat_map(|a| {
+                                        a.albums.iter().flat_map(|al| {
+                                            al.disks.iter().flat_map(|d| {
+                                                d.tracks.iter().map(|t| t.path.clone())
+                                            })
+                                        })
+                                    })
+                                    .collect();
+                                if !paths.is_empty() {
+                                    let all_selected = paths
                                         .iter()
-                                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
-                                })
-                            })
-                            .collect();
-                        if !paths.is_empty() {
-                            let all_selected = paths
-                                .iter()
-                                .all(|p| self.selected_tracks.contains(p.as_str()));
-                            if all_selected {
-                                for p in &paths {
-                                    self.selected_tracks.remove(p);
-                                }
-                            } else {
-                                for p in &paths {
-                                    self.selected_tracks.insert(p.clone());
+                                        .all(|p| self.selected_tracks.contains(p.as_str()));
+                                    if all_selected {
+                                        for p in &paths {
+                                            self.selected_tracks.remove(p);
+                                        }
+                                    } else {
+                                        for p in &paths {
+                                            self.selected_tracks.insert(p.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                    return;
                 }
-            }
-            return;
-        }
-
-        // Year picker navigation
-        if self.filter_stack.last() == Some(&Layer::YearPicker) {
-            if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                if self.selected_year + 1 < self.years.len() {
-                    self.selected_year += 1;
-                    self.scroll_to_selection = true;
-                }
-            }
-            if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                if self.selected_year > 0 {
-                    self.selected_year -= 1;
-                    self.scroll_to_selection = true;
-                }
-            }
-            if shortcuts::check_action(&cfg, ctx, "Select")
-                || shortcuts::check_action(&cfg, ctx, "NavigateRight")
-            {
-                if let Some((year, _)) = self.years.get(self.selected_year) {
-                    self.select_year(*year);
-                }
-            }
-            // M op jaar: alle tracks van dit jaar markeren
-            if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                if let Some((year, _)) = self.years.get(self.selected_year).cloned() {
-                    if let Some(lib) = self.library_before_top_picker() {
-                        let year_lib = crate::search::filter_by_year(&lib, year);
-                        let paths: Vec<String> = year_lib
-                            .artists
-                            .iter()
-                            .flat_map(|a| {
-                                a.albums.iter().flat_map(|al| {
-                                    al.disks
+                FilterNode::Year(_) if self.is_picker_active() => {
+                    let len = self.years.len();
+                    if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
+                        if self.selected_year + 1 < len {
+                            self.selected_year += 1;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
+                        if self.selected_year > 0 {
+                            self.selected_year -= 1;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    if shortcuts::check_action(&cfg, ctx, "Select")
+                        || shortcuts::check_action(&cfg, ctx, "NavigateRight")
+                    {
+                        if let Some((year_opt, _)) = self.years.get(self.selected_year) {
+                            self.select_year(year_opt.unwrap_or(0));
+                        }
+                    }
+                    // M op jaar: alle tracks van dit jaar markeren
+                    if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
+                        if let Some((year_opt, _)) = self.years.get(self.selected_year).cloned() {
+                            if let Some(ref lib) = self.cached_filtered {
+                                let year_lib =
+                                    crate::search::filter_by_year(lib, year_opt.unwrap_or(0));
+                                let paths: Vec<String> = year_lib
+                                    .artists
+                                    .iter()
+                                    .flat_map(|a| {
+                                        a.albums.iter().flat_map(|al| {
+                                            al.disks.iter().flat_map(|d| {
+                                                d.tracks.iter().map(|t| t.path.clone())
+                                            })
+                                        })
+                                    })
+                                    .collect();
+                                if !paths.is_empty() {
+                                    let all_selected = paths
                                         .iter()
-                                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
-                                })
-                            })
-                            .collect();
-                        if !paths.is_empty() {
-                            let all_selected = paths
-                                .iter()
-                                .all(|p| self.selected_tracks.contains(p.as_str()));
-                            if all_selected {
-                                for p in &paths {
-                                    self.selected_tracks.remove(p);
-                                }
-                            } else {
-                                for p in &paths {
-                                    self.selected_tracks.insert(p.clone());
+                                        .all(|p| self.selected_tracks.contains(p.as_str()));
+                                    if all_selected {
+                                        for p in &paths {
+                                            self.selected_tracks.remove(p);
+                                        }
+                                    } else {
+                                        for p in &paths {
+                                            self.selected_tracks.insert(p.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                    return;
                 }
-            }
-            return;
-        }
-
-        // Composer picker navigation
-        if self.filter_stack.last() == Some(&Layer::ComposerPicker) {
-            if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                if self.selected_composer + 1 < self.composers.len() {
-                    self.selected_composer += 1;
-                    self.scroll_to_selection = true;
-                }
-            }
-            if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                if self.selected_composer > 0 {
-                    self.selected_composer -= 1;
-                    self.scroll_to_selection = true;
-                }
-            }
-            if shortcuts::check_action(&cfg, ctx, "Select")
-                || shortcuts::check_action(&cfg, ctx, "NavigateRight")
-            {
-                if let Some(name) = self
-                    .composers
-                    .get(self.selected_composer)
-                    .map(|(n, _)| n.clone())
-                {
-                    self.select_composer(&name);
-                }
-            }
-            // M op componist: alle tracks van dit componist markeren
-            if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                if let Some((name, _)) = self.composers.get(self.selected_composer).cloned() {
-                    if let Some(lib) = self.library_before_top_picker() {
-                        let comp_lib = crate::search::filter_by_composer(&lib, &name);
-                        let paths: Vec<String> = comp_lib
-                            .artists
-                            .iter()
-                            .flat_map(|a| {
-                                a.albums.iter().flat_map(|al| {
-                                    al.disks
+                FilterNode::Composer(_) if self.is_picker_active() => {
+                    let len = self.composers.len();
+                    if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
+                        if self.selected_composer + 1 < len {
+                            self.selected_composer += 1;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
+                        if self.selected_composer > 0 {
+                            self.selected_composer -= 1;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    if shortcuts::check_action(&cfg, ctx, "Select")
+                        || shortcuts::check_action(&cfg, ctx, "NavigateRight")
+                    {
+                        if let Some((name, _)) = self.composers.get(self.selected_composer).cloned()
+                        {
+                            self.select_composer(&name);
+                        }
+                    }
+                    // M op componist: alle tracks van dit componist markeren
+                    if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
+                        if let Some((name, _)) = self.composers.get(self.selected_composer).cloned()
+                        {
+                            if let Some(ref lib) = self.cached_filtered {
+                                let comp_lib = crate::search::filter_by_composer(lib, &name);
+                                let paths: Vec<String> = comp_lib
+                                    .artists
+                                    .iter()
+                                    .flat_map(|a| {
+                                        a.albums.iter().flat_map(|al| {
+                                            al.disks.iter().flat_map(|d| {
+                                                d.tracks.iter().map(|t| t.path.clone())
+                                            })
+                                        })
+                                    })
+                                    .collect();
+                                if !paths.is_empty() {
+                                    let all_selected = paths
                                         .iter()
-                                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
-                                })
-                            })
-                            .collect();
-                        if !paths.is_empty() {
-                            let all_selected = paths
-                                .iter()
-                                .all(|p| self.selected_tracks.contains(p.as_str()));
-                            if all_selected {
-                                for p in &paths {
-                                    self.selected_tracks.remove(p);
-                                }
-                            } else {
-                                for p in &paths {
-                                    self.selected_tracks.insert(p.clone());
+                                        .all(|p| self.selected_tracks.contains(p.as_str()));
+                                    if all_selected {
+                                        for p in &paths {
+                                            self.selected_tracks.remove(p);
+                                        }
+                                    } else {
+                                        for p in &paths {
+                                            self.selected_tracks.insert(p.clone());
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
+                    return;
                 }
+                _ => {}
             }
-            return;
         }
 
         // Kies de actieve library voor navigatie (disjoint borrow, geen clone!)
@@ -420,7 +410,7 @@ impl MusicPlayerApp {
             };
         }
 
-        // --- PLAYBACK CONTROLS ---
+        // --- PLAYBACK CONTROLES ---
         if shortcuts::check_action(&cfg, ctx, "PlayPause") {
             let _ = self.player_tx.send(PlayerCommand::PlayPause);
         }
@@ -625,42 +615,54 @@ impl MusicPlayerApp {
             }
         }
         if shortcuts::check_action(&cfg, ctx, "NavigateRight") {
-            match self.current_level {
-                NavLevel::Artist => {
-                    if !lib.artists[self.selected_artist].albums.is_empty() {
-                        self.current_level = NavLevel::Album;
-                        self.selected_album = 0;
-                        self.scroll_to_selection = true;
-                    }
+            if self.current_level == NavLevel::Artist {
+                // Als we nog niet door alle pickers heen zijn, ga naar de volgende picker
+                // Geen filters (meer): ga naar Album niveau
+                if !lib.artists[self.selected_artist].albums.is_empty() {
+                    self.current_level = NavLevel::Album;
+                    self.selected_album = 0;
+                    self.scroll_to_selection = true;
                 }
-                NavLevel::Album => {
-                    let disks =
-                        &lib.artists[self.selected_artist].albums[self.selected_album].disks;
-                    if !disks.is_empty() {
-                        if disks.len() == 1 && disks[0].name == "Default" {
-                            self.current_level = NavLevel::Track;
-                            self.selected_disk = 0;
-                            self.selected_track = 0;
-                        } else {
-                            self.current_level = NavLevel::Disk;
-                            self.selected_disk = 0;
+            } else {
+                // Normale hiërarchie navigatie (Album -> Disk -> Track)
+                match self.current_level {
+                    NavLevel::Artist => {
+                        if !lib.artists[self.selected_artist].albums.is_empty() {
+                            self.current_level = NavLevel::Album;
+                            self.selected_album = 0;
+                            self.scroll_to_selection = true;
                         }
-                        self.scroll_to_selection = true;
                     }
-                }
-                NavLevel::Disk => {
-                    if !lib.artists[self.selected_artist].albums[self.selected_album].disks
-                        [self.selected_disk]
-                        .tracks
-                        .is_empty()
-                    {
-                        self.current_level = NavLevel::Track;
-                        self.selected_track = 0;
-                        self.scroll_to_selection = true;
+                    NavLevel::Album => {
+                        let disks =
+                            &lib.artists[self.selected_artist].albums[self.selected_album].disks;
+                        if !disks.is_empty() {
+                            if disks.len() == 1 && disks[0].name == "Default" {
+                                self.current_level = NavLevel::Track;
+                                self.selected_disk = 0;
+                                self.selected_track = 0;
+                            } else {
+                                self.current_level = NavLevel::Disk;
+                                self.selected_disk = 0;
+                            }
+                            self.scroll_to_selection = true;
+                        }
                     }
+                    NavLevel::Disk => {
+                        if !lib.artists[self.selected_artist].albums[self.selected_album].disks
+                            [self.selected_disk]
+                            .tracks
+                            .is_empty()
+                        {
+                            self.current_level = NavLevel::Track;
+                            self.selected_track = 0;
+                            self.scroll_to_selection = true;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+            return;
         }
         if shortcuts::check_action(&cfg, ctx, "NavigateLeft") {
             match self.current_level {
@@ -682,16 +684,12 @@ impl MusicPlayerApp {
                     }
                     self.scroll_to_selection = true;
                 }
-                // Op Artist-niveau: pop alleen filters, nooit pickers
                 NavLevel::Artist => {
-                    if let Some(top) = self.filter_stack.last() {
-                        if !top.is_picker() {
-                            self.filter_stack.pop();
-                            self.recompute();
-                        }
-                    }
+                    // Ga een stap terug in de filter pipeline (en onthoud selectie)
+                    self.step_back_filter();
                 }
             }
+            return;
         }
     }
 }

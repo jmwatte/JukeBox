@@ -12,52 +12,44 @@ pub enum ViewMode {
     AlbumCover,
 }
 
-/// Een laag op de filter-stapel.
-/// - Picker-varianten tonen een keuzelijst (bv. alle genres) boven op de huidige set.
-/// - Filter-varianten perken de set in.
+/// Een filter-node in de filter-pipeline.
+/// - `None` = de node is een Picker (de gebruiker moet nog een waarde kiezen)
+/// - `Some(...)` = de gebruiker heeft een waarde geselecteerd (actief filter)
 #[derive(PartialEq, Clone, Debug)]
-pub enum Layer {
-    /// Geen filters, toon de volledige bibliotheek
-    Root,
-    /// Toon een picker-lijst met alle genres (uit de huidige set)
-    GenrePicker,
-    /// Toon een picker-lijst met alle jaren (uit de huidige set)
-    YearPicker,
-    /// Toon een picker-lijst met alle componisten (uit de huidige set)
-    ComposerPicker,
-    /// Toon de nieuwste albums (uit de huidige set)
-    RecentAlbums,
-    /// Actief filter: alleen tracks met dit genre
-    Genre(String),
-    /// Actief filter: alleen tracks uit dit jaar
-    Year(u32),
-    /// Actief filter: alleen tracks van deze componist
-    Composer(String),
-    /// Actief filter: alleen gemarkeerde tracks
-    Selection,
+pub enum FilterNode {
+    Genre(Option<String>),
+    Year(Option<u32>),
+    Composer(Option<String>),
 }
 
-impl Layer {
+impl FilterNode {
     /// Geeft een leesbare naam voor de breadcrumb
     pub fn display_name(&self) -> String {
         match self {
-            Layer::Root => "Bibliotheek".into(),
-            Layer::GenrePicker => "Genres".into(),
-            Layer::YearPicker => "Jaartallen".into(),
-            Layer::ComposerPicker => "Componisten".into(),
-            Layer::RecentAlbums => "Nieuwste".into(),
-            Layer::Genre(name) => format!("Genre: {}", name),
-            Layer::Year(y) => format!("{}", y),
-            Layer::Composer(name) => name.clone(),
-            Layer::Selection => "Selectie".into(),
+            FilterNode::Genre(Some(name)) => format!("Genre: {}", name),
+            FilterNode::Genre(None) => "Genres".into(),
+            FilterNode::Year(Some(y)) => format!("{}", y),
+            FilterNode::Year(None) => "Jaartallen".into(),
+            FilterNode::Composer(Some(name)) => name.clone(),
+            FilterNode::Composer(None) => "Componisten".into(),
         }
     }
 
-    /// Is dit een picker? (toont keuzelijst ipv library-navigatie)
-    pub fn is_picker(&self) -> bool {
-        matches!(
-            self,
-            Layer::GenrePicker | Layer::YearPicker | Layer::ComposerPicker | Layer::RecentAlbums
-        )
+    /// Picker-header voor de weergave
+    pub fn picker_name(&self) -> &str {
+        match self {
+            FilterNode::Genre(_) => "Genres",
+            FilterNode::Year(_) => "Jaartallen",
+            FilterNode::Composer(_) => "Componisten",
+        }
+    }
+
+    /// Wis de gemaakte selectie (zet terug naar None = Picker mode)
+    pub fn clear(&mut self) {
+        match self {
+            FilterNode::Genre(v) => *v = None,
+            FilterNode::Year(v) => *v = None,
+            FilterNode::Composer(v) => *v = None,
+        }
     }
 }

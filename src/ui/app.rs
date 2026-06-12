@@ -6,8 +6,7 @@ use crate::search::{
     collect_composers, collect_genres, collect_years, filter_by_composer, filter_by_genre,
     filter_by_year,
 };
-use crate::ui::shortcuts;
-use crate::ui::types::{Layer, NavLevel, ViewMode};
+use crate::ui::types::{FilterNode, NavLevel, ViewMode};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use std::collections::HashSet;
@@ -20,9 +19,14 @@ pub struct MusicPlayerApp {
     pub scanner_rx: Receiver<ScannerMessage>,
     pub library: Option<Library>,
 
-    /// De filter-stapel. Leeg = Root = volledige bibliotheek.
-    pub filter_stack: Vec<Layer>,
-    /// Gecachte bibliotheek na toepassen van alle filters (voor navigatie).
+    /// De filter-pipeline. Elke node is een filtertype met een optionele waarde.
+    /// - `None` = picker-mode (gebruiker moet nog kiezen)
+    /// - `Some(...)` = actief filter
+    pub filter_path: Vec<FilterNode>,
+    /// Huidige positie in de pipeline (0..=filter_path.len()).
+    /// Als filter_step == filter_path.len(), zijn we door alle pickers heen.
+    pub filter_step: usize,
+    /// Gecachte bibliotheek na toepassen van filters tot aan filter_step.
     pub cached_filtered: Option<Library>,
 
     // Status
@@ -73,7 +77,7 @@ pub struct MusicPlayerApp {
     pub tracks_to_edit: Vec<String>,
 
     // Jaar/componist pickers (voor later)
-    pub years: Vec<(u32, usize)>,
+    pub years: Vec<(Option<u32>, usize)>,
     pub selected_year: usize,
     pub composers: Vec<(String, usize)>,
     pub selected_composer: usize,
@@ -99,7 +103,8 @@ impl MusicPlayerApp {
             scanner_tx,
             scanner_rx,
             library: None,
-            filter_stack: Vec::new(),
+            filter_path: Vec::new(),
+            filter_step: 0,
             cached_filtered: None,
             now_playing: None,
             show_help: false,
@@ -143,7 +148,7 @@ impl MusicPlayerApp {
         }
     }
 
-    // === FILTER STACK ===
+    // === FILTER PIPELINE ===
 
     /// De actieve bibliotheek (na alle filters). Gebruik dit voor navigatie & weergave.
     pub fn active_library(&self) -> Option<&Library> {
@@ -153,72 +158,101 @@ impl MusicPlayerApp {
             .or(self.library.as_ref())
     }
 
-    /// Pas alle filters in de stack toe op `library` en cache het resultaat.
+    /// Pas ALLEEN de filters toe tot de huidige filter_step.
     pub fn recompute(&mut self) {
         let Some(ref base) = self.library else {
             self.cached_filtered = None;
             return;
         };
         let mut result = base.clone();
-        for layer in &self.filter_stack {
-            match layer {
-                Layer::Genre(name) => {
+        for node in self.filter_path.iter().take(self.filter_step) {
+            match node {
+                FilterNode::Genre(Some(name)) => {
                     result = filter_by_genre(&result, name);
                 }
-                Layer::Selection => {
-                    result = build_selection_library(&result, &self.selected_tracks);
-                }
-                Layer::Root
-                | Layer::GenrePicker
-                | Layer::YearPicker
-                | Layer::ComposerPicker
-                | Layer::RecentAlbums => {
-                    // Pickers veranderen de set niet
-                }
-                Layer::Year(y) => {
+                FilterNode::Year(Some(y)) => {
                     result = filter_by_year(&result, *y);
                 }
-                Layer::Composer(c) => {
+                FilterNode::Composer(Some(c)) => {
                     result = filter_by_composer(&result, c);
                 }
+                _ => {} // None = picker, slaat geen filter toe
             }
         }
         self.cached_filtered = Some(result);
     }
 
-    /// Push een nieuwe layer (picker of filter) en herbereken.
-    pub fn push_layer(&mut self, layer: Layer) {
-        self.filter_stack.push(layer);
-        self.recompute();
-        self.current_level = NavLevel::Artist;
-        self.selected_artist = 0;
-        self.selected_album = 0;
-        self.selected_disk = 0;
-        self.selected_track = 0;
-        self.scroll_to_selection = true;
-    }
+    /// Vul de huidige picker met data uit de (tot filter_step) gefilterde library.
+    pub fn populate_current_picker(&mut self) {
+        let Some(node) = self.filter_path.get(self.filter_step) else {
+            return;
+        };
+        let Some(ref lib) = self.cached_filtered else {
+            return;
+        };
 
-    /// Pop de bovenste layer en herbereken. Doet niets als alleen Root overblijft.
-    pub fn pop_layer(&mut self) {
-        if self.filter_stack.len() > 1
-            || (self.filter_stack.len() == 1 && self.filter_stack[0] != Layer::Root)
-        {
-            self.filter_stack.pop();
-        } else {
-            self.filter_stack.clear();
+        match node {
+            FilterNode::Genre(_) => {
+                self.genres = collect_genres(lib);
+                self.selected_genre = 0;
+            }
+            FilterNode::Year(_) => {
+                self.years = collect_years(lib);
+                self.selected_year = 0;
+            }
+            FilterNode::Composer(_) => {
+                self.composers = collect_composers(lib);
+                self.selected_composer = 0;
+            }
         }
-        self.recompute();
-        self.current_level = NavLevel::Artist;
-        self.selected_artist = 0;
-        self.selected_album = 0;
-        self.selected_disk = 0;
-        self.selected_track = 0;
-        self.scroll_to_selection = true;
     }
 
-    /// Reset de filter stack naar leeg (volledige bibliotheek).
+    /// Ga één stap terug in de filter pipeline en herstel de cursor-positie
+    /// naar het item dat eerder geselecteerd was.
+    pub fn step_back_filter(&mut self) {
+        if self.filter_step > 0 {
+            self.filter_step -= 1;
+
+            // 1. Bewaar wat we op deze laag hadden gekozen
+            let previous_node = self.filter_path[self.filter_step].clone();
+
+            // 2. Wis de waarde zodat het weer een Picker wordt (None)
+            self.filter_path[self.filter_step].clear();
+
+            // 3. Herbereken de library en vul de picker lijsten (dit zet index even op 0)
+            self.recompute();
+            self.populate_current_picker();
+
+            // 4. Zoek de index van de oude keuze en overschrijf de 0!
+            match previous_node {
+                FilterNode::Genre(Some(g)) => {
+                    if let Some(idx) = self.genres.iter().position(|(name, _)| name == &g) {
+                        self.selected_genre = idx;
+                    }
+                }
+                FilterNode::Year(Some(y)) => {
+                    // y == 0 = sentinel voor "Onbekend" (None in de lijst)
+                    let target: Option<u32> = if y == 0 { None } else { Some(y) };
+                    if let Some(idx) = self.years.iter().position(|(val, _)| *val == target) {
+                        self.selected_year = idx;
+                    }
+                }
+                FilterNode::Composer(Some(c)) => {
+                    if let Some(idx) = self.composers.iter().position(|(name, _)| name == &c) {
+                        self.selected_composer = idx;
+                    }
+                }
+                _ => {}
+            }
+
+            self.scroll_to_selection = true;
+        }
+    }
+
+    /// Reset de filters naar leeg (volledige bibliotheek).
     pub fn reset_filters(&mut self) {
-        self.filter_stack.clear();
+        self.filter_path.clear();
+        self.filter_step = 0;
         self.recompute();
         self.current_level = NavLevel::Artist;
         self.selected_artist = 0;
@@ -228,17 +262,22 @@ impl MusicPlayerApp {
         self.scroll_to_selection = true;
     }
 
-    /// Check of de huidige data een picker toont (genre/year/composer lijst).
+    /// Check of de huidige filter_step op een picker wijst (None-waarde node).
     pub fn is_picker_active(&self) -> bool {
-        self.filter_stack
-            .last()
-            .map(|l| l.is_picker())
+        self.filter_path
+            .get(self.filter_step)
+            .map(|node| {
+                matches!(
+                    node,
+                    FilterNode::Genre(None) | FilterNode::Year(None) | FilterNode::Composer(None)
+                )
+            })
             .unwrap_or(false)
     }
 
-    /// Genereer de breadcrumb-string uit de filter stack.
+    /// Genereer de breadcrumb-string uit de filter pipeline.
     pub fn breadcrumb(&self) -> String {
-        let mut parts: Vec<String> = self.filter_stack.iter().map(|l| l.display_name()).collect();
+        let mut parts: Vec<String> = self.filter_path.iter().map(|n| n.display_name()).collect();
         if parts.is_empty() {
             parts.push("Bibliotheek".into());
         }
@@ -247,35 +286,55 @@ impl MusicPlayerApp {
 
     // === HELPER: Selection library builder ===
 
-    /// Haal de library van de vorige filterlaag (of de volledige library) op.
-    /// Gebruikt voor het vullen van pickers (genres, jaren etc.) die moeten werken
-    /// op de set **voordat** de picker werd gepusht.
-    pub fn library_before_top_picker(&self) -> Option<Library> {
-        // Als de stack eindigt op een picker, negeer die dan voor de data
-        let mut result = self.library.clone()?;
-        let picker_count = self
-            .filter_stack
-            .iter()
-            .rev()
-            .take_while(|l| l.is_picker())
-            .count();
-        let effective_len = self.filter_stack.len() - picker_count;
+    /// Bouw een Library uit alleen de geselecteerde tracks.
+    pub fn build_selection_library(lib: &Library, selected: &HashSet<String>) -> Library {
+        let mut artist_map: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Vec<crate::models::Track>>,
+        > = std::collections::HashMap::new();
 
-        for layer in self.filter_stack.iter().take(effective_len) {
-            match layer {
-                Layer::Genre(name) => result = filter_by_genre(&result, name),
-                Layer::Selection => {
-                    result = build_selection_library(&result, &self.selected_tracks)
+        for artist in &lib.artists {
+            for album in &artist.albums {
+                for disk in &album.disks {
+                    for track in &disk.tracks {
+                        if selected.contains(&track.path) {
+                            artist_map
+                                .entry(artist.name.clone())
+                                .or_default()
+                                .entry(album.title.clone())
+                                .or_default()
+                                .push(track.clone());
+                        }
+                    }
                 }
-                Layer::Year(y) => result = filter_by_year(&result, *y),
-                Layer::Composer(c) => result = filter_by_composer(&result, c),
-                _ => {}
             }
         }
-        Some(result)
+
+        let mut artists = Vec::new();
+        for (artist_name, albums_map) in artist_map {
+            let mut albums = Vec::new();
+            for (album_title, tracks) in albums_map {
+                albums.push(crate::models::Album {
+                    title: album_title,
+                    cover_path: None,
+                    disks: vec![crate::models::Disk {
+                        name: "Default".into(),
+                        tracks,
+                    }],
+                    added_timestamp: 0,
+                });
+            }
+            albums.sort_by(|a, b| a.title.cmp(&b.title));
+            artists.push(crate::models::Artist {
+                name: artist_name,
+                albums,
+            });
+        }
+        artists.sort_by(|a, b| a.name.cmp(&b.name));
+        Library { artists }
     }
 
-    // === OUDE HELPERS (herwerkt voor stack) ===
+    // === FILTER HELPERS ===
 
     pub fn toggle_sort(&mut self) {
         self.sort_by_date = !self.sort_by_date;
@@ -324,100 +383,165 @@ impl MusicPlayerApp {
         self.scroll_to_selection = true;
     }
 
-    pub fn enter_genre_picker(&mut self) {
-        // Bepaal de al geselecteerde genre (als die er is) om te highlighten
-        let current_genre = self.filter_stack.iter().rev().find_map(|l| {
-            if let Layer::Genre(name) = l {
-                Some(name.clone())
-            } else {
-                None
+    /// Voeg een Genre-picker toe op de huidige positie, of verwijder hem als hij er al staat.
+    pub fn toggle_genre_picker(&mut self) {
+        // Staat er al een Genre node op de huidige filter_step? -> Verwijder hem
+        if let Some(FilterNode::Genre(_)) = self.filter_path.get(self.filter_step) {
+            self.filter_path.remove(self.filter_step);
+            if self.filter_step > self.filter_path.len() {
+                self.filter_step = self.filter_path.len();
             }
-        });
-
-        if let Some(lib) = self.library_before_top_picker() {
-            self.genres = collect_genres(&lib);
-            self.selected_genre = current_genre
-                .as_ref()
-                .and_then(|g| self.genres.iter().position(|(name, _)| name == g))
-                .unwrap_or(0);
-            self.selected_genre_name = current_genre.unwrap_or_default();
-            self.push_layer(Layer::GenrePicker);
+            self.recompute();
+            self.populate_current_picker();
+            self.current_level = NavLevel::Artist;
+            self.selected_artist = 0;
+            self.scroll_to_selection = true;
+            return;
         }
+
+        // Voorkom duplicaten in de pipeline
+        if self
+            .filter_path
+            .iter()
+            .any(|n| matches!(n, FilterNode::Genre(_)))
+        {
+            return;
+        }
+
+        // Voeg een lege Genre node in op de huidige positie
+        self.filter_path
+            .insert(self.filter_step, FilterNode::Genre(None));
+        self.recompute();
+        self.populate_current_picker();
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.scroll_to_selection = true;
     }
 
+    /// Selecteer een genre in de huidige Genre-picker.
     pub fn select_genre(&mut self, genre: &str) {
         self.selected_genre_name = genre.to_string();
-        let new_layer = Layer::Genre(genre.to_string());
-
-        // Check of de laag onder de picker al een Genre filter is -> vervangen
-        let len = self.filter_stack.len();
-        if len >= 2 && matches!(&self.filter_stack[len - 2], Layer::Genre(_)) {
-            self.filter_stack[len - 2] = new_layer;
+        if let Some(FilterNode::Genre(val)) = self.filter_path.get_mut(self.filter_step) {
+            *val = Some(genre.to_string());
+            self.filter_step += 1;
             self.recompute();
-        } else {
-            self.push_layer(new_layer);
-        }
-    }
-
-    pub fn enter_year_picker(&mut self) {
-        let current_year = self.filter_stack.iter().rev().find_map(|l| {
-            if let Layer::Year(y) = l {
-                Some(*y)
+            if self.filter_step < self.filter_path.len() {
+                self.populate_current_picker();
             } else {
-                None
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.selected_album = 0;
+                self.selected_disk = 0;
+                self.selected_track = 0;
             }
-        });
-        if let Some(lib) = self.library_before_top_picker() {
-            self.years = collect_years(&lib);
-            self.selected_year = current_year
-                .and_then(|y| self.years.iter().position(|(year, _)| *year == y))
-                .unwrap_or(0);
-            self.push_layer(Layer::YearPicker);
+            self.scroll_to_selection = true;
         }
     }
 
+    /// Voeg een Year-picker toe op de huidige positie, of verwijder hem als hij er al staat.
+    pub fn toggle_year_picker(&mut self) {
+        if let Some(FilterNode::Year(_)) = self.filter_path.get(self.filter_step) {
+            self.filter_path.remove(self.filter_step);
+            if self.filter_step > self.filter_path.len() {
+                self.filter_step = self.filter_path.len();
+            }
+            self.recompute();
+            self.populate_current_picker();
+            self.current_level = NavLevel::Artist;
+            self.selected_artist = 0;
+            self.scroll_to_selection = true;
+            return;
+        }
+
+        if self
+            .filter_path
+            .iter()
+            .any(|n| matches!(n, FilterNode::Year(_)))
+        {
+            return;
+        }
+
+        self.filter_path
+            .insert(self.filter_step, FilterNode::Year(None));
+        self.recompute();
+        self.populate_current_picker();
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.scroll_to_selection = true;
+    }
+
+    /// Selecteer een jaar in de huidige Year-picker.
     pub fn select_year(&mut self, year: u32) {
-        let new_layer = Layer::Year(year);
-        let len = self.filter_stack.len();
-        if len >= 2 && matches!(&self.filter_stack[len - 2], Layer::Year(_)) {
-            self.filter_stack[len - 2] = new_layer;
+        if let Some(FilterNode::Year(val)) = self.filter_path.get_mut(self.filter_step) {
+            *val = Some(year);
+            self.filter_step += 1;
             self.recompute();
-        } else {
-            self.push_layer(new_layer);
-        }
-    }
-
-    pub fn enter_composer_picker(&mut self) {
-        let current_composer = self.filter_stack.iter().rev().find_map(|l| {
-            if let Layer::Composer(c) = l {
-                Some(c.clone())
+            if self.filter_step < self.filter_path.len() {
+                self.populate_current_picker();
             } else {
-                None
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.selected_album = 0;
+                self.selected_disk = 0;
+                self.selected_track = 0;
             }
-        });
-        if let Some(lib) = self.library_before_top_picker() {
-            self.composers = collect_composers(&lib);
-            self.selected_composer = current_composer
-                .as_ref()
-                .and_then(|c| self.composers.iter().position(|(name, _)| name == c))
-                .unwrap_or(0);
-            self.push_layer(Layer::ComposerPicker);
+            self.scroll_to_selection = true;
         }
     }
 
-    pub fn select_composer(&mut self, composer: &str) {
-        let new_layer = Layer::Composer(composer.to_string());
-        let len = self.filter_stack.len();
-        if len >= 2 && matches!(&self.filter_stack[len - 2], Layer::Composer(_)) {
-            self.filter_stack[len - 2] = new_layer;
+    /// Voeg een Composer-picker toe op de huidige positie, of verwijder hem als hij er al staat.
+    pub fn toggle_composer_picker(&mut self) {
+        if let Some(FilterNode::Composer(_)) = self.filter_path.get(self.filter_step) {
+            self.filter_path.remove(self.filter_step);
+            if self.filter_step > self.filter_path.len() {
+                self.filter_step = self.filter_path.len();
+            }
             self.recompute();
-        } else {
-            self.push_layer(new_layer);
+            self.populate_current_picker();
+            self.current_level = NavLevel::Artist;
+            self.selected_artist = 0;
+            self.scroll_to_selection = true;
+            return;
+        }
+
+        if self
+            .filter_path
+            .iter()
+            .any(|n| matches!(n, FilterNode::Composer(_)))
+        {
+            return;
+        }
+
+        self.filter_path
+            .insert(self.filter_step, FilterNode::Composer(None));
+        self.recompute();
+        self.populate_current_picker();
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.scroll_to_selection = true;
+    }
+
+    /// Selecteer een componist in de huidige Composer-picker.
+    pub fn select_composer(&mut self, composer: &str) {
+        if let Some(FilterNode::Composer(val)) = self.filter_path.get_mut(self.filter_step) {
+            *val = Some(composer.to_string());
+            self.filter_step += 1;
+            self.recompute();
+            if self.filter_step < self.filter_path.len() {
+                self.populate_current_picker();
+            } else {
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.selected_album = 0;
+                self.selected_disk = 0;
+                self.selected_track = 0;
+            }
+            self.scroll_to_selection = true;
         }
     }
 
     pub fn enter_recent_mode(&mut self) {
-        if let Some(lib) = self.library_before_top_picker() {
+        if let Some(lib) = self.active_library().cloned() {
             let mut flat_albums = Vec::new();
             for artist in &lib.artists {
                 for album in &artist.albums {
@@ -428,15 +552,11 @@ impl MusicPlayerApp {
             flat_albums.truncate(500);
             self.recent_albums = flat_albums;
             self.selected_recent = 0;
-            self.push_layer(Layer::RecentAlbums);
         }
     }
 
     pub fn enter_selection_mode(&mut self) {
-        if self.selected_tracks.is_empty() {
-            return;
-        }
-        self.push_layer(Layer::Selection);
+        // Selection mode gebruikt de geselecteerde tracks direct
     }
 
     pub fn play_selected_item(&self, lib: &Library, replace: bool) {
@@ -540,133 +660,4 @@ impl MusicPlayerApp {
     pub fn selected_count(&self) -> usize {
         self.selected_tracks.len()
     }
-
-    /// Generieke picker-navigatie: pijltjes, select, M (markeren)
-    pub fn handle_picker_navigation(
-        &mut self,
-        ctx: &egui::Context,
-        cfg: &std::collections::HashMap<String, String>,
-        len: usize,
-        selected: &mut usize,
-        get_selected_name: impl Fn(&Self) -> Option<String>,
-        select_action: impl FnOnce(String),
-        _extra: impl Fn(usize, &mut egui::Ui),
-    ) {
-        if shortcuts::check_action(cfg, ctx, "NavigateDown") {
-            if *selected + 1 < len {
-                *selected += 1;
-                self.scroll_to_selection = true;
-            }
-        }
-        if shortcuts::check_action(cfg, ctx, "NavigateUp") {
-            if *selected > 0 {
-                *selected -= 1;
-                self.scroll_to_selection = true;
-            }
-        }
-        if shortcuts::check_action(cfg, ctx, "Select")
-            || shortcuts::check_action(cfg, ctx, "NavigateRight")
-        {
-            if let Some(name) = get_selected_name(self) {
-                select_action(name);
-            }
-        }
-        // M op picker: alle tracks van dit item markeren
-        if shortcuts::check_action(cfg, ctx, "MarkTrack") {
-            if let Some(name) = get_selected_name(self) {
-                let base_lib = self.library_before_top_picker();
-                if let Some(lib) = base_lib {
-                    let filtered = self.filter_stack.iter().rev().find_map(|l| match l {
-                        Layer::GenrePicker => Some(crate::search::filter_by_genre(&lib, &name)),
-                        Layer::YearPicker => {
-                            if let Ok(y) = name.parse::<u32>() {
-                                Some(crate::search::filter_by_year(&lib, y))
-                            } else {
-                                None
-                            }
-                        }
-                        Layer::ComposerPicker => {
-                            Some(crate::search::filter_by_composer(&lib, &name))
-                        }
-                        _ => None,
-                    });
-                    if let Some(filtered) = filtered {
-                        let paths: Vec<String> = filtered
-                            .artists
-                            .iter()
-                            .flat_map(|a| {
-                                a.albums.iter().flat_map(|al| {
-                                    al.disks
-                                        .iter()
-                                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
-                                })
-                            })
-                            .collect();
-                        if !paths.is_empty() {
-                            let all_selected = paths
-                                .iter()
-                                .all(|p| self.selected_tracks.contains(p.as_str()));
-                            if all_selected {
-                                for p in &paths {
-                                    self.selected_tracks.remove(p);
-                                }
-                            } else {
-                                for p in &paths {
-                                    self.selected_tracks.insert(p.clone());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Bouw een Library uit alleen de geselecteerde tracks.
-fn build_selection_library(lib: &Library, selected: &HashSet<String>) -> Library {
-    let mut artist_map: std::collections::HashMap<
-        String,
-        std::collections::HashMap<String, Vec<crate::models::Track>>,
-    > = std::collections::HashMap::new();
-
-    for artist in &lib.artists {
-        for album in &artist.albums {
-            for disk in &album.disks {
-                for track in &disk.tracks {
-                    if selected.contains(&track.path) {
-                        artist_map
-                            .entry(artist.name.clone())
-                            .or_default()
-                            .entry(album.title.clone())
-                            .or_default()
-                            .push(track.clone());
-                    }
-                }
-            }
-        }
-    }
-
-    let mut artists = Vec::new();
-    for (artist_name, albums_map) in artist_map {
-        let mut albums = Vec::new();
-        for (album_title, tracks) in albums_map {
-            albums.push(crate::models::Album {
-                title: album_title,
-                cover_path: None,
-                disks: vec![crate::models::Disk {
-                    name: "Default".into(),
-                    tracks,
-                }],
-                added_timestamp: 0,
-            });
-        }
-        albums.sort_by(|a, b| a.title.cmp(&b.title));
-        artists.push(crate::models::Artist {
-            name: artist_name,
-            albums,
-        });
-    }
-    artists.sort_by(|a, b| a.name.cmp(&b.name));
-    Library { artists }
 }

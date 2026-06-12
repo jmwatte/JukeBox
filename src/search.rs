@@ -172,25 +172,33 @@ pub fn filter_by_genre(library: &Library, genre: &str) -> Library {
 }
 
 /// Collect all unique years from the library, sorted ascending, with track counts
-pub fn collect_years(library: &Library) -> Vec<(u32, usize)> {
+/// Tracks without a year tag are grouped under `None` ("Unknown").
+pub fn collect_years(library: &Library) -> Vec<(Option<u32>, usize)> {
     let mut map = std::collections::HashMap::new();
+    let mut unknown_count = 0usize;
     for artist in &library.artists {
         for album in &artist.albums {
             for disk in &album.disks {
                 for track in &disk.tracks {
                     if let Some(y) = track.year {
                         *map.entry(y).or_insert(0) += 1;
+                    } else {
+                        unknown_count += 1;
                     }
                 }
             }
         }
     }
-    let mut years: Vec<_> = map.into_iter().collect();
+    let mut years: Vec<_> = map.into_iter().map(|(y, c)| (Some(y), c)).collect();
     years.sort_by(|a, b| a.0.cmp(&b.0));
+    if unknown_count > 0 {
+        years.push((None, unknown_count));
+    }
     years
 }
 
-/// Filter the library to only include tracks from the given year
+/// Filter the library to only include tracks from the given year.
+/// A year value of `0` is treated as "Unknown" (tracks without a year tag).
 pub fn filter_by_year(library: &Library, year: u32) -> Library {
     let mut filtered_artists = Vec::new();
     for artist in &library.artists {
@@ -201,7 +209,13 @@ pub fn filter_by_year(library: &Library, year: u32) -> Library {
                 let filtered_tracks: Vec<Track> = disk
                     .tracks
                     .iter()
-                    .filter(|t| t.year == Some(year))
+                    .filter(|t| {
+                        if year == 0 {
+                            t.year.is_none()
+                        } else {
+                            t.year == Some(year)
+                        }
+                    })
                     .cloned()
                     .collect();
                 if !filtered_tracks.is_empty() {
