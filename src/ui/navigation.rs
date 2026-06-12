@@ -83,30 +83,72 @@ impl MusicPlayerApp {
 
         // --- G: GENRE PICKER ---
         if shortcuts::check_action(&cfg, ctx, "GenreBrowse") {
-            if self.filter_stack.last() == Some(&Layer::GenrePicker) {
+            let top = self.filter_stack.last().cloned();
+
+            if top == Some(Layer::GenrePicker) {
+                self.pop_layer(); // toggle uit
+            } else if matches!(top, Some(Layer::Genre(_))) {
+                self.pop_layer(); // toggle uit
+            } else if top.as_ref().map_or(false, |l| l.is_picker()) {
+                // Top is andere picker (Year/Composer) -> vervang met GenrePicker
                 self.pop_layer();
-            } else {
                 self.enter_genre_picker();
+            } else {
+                // Top is een filter (of Root/lege stack)
+                let has_genre_filter = self
+                    .filter_stack
+                    .iter()
+                    .any(|l| matches!(l, Layer::Genre(_)));
+                if !has_genre_filter {
+                    self.enter_genre_picker();
+                }
+                // else: Genre filter zit dieper in stack -> niets doen
             }
             return;
         }
 
         // --- Y: YEAR PICKER ---
         if shortcuts::check_action(&cfg, ctx, "YearBrowse") {
-            if self.filter_stack.last() == Some(&Layer::YearPicker) {
+            let top = self.filter_stack.last().cloned();
+
+            if top == Some(Layer::YearPicker) {
                 self.pop_layer();
-            } else {
+            } else if matches!(top, Some(Layer::Year(_))) {
+                self.pop_layer();
+            } else if top.as_ref().map_or(false, |l| l.is_picker()) {
+                self.pop_layer();
                 self.enter_year_picker();
+            } else {
+                let has_year_filter = self
+                    .filter_stack
+                    .iter()
+                    .any(|l| matches!(l, Layer::Year(_)));
+                if !has_year_filter {
+                    self.enter_year_picker();
+                }
             }
             return;
         }
 
         // --- C: COMPOSER PICKER ---
         if shortcuts::check_action(&cfg, ctx, "ComposerBrowse") {
-            if self.filter_stack.last() == Some(&Layer::ComposerPicker) {
+            let top = self.filter_stack.last().cloned();
+
+            if top == Some(Layer::ComposerPicker) {
                 self.pop_layer();
-            } else {
+            } else if matches!(top, Some(Layer::Composer(_))) {
+                self.pop_layer();
+            } else if top.as_ref().map_or(false, |l| l.is_picker()) {
+                self.pop_layer();
                 self.enter_composer_picker();
+            } else {
+                let has_composer_filter = self
+                    .filter_stack
+                    .iter()
+                    .any(|l| matches!(l, Layer::Composer(_)));
+                if !has_composer_filter {
+                    self.enter_composer_picker();
+                }
             }
             return;
         }
@@ -306,7 +348,7 @@ impl MusicPlayerApp {
                     self.select_composer(&name);
                 }
             }
-            // M op componist: alle tracks van deze componist markeren
+            // M op componist: alle tracks van dit componist markeren
             if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
                 if let Some((name, _)) = self.composers.get(self.selected_composer).cloned() {
                     if let Some(lib) = self.library_before_top_picker() {
@@ -342,8 +384,13 @@ impl MusicPlayerApp {
             return;
         }
 
-        // Kies de actieve library voor navigatie
-        let Some(lib) = self.active_library().cloned() else {
+        // Kies de actieve library voor navigatie (disjoint borrow, geen clone!)
+        let Some(lib) = self
+            .filtered_library
+            .as_ref()
+            .or(self.cached_filtered.as_ref())
+            .or(self.library.as_ref())
+        else {
             return;
         };
 
@@ -475,12 +522,13 @@ impl MusicPlayerApp {
 
         // --- M: MARK / UNMARK OP HUIDIG NIVEAU ---
         if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-            let tracks = {
-                let act_lib = self.active_library().cloned();
-                act_lib
-                    .map(|l| self.get_tracks_at_level(&l, &self.current_level))
-                    .unwrap_or_default()
-            };
+            let tracks = self
+                .filtered_library
+                .as_ref()
+                .or(self.cached_filtered.as_ref())
+                .or(self.library.as_ref())
+                .map(|l| self.get_tracks_at_level(l, &self.current_level))
+                .unwrap_or_default();
             if !tracks.is_empty() {
                 let all_selected = tracks
                     .iter()
@@ -634,16 +682,12 @@ impl MusicPlayerApp {
                     }
                     self.scroll_to_selection = true;
                 }
-                // Op Artist-niveau: ga terug naar de picker van het bovenste filter
+                // Op Artist-niveau: pop alleen filters, nooit pickers
                 NavLevel::Artist => {
-                    if let Some(top_filter) =
-                        self.filter_stack.iter().rev().find(|l| !l.is_picker())
-                    {
-                        match top_filter {
-                            Layer::Genre(_) => self.enter_genre_picker(),
-                            Layer::Year(_) => self.enter_year_picker(),
-                            Layer::Composer(_) => self.enter_composer_picker(),
-                            _ => {}
+                    if let Some(top) = self.filter_stack.last() {
+                        if !top.is_picker() {
+                            self.filter_stack.pop();
+                            self.recompute();
                         }
                     }
                 }

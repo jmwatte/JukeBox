@@ -346,10 +346,17 @@ impl MusicPlayerApp {
     }
 
     pub fn select_genre(&mut self, genre: &str) {
-        // Vervang de GenrePicker door een Genre filter
-        let _ = self.filter_stack.pop(); // verwijder GenrePicker
         self.selected_genre_name = genre.to_string();
-        self.push_layer(Layer::Genre(genre.to_string()));
+        let new_layer = Layer::Genre(genre.to_string());
+
+        // Check of de laag onder de picker al een Genre filter is -> vervangen
+        let len = self.filter_stack.len();
+        if len >= 2 && matches!(&self.filter_stack[len - 2], Layer::Genre(_)) {
+            self.filter_stack[len - 2] = new_layer;
+            self.recompute();
+        } else {
+            self.push_layer(new_layer);
+        }
     }
 
     pub fn enter_year_picker(&mut self) {
@@ -370,8 +377,14 @@ impl MusicPlayerApp {
     }
 
     pub fn select_year(&mut self, year: u32) {
-        let _ = self.filter_stack.pop();
-        self.push_layer(Layer::Year(year));
+        let new_layer = Layer::Year(year);
+        let len = self.filter_stack.len();
+        if len >= 2 && matches!(&self.filter_stack[len - 2], Layer::Year(_)) {
+            self.filter_stack[len - 2] = new_layer;
+            self.recompute();
+        } else {
+            self.push_layer(new_layer);
+        }
     }
 
     pub fn enter_composer_picker(&mut self) {
@@ -393,8 +406,14 @@ impl MusicPlayerApp {
     }
 
     pub fn select_composer(&mut self, composer: &str) {
-        let _ = self.filter_stack.pop();
-        self.push_layer(Layer::Composer(composer.to_string()));
+        let new_layer = Layer::Composer(composer.to_string());
+        let len = self.filter_stack.len();
+        if len >= 2 && matches!(&self.filter_stack[len - 2], Layer::Composer(_)) {
+            self.filter_stack[len - 2] = new_layer;
+            self.recompute();
+        } else {
+            self.push_layer(new_layer);
+        }
     }
 
     pub fn enter_recent_mode(&mut self) {

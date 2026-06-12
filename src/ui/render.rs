@@ -226,13 +226,17 @@ impl eframe::App for MusicPlayerApp {
                         self.selected_track = 0;
 
                         // Search binnen de actieve gefilterde set
-                        let base_lib = self.active_library().cloned();
+                        let base_lib = self
+                            .filtered_library
+                            .as_ref()
+                            .or(self.cached_filtered.as_ref())
+                            .or(self.library.as_ref());
                         if let Some(base_lib) = base_lib {
                             if self.search_query.trim().is_empty() {
                                 self.filtered_library = None;
                             } else {
                                 self.filtered_library =
-                                    Some(filter_library(&base_lib, &self.search_query));
+                                    Some(filter_library(base_lib, &self.search_query));
                             }
                         }
                     }
@@ -252,8 +256,12 @@ impl eframe::App for MusicPlayerApp {
                 });
         }
 
-        // --- KIES ACTIEVE LIBRARY ---
-        let current_lib = self.active_library().cloned();
+        // --- KIES ACTIEVE LIBRARY (disjoint borrow, geen clone!) ---
+        let current_lib = self
+            .filtered_library
+            .as_ref()
+            .or(self.cached_filtered.as_ref())
+            .or(self.library.as_ref());
         let Some(current_lib) = current_lib else {
             egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
@@ -625,7 +633,7 @@ impl eframe::App for MusicPlayerApp {
                     Self::render_cover_view_inline(
                         ui,
                         ctx,
-                        &current_lib,
+                        current_lib,
                         &mut sa,
                         &mut sal,
                         &mut cl,
@@ -636,7 +644,7 @@ impl eframe::App for MusicPlayerApp {
                     Self::render_tracklist_view_inline(
                         ui,
                         ctx,
-                        &current_lib,
+                        current_lib,
                         &mut sa,
                         &mut sal,
                         &mut sd,
@@ -799,19 +807,16 @@ impl MusicPlayerApp {
                 |ui| match *current_level {
                     NavLevel::Artist => {
                         for (i, artist) in current_lib.artists.iter().enumerate() {
-                            let all_tracks: Vec<String> = artist
+                            let total: usize = artist
                                 .albums
                                 .iter()
-                                .flat_map(|al| {
-                                    al.disks
-                                        .iter()
-                                        .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
-                                })
-                                .collect();
-                            let total = all_tracks.len();
-                            let sel = all_tracks
+                                .flat_map(|al| al.disks.iter().map(|d| d.tracks.len()))
+                                .sum();
+                            let sel: usize = artist
+                                .albums
                                 .iter()
-                                .filter(|p| selected_tracks.contains(p.as_str()))
+                                .flat_map(|al| al.disks.iter().flat_map(|d| d.tracks.iter()))
+                                .filter(|t| selected_tracks.contains(&t.path))
                                 .count();
                             let prefix = if sel == 0 {
                                 ""
@@ -840,15 +845,12 @@ impl MusicPlayerApp {
                             .iter()
                             .enumerate()
                         {
-                            let all_tracks: Vec<String> = album
+                            let total: usize = album.disks.iter().map(|d| d.tracks.len()).sum();
+                            let sel: usize = album
                                 .disks
                                 .iter()
-                                .flat_map(|d| d.tracks.iter().map(|t| t.path.clone()))
-                                .collect();
-                            let total = all_tracks.len();
-                            let sel = all_tracks
-                                .iter()
-                                .filter(|p| selected_tracks.contains(p.as_str()))
+                                .flat_map(|d| d.tracks.iter())
+                                .filter(|t| selected_tracks.contains(&t.path))
                                 .count();
                             let prefix = if sel == 0 {
                                 ""
@@ -878,12 +880,11 @@ impl MusicPlayerApp {
                             .iter()
                             .enumerate()
                         {
-                            let all_tracks: Vec<String> =
-                                disk.tracks.iter().map(|t| t.path.clone()).collect();
-                            let total = all_tracks.len();
-                            let sel = all_tracks
+                            let total = disk.tracks.len();
+                            let sel = disk
+                                .tracks
                                 .iter()
-                                .filter(|p| selected_tracks.contains(p.as_str()))
+                                .filter(|t| selected_tracks.contains(&t.path))
                                 .count();
                             let prefix = if sel == 0 {
                                 ""
