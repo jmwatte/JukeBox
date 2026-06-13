@@ -2,9 +2,9 @@ use std::path::Path;
 
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 use lofty::config::WriteOptions;
-use lofty::file::TaggedFileExt;
+use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
 
 use super::app::MusicPlayerApp;
 
@@ -20,7 +20,7 @@ impl MusicPlayerApp {
 
         for path in &self.tracks_to_edit {
             let result = (|| -> Result<(), String> {
-                let tagged_file = Probe::open(path)
+                let mut tagged_file = Probe::open(path)
                     .map_err(|e| format!("Open: {:?}", e))?
                     .read()
                     .map_err(|e| format!("Read: {:?}", e))?;
@@ -40,12 +40,97 @@ impl MusicPlayerApp {
                 };
 
                 let mut tag = Tag::new(target_tag_type);
+
+                // Verzamel data uit ALLE bestaande tags (niet alleen target type)
+                // Zo missen we geen data die alleen in Id3v1 staat
+                let mut existing_title: Option<String> = None;
+                let mut existing_artist: Option<String> = None;
+                let mut existing_album: Option<String> = None;
+                let mut existing_genres: Vec<String> = Vec::new();
+                let mut existing_year: Option<String> = None;
+                let mut existing_composer: Option<String> = None;
+
                 for existing_tag in tagged_file.tags() {
                     if existing_tag.tag_type() == target_tag_type {
                         tag = existing_tag.clone();
-                        break;
+                    }
+                    // Verzamel data uit élke tag als fallback
+                    if existing_title.is_none() {
+                        existing_title = existing_tag.title().map(|s| s.to_string());
+                    }
+                    if existing_artist.is_none() {
+                        existing_artist = existing_tag.artist().map(|s| s.to_string());
+                    }
+                    if existing_album.is_none() {
+                        existing_album = existing_tag.album().map(|s| s.to_string());
+                    }
+                    for item in existing_tag.items() {
+                        match item.key() {
+                            ItemKey::Genre => {
+                                if let ItemValue::Text(text) = item.value() {
+                                    existing_genres.push(text.clone());
+                                }
+                            }
+                            key if matches!(
+                                key,
+                                ItemKey::Year
+                                    | ItemKey::RecordingDate
+                                    | ItemKey::OriginalReleaseDate
+                            ) || matches!(key, ItemKey::Unknown(k) if k.to_lowercase() == "originalyear" || k.to_lowercase() == "toryear") =>
+                            {
+                                if existing_year.is_none() {
+                                    if let ItemValue::Text(text) = item.value() {
+                                        existing_year = Some(text.chars().take(4).collect());
+                                    }
+                                }
+                            }
+                            ItemKey::Composer => {
+                                if existing_composer.is_none() {
+                                    if let ItemValue::Text(text) = item.value() {
+                                        existing_composer = Some(text.clone());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
+
+                // Als de target_tag leeg is maar we hebben data uit andere tags, gebruik die dan
+                if !self.update_title && tag.title().unwrap_or_default().is_empty() {
+                    if let Some(ref t) = existing_title {
+                        tag.set_title(t.clone());
+                    }
+                }
+                if !self.update_artist && tag.artist().unwrap_or_default().is_empty() {
+                    if let Some(ref a) = existing_artist {
+                        tag.set_artist(a.clone());
+                    }
+                }
+                if !self.update_album && tag.album().unwrap_or_default().is_empty() {
+                    if let Some(ref a) = existing_album {
+                        tag.set_album(a.clone());
+                    }
+                }
+                if !self.update_genre && tag.get(&ItemKey::Genre).is_none() {
+                    for g in &existing_genres {
+                        tag.insert(TagItem::new(ItemKey::Genre, ItemValue::Text(g.clone())));
+                    }
+                }
+                if !self.update_year && tag.get(&ItemKey::Year).is_none() {
+                    if let Some(ref y) = existing_year {
+                        tag.insert(TagItem::new(ItemKey::Year, ItemValue::Text(y.clone())));
+                    }
+                }
+                if !self.update_composer && tag.get(&ItemKey::Composer).is_none() {
+                    if let Some(ref c) = existing_composer {
+                        tag.insert(TagItem::new(ItemKey::Composer, ItemValue::Text(c.clone())));
+                    }
+                }
+
+                // Verwijder ALLE oude tags en voeg alleen de nieuwe (target) tag toe
+                // Dit voorkomt dat Id3v1 blijft staan met oude data
+                tagged_file.clear();
 
                 // --- STANDAARD VELDEN ---
                 if self.update_title {
@@ -96,7 +181,14 @@ impl MusicPlayerApp {
                     }
                 }
 
-                tag.save_to_path(path, WriteOptions::default())
+                // 1. Verwijder ALLE oude tags uit de container (wist ID3v1 én ID3v2)
+                tagged_file.clear();
+
+                // 2. Stop onze geüpdatete, moderne ID3v2 tag terug in de container
+                tagged_file.insert_tag(tag);
+                // 3. Sla de volledige container op (gebruik tagged_file, NIET tag!)
+                tagged_file
+                    .save_to_path(path, WriteOptions::default())
                     .map_err(|e| format!("Save faalde: {:?}", e))?;
 
                 Ok(())

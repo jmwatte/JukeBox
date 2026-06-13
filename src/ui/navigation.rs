@@ -260,49 +260,72 @@ impl MusicPlayerApp {
                                 raw_text
                             };
 
-                            if let Some(t) = tagged_file
-                                .primary_tag()
-                                .or_else(|| tagged_file.first_tag())
-                            {
-                                self.edit_title =
-                                    t.title().map(|s| s.to_string()).unwrap_or_default();
-                                self.edit_artist =
-                                    t.artist().map(|s| s.to_string()).unwrap_or_default();
-                                self.edit_album =
-                                    t.album().map(|s| s.to_string()).unwrap_or_default();
+                            // Scan ALLE tags (net als de scanner), niet alleen primary_tag
+                            // want Id3v2 kan leeg zijn terwijl Id3v1 de data bevat
+                            let mut found_title: Option<String> = None;
+                            let mut found_artist: Option<String> = None;
+                            let mut found_album: Option<String> = None;
+                            let mut found_genres: Vec<String> = Vec::new();
+                            let mut found_year: Option<String> = None;
+                            let mut found_composer: Option<String> = None;
 
-                                // 2. CORRECTHEID: Laad ALLE genres in, gescheiden door een puntkomma
-                                let genres: Vec<String> = t
-                                    .items()
-                                    .filter(|item| item.key() == &ItemKey::Genre)
-                                    .filter_map(|item| match item.value() {
-                                        ItemValue::Text(text) => Some(text.clone()),
-                                        _ => None,
-                                    })
-                                    .collect();
+                            for tag in tagged_file.tags() {
+                                // Title/Artist/Album via Accessor (eerste gevonden wint)
+                                if found_title.is_none() {
+                                    if let Some(t) = tag.title() {
+                                        found_title = Some(t.to_string());
+                                    }
+                                }
+                                if found_artist.is_none() {
+                                    if let Some(a) = tag.artist() {
+                                        found_artist = Some(a.to_string());
+                                    }
+                                }
+                                if found_album.is_none() {
+                                    if let Some(a) = tag.album() {
+                                        found_album = Some(a.to_string());
+                                    }
+                                }
 
-                                self.edit_genre = genres.join("; ");
-
-                                // 3. LEESBAARHEID: Gebruik de ingebouwde get_string() functie van Lofty
-                                self.edit_year = t
-                                    .items()
-                                    .find(|item| item.key() == &ItemKey::Year)
-                                    .and_then(|item| match item.value() {
-                                        ItemValue::Text(text) => Some(text.clone()),
-                                        _ => None,
-                                    })
-                                    .unwrap_or_default();
-
-                                // Hetzelfde voor Componist (Composer):
-                                self.edit_composer = t
-                                    .items()
-                                    .find(|item| item.key() == &ItemKey::Composer)
-                                    .and_then(|item| match item.value() {
-                                        ItemValue::Text(text) => Some(text.clone()),
-                                        _ => None,
-                                    })
-                                    .unwrap_or_default();
+                                for item in tag.items() {
+                                    match item.key() {
+                                        ItemKey::Genre => {
+                                            if let ItemValue::Text(text) = item.value() {
+                                                found_genres.push(text.clone());
+                                            }
+                                        }
+                                        key if matches!(
+                                            key,
+                                            ItemKey::Year
+                                                | ItemKey::RecordingDate
+                                                | ItemKey::OriginalReleaseDate
+                                        ) || matches!(key, ItemKey::Unknown(k) if k.to_lowercase() == "originalyear" || k.to_lowercase() == "toryear") =>
+                                        {
+                                            if found_year.is_none() {
+                                                if let ItemValue::Text(text) = item.value() {
+                                                    found_year =
+                                                        Some(text.chars().take(4).collect());
+                                                }
+                                            }
+                                        }
+                                        ItemKey::Composer => {
+                                            if found_composer.is_none() {
+                                                if let ItemValue::Text(text) = item.value() {
+                                                    found_composer = Some(text.clone());
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
                             }
+
+                            self.edit_title = found_title.unwrap_or_default();
+                            self.edit_artist = found_artist.unwrap_or_default();
+                            self.edit_album = found_album.unwrap_or_default();
+                            self.edit_genre = found_genres.join("; ");
+                            self.edit_year = found_year.unwrap_or_default();
+                            self.edit_composer = found_composer.unwrap_or_default();
                         }
                         Err(e) => {
                             self.read_error = Some(format!("{:?}", e));
