@@ -1,12 +1,11 @@
-use std::path::Path;
-
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 use lofty::config::WriteOptions;
-use lofty::file::{AudioFile, TaggedFileExt};
+use std::path::Path;
+// FIX: TaggedFileExt toegevoegd voor de .tags() methode
+use super::app::MusicPlayerApp;
+use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
-
-use super::app::MusicPlayerApp;
 
 impl MusicPlayerApp {
     /// Tags wegschrijven naar bestand(en) met lofty.
@@ -20,7 +19,7 @@ impl MusicPlayerApp {
 
         for path in &self.tracks_to_edit {
             let result = (|| -> Result<(), String> {
-                let mut tagged_file = Probe::open(path)
+                let tagged_file = Probe::open(path)
                     .map_err(|e| format!("Open: {:?}", e))?
                     .read()
                     .map_err(|e| format!("Read: {:?}", e))?;
@@ -41,8 +40,6 @@ impl MusicPlayerApp {
 
                 let mut tag = Tag::new(target_tag_type);
 
-                // Verzamel data uit ALLE bestaande tags (niet alleen target type)
-                // Zo missen we geen data die alleen in Id3v1 staat
                 let mut existing_title: Option<String> = None;
                 let mut existing_artist: Option<String> = None;
                 let mut existing_album: Option<String> = None;
@@ -54,7 +51,6 @@ impl MusicPlayerApp {
                     if existing_tag.tag_type() == target_tag_type {
                         tag = existing_tag.clone();
                     }
-                    // Verzamel data uit élke tag als fallback
                     if existing_title.is_none() {
                         existing_title = existing_tag.title().map(|s| s.to_string());
                     }
@@ -96,7 +92,6 @@ impl MusicPlayerApp {
                     }
                 }
 
-                // Als de target_tag leeg is maar we hebben data uit andere tags, gebruik die dan
                 if !self.update_title && tag.title().unwrap_or_default().is_empty() {
                     if let Some(ref t) = existing_title {
                         tag.set_title(t.clone());
@@ -128,25 +123,6 @@ impl MusicPlayerApp {
                     }
                 }
 
-                // Verwijder ALLE oude tags en voeg alleen de nieuwe (target) tag toe
-                // Dit voorkomt dat Id3v1 (of andere types) blijft staan met oude data.
-                // Alleen de target_tag_type blijft bewaard (we schrijven die overschrijven we).
-                // let target = target_tag_type;
-                // for tag_type in [
-                //     TagType::Id3v1,
-                //     TagType::Id3v2,
-                //     TagType::Mp4Ilst,
-                //     TagType::VorbisComments,
-                //     TagType::RiffInfo,
-                // ] {
-                //     if tag_type != target {
-                //         tagged_file.remove(tag_type);
-                //     }
-                // }
-                // // Verwijder ook target zodat we een schone tag hebben om te vullen
-                // tagged_file.remove(target);
-
-                // --- STANDAARD VELDEN ---
                 if self.update_title {
                     tag.set_title(self.edit_title.clone());
                 }
@@ -157,7 +133,6 @@ impl MusicPlayerApp {
                     tag.set_album(self.edit_album.clone());
                 }
 
-                // --- MEERVOUDIGE GENRES (Gescheiden door ;) ---
                 if self.update_genre {
                     tag.remove_key(&ItemKey::Genre);
                     for g in self.edit_genre.split(';') {
@@ -171,7 +146,6 @@ impl MusicPlayerApp {
                     }
                 }
 
-                // --- JAAR ---
                 if self.update_year {
                     tag.remove_key(&ItemKey::Year);
                     let trimmed = self.edit_year.trim();
@@ -183,7 +157,6 @@ impl MusicPlayerApp {
                     }
                 }
 
-                // --- COMPONIST ---
                 if self.update_composer {
                     tag.remove_key(&ItemKey::Composer);
                     let trimmed = self.edit_composer.trim();
@@ -194,15 +167,9 @@ impl MusicPlayerApp {
                         ));
                     }
                 }
-                if target_tag_type != TagType::Id3v1 {
-                    let _ = TagType::Id3v1.remove_from_path(path);
-                }
-                // DE MAGISCHE REGEL: vertel lofty om écht alle andere tags (zoals ID3v1)
-                // uit het fysieke bestand te verwijderen bij het opslaan!
+
                 let write_options = WriteOptions::new().remove_others(true);
 
-                // Sla ALLEEN de 'tag' op, niet de 'tagged_file'.
-                // Dit verwijdert automatisch ID3v1 en andere ongewenste tags van de schijf.
                 tag.save_to_path(path, write_options)
                     .map_err(|e| format!("Save faalde: {:?}", e))?;
 
@@ -212,7 +179,6 @@ impl MusicPlayerApp {
             match result {
                 Ok(_) => {
                     success_count += 1;
-                    // Update in-memory library
                     if let Some(lib) = &mut self.library {
                         for artist in &mut lib.artists {
                             for album in &mut artist.albums {
@@ -246,24 +212,9 @@ impl MusicPlayerApp {
             }
         }
 
-        // Ververs raw_tags_display bij single track edit
         if success_count > 0 && self.tracks_to_edit.len() == 1 {
-            if let Some(path) = &self.editing_track_path {
-                self.raw_tags_display.clear();
-                if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
-                    let mut raw_text = String::new();
-                    for tag in tagged_file.tags() {
-                        raw_text.push_str(&format!("--- Tag Type: {:?} ---\n", tag.tag_type()));
-                        for item in tag.items() {
-                            raw_text.push_str(&format!("{:?}: {:?}\n", item.key(), item.value()));
-                        }
-                    }
-                    self.raw_tags_display = if raw_text.is_empty() {
-                        "Geen tags gevonden.".to_string()
-                    } else {
-                        raw_text
-                    };
-                }
+            if let Some(path) = self.editing_track_path.clone() {
+                self.refresh_raw_tags_for_path(&path);
             }
         }
 
@@ -296,35 +247,31 @@ impl MusicPlayerApp {
         };
 
         let mut path_to_remove: Option<String> = None;
+        let mut newly_selected_path: Option<String> = None;
 
         egui::Window::new(popup_title)
             .open(&mut is_open)
             .collapsible(false)
             .resizable(true)
-            .default_width(500.0)
+            .default_width(600.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                if let Some(path) = &self.editing_track_path {
-                    ui.label(RichText::new("File:").strong());
-                    ui.label(RichText::new(path).size(12.0).color(Color32::GRAY));
-                    ui.add_space(10.0);
+                // FIX: We clonen het pad naar een owned String.
+                // Hierdoor leent current_path niet meer van self, wat de E0502 borrow-checker fout oplost!
+                if let Some(current_path) = self.editing_track_path.clone() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Huidig geselecteerd bestand:").strong());
+                        ui.label(RichText::new(&current_path).size(11.0).color(Color32::GRAY));
+                    });
+                    ui.add_space(5.0);
 
                     if let Some(err) = &self.read_error {
-                        ui.label(
-                            RichText::new(format!("⚠️ Leesfout: {}", err))
-                                .color(Color32::RED)
-                                .strong(),
-                        );
+                        ui.label(RichText::new(format!("⚠️ Leesfout: {}", err)).color(Color32::RED).strong());
                         ui.add_space(5.0);
                     }
 
-                    // Geselecteerde bestanden lijst (batch edit)
                     if self.tracks_to_edit.len() > 1 {
-                        ui.label(
-                            RichText::new("Geselecteerde bestanden:")
-                                .strong()
-                                .size(14.0),
-                        );
+                        ui.label(RichText::new("Klik op een bestand om zijn tags te bekijken:").strong().size(13.0));
                         ScrollArea::vertical()
                             .id_source("batch_files_scroll")
                             .max_height(120.0)
@@ -336,13 +283,13 @@ impl MusicPlayerApp {
                                             .unwrap_or_default()
                                             .to_string_lossy();
 
-                                        ui.label(
-                                            RichText::new(filename.to_string())
-                                                .size(12.0)
-                                                .color(Color32::GRAY),
-                                        );
-                                        ui.add_space(10.0);
+                                        let is_selected = self.editing_track_path.as_deref() == Some(track_path);
 
+                                        if ui.selectable_label(is_selected, filename).clicked() {
+                                            newly_selected_path = Some(track_path.clone());
+                                        }
+
+                                        ui.add_space(10.0);
                                         if ui.small_button("❌").clicked() {
                                             path_to_remove = Some(track_path.clone());
                                         }
@@ -353,72 +300,84 @@ impl MusicPlayerApp {
                         ui.add_space(5.0);
                     }
 
-                    // Editable velden
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.update_title, "");
-                        ui.label("Title:");
-                        ui.add_sized(
-                            [400.0, 20.0],
-                            egui::TextEdit::singleline(&mut self.edit_title)
-                                .interactive(self.update_title),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.update_artist, "");
-                        ui.label("Artist:");
-                        ui.add_sized(
-                            [400.0, 20.0],
-                            egui::TextEdit::singleline(&mut self.edit_artist)
-                                .interactive(self.update_artist),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.update_album, "");
-                        ui.label("Album:");
-                        ui.add_sized(
-                            [400.0, 20.0],
-                            egui::TextEdit::singleline(&mut self.edit_album)
-                                .interactive(self.update_album),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.update_genre, "");
-                        ui.label("Genre (scheid met ';'):");
-                        ui.add_sized(
-                            [300.0, 20.0],
-                            egui::TextEdit::singleline(&mut self.edit_genre)
-                                .interactive(self.update_genre),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.update_year, "");
-                        ui.label("Jaar:");
-                        ui.add_sized(
-                            [400.0, 20.0],
-                            egui::TextEdit::singleline(&mut self.edit_year)
-                                .interactive(self.update_year),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.update_composer, "");
-                        ui.label("Componist:");
-                        ui.add_sized(
-                            [400.0, 20.0],
-                            egui::TextEdit::singleline(&mut self.edit_composer)
-                                .interactive(self.update_composer),
-                        );
-                    });
+                    ui.label(RichText::new("Te schrijven waarden (vink aan om toe te passen op ALLE geselecteerde bestanden):").strong());
+                    ui.add_space(5.0);
+
+                    // FIX: `mut` verwijderd
+                    let render_field = |ui: &mut egui::Ui, label: &str, update: &mut bool, value: &mut String| -> bool {
+                        let mut copy_clicked = false;
+                        ui.horizontal(|ui| {
+                            ui.checkbox(update, "");
+                            ui.label(format!("{}:", label));
+                            ui.add_sized(
+                                [300.0, 20.0],
+                                egui::TextEdit::singleline(value).interactive(*update),
+                            );
+                            if ui.small_button("📋").on_hover_text("Kopieer van geselecteerd bestand").clicked() {
+                                copy_clicked = true;
+                            }
+                        });
+                        copy_clicked
+                    };
+
+                    if render_field(ui, "Title", &mut self.update_title, &mut self.edit_title) {
+                        if let Some(path) = self.editing_track_path.clone() {
+                            if let Some(val) = self.get_tag_value(&path, "title") {
+                                self.edit_title = val;
+                            }
+                        }
+                    }
+
+                    if render_field(ui, "Artist", &mut self.update_artist, &mut self.edit_artist) {
+                        if let Some(path) = self.editing_track_path.clone() {
+                            if let Some(val) = self.get_tag_value(&path, "artist") {
+                                self.edit_artist = val;
+                            }
+                        }
+                    }
+
+                    if render_field(ui, "Album", &mut self.update_album, &mut self.edit_album) {
+                        if let Some(path) = self.editing_track_path.clone() {
+                            if let Some(val) = self.get_tag_value(&path, "album") {
+                                self.edit_album = val;
+                            }
+                        }
+                    }
+
+                    if render_field(ui, "Genre", &mut self.update_genre, &mut self.edit_genre) {
+                        if let Some(path) = self.editing_track_path.clone() {
+                            if let Some(val) = self.get_tag_value(&path, "genre") {
+                                self.edit_genre = val;
+                            }
+                        }
+                    }
+
+                    if render_field(ui, "Jaar", &mut self.update_year, &mut self.edit_year) {
+                        if let Some(path) = self.editing_track_path.clone() {
+                            if let Some(val) = self.get_tag_value(&path, "year") {
+                                self.edit_year = val;
+                            }
+                        }
+                    }
+
+                    if render_field(ui, "Componist", &mut self.update_composer, &mut self.edit_composer) {
+                        if let Some(path) = self.editing_track_path.clone() {
+                            if let Some(val) = self.get_tag_value(&path, "composer") {
+                                self.edit_composer = val;
+                            }
+                        }
+                    }
 
                     ui.add_space(15.0);
                     ui.horizontal(|ui| {
-                        if ui.button("💾 Save to File").clicked() {
+                        if ui.button("💾 Save to All Selected").clicked() {
                             self.save_track_tags();
                         }
                         if ui.button("Cancel").clicked() {
                             self.show_track_details = false;
                         }
                         if let Some(status) = &self.save_status {
-                            let color = if status.contains("Error") {
+                            let color = if status.to_lowercase().contains("error") || status.to_lowercase().contains("faalden") {
                                 Color32::RED
                             } else {
                                 Color32::GREEN
@@ -431,30 +390,111 @@ impl MusicPlayerApp {
                     ui.separator();
                     ui.add_space(5.0);
 
-                    ui.label(RichText::new("Alle Ruwe Tags (Read-Only):").strong());
+                    ui.label(RichText::new(format!("Ruwe Tags van: {}", Path::new(&current_path).file_name().unwrap_or_default().to_string_lossy())).strong());
                     ScrollArea::vertical()
                         .id_source("raw_tags_scroll")
                         .max_height(200.0)
                         .show(ui, |ui| {
-                            ui.label(RichText::new(&self.raw_tags_display).monospace().size(12.0));
+                            ui.label(RichText::new(&self.raw_tags_display).monospace().size(11.0));
                         });
                 }
             });
 
         self.show_track_details = is_open;
 
-        // Verwijder track uit de lijst als op ❌ is geklikt
+        if let Some(new_path) = newly_selected_path {
+            self.editing_track_path = Some(new_path.clone());
+            self.refresh_raw_tags_for_path(&new_path);
+        }
+
         if let Some(path) = path_to_remove {
             self.selected_tracks.remove(&path);
             self.tracks_to_edit.retain(|p| p != &path);
 
             if self.editing_track_path.as_deref() == Some(&path) {
-                if let Some(first_path) = self.tracks_to_edit.first() {
+                if let Some(first_path) = self.tracks_to_edit.first().cloned() {
                     self.editing_track_path = Some(first_path.clone());
+                    self.refresh_raw_tags_for_path(&first_path);
                 } else {
                     self.show_track_details = false;
                 }
             }
+        }
+    }
+
+    /// Helper: Haal een specifieke tagwaarde op van een gegeven bestandspad
+    fn get_tag_value(&self, path: &str, key: &str) -> Option<String> {
+        if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+            for tag in tagged_file.tags() {
+                match key {
+                    "title" => {
+                        if let Some(t) = tag.title() {
+                            return Some(t.to_string());
+                        }
+                    }
+                    "artist" => {
+                        if let Some(a) = tag.artist() {
+                            return Some(a.to_string());
+                        }
+                    }
+                    "album" => {
+                        if let Some(a) = tag.album() {
+                            return Some(a.to_string());
+                        }
+                    }
+                    "composer" => {
+                        if let Some(item) = tag.get(&ItemKey::Composer) {
+                            if let ItemValue::Text(t) = item.value() {
+                                return Some(t.clone());
+                            }
+                        }
+                    }
+                    "genre" => {
+                        let genres: Vec<String> = tag
+                            .get(&ItemKey::Genre)
+                            .into_iter()
+                            .filter_map(|i| {
+                                if let ItemValue::Text(t) = i.value() {
+                                    Some(t.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if !genres.is_empty() {
+                            return Some(genres.join("; "));
+                        }
+                    }
+                    "year" => {
+                        if let Some(year_item) = tag.get(&ItemKey::Year) {
+                            if let ItemValue::Text(t) = year_item.value() {
+                                return Some(t.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    /// Helper: Ververs de raw_tags_display voor een specifiek pad
+    fn refresh_raw_tags_for_path(&mut self, path: &str) {
+        self.raw_tags_display.clear();
+        if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+            let mut raw_text = String::new();
+            for tag in tagged_file.tags() {
+                raw_text.push_str(&format!("--- Tag Type: {:?} ---\n", tag.tag_type()));
+                for item in tag.items() {
+                    raw_text.push_str(&format!("{:?}: {:?}\n", item.key(), item.value()));
+                }
+            }
+            self.raw_tags_display = if raw_text.is_empty() {
+                "Geen tags gevonden.".to_string()
+            } else {
+                raw_text
+            };
         }
     }
 }
