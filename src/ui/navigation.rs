@@ -2,6 +2,7 @@ use crate::player::PlayerCommand;
 use crate::ui::shortcuts;
 use crate::ui::types::{FilterNode, NavLevel, ViewMode};
 use eframe::egui;
+use std::fmt::Write;
 use std::path::Path;
 
 use super::app::MusicPlayerApp;
@@ -190,6 +191,128 @@ impl MusicPlayerApp {
         if self.is_picker_active() && shortcuts::check_action(&cfg, ctx, "NavigateLeft") {
             self.step_back_filter();
             return;
+        }
+
+        // --- I: TRACK DETAILS ---
+        if shortcuts::check_action(&cfg, ctx, "TrackDetails") {
+            let has_selection = !self.selected_tracks.is_empty();
+            if has_selection || self.current_level == NavLevel::Track {
+                self.save_status = None;
+                self.raw_tags_display.clear();
+                self.read_error = None;
+                self.edit_title.clear();
+                self.edit_artist.clear();
+                self.edit_album.clear();
+                self.edit_genre.clear();
+                self.edit_year.clear();
+                self.edit_composer.clear();
+                self.update_title = false;
+                self.update_artist = false;
+                self.update_album = false;
+                self.update_genre = false;
+                self.update_year = false;
+                self.update_composer = false;
+
+                use lofty::file::TaggedFileExt;
+                use lofty::probe::Probe;
+                use lofty::tag::{Accessor, ItemKey, ItemValue};
+
+                if self.selected_tracks.is_empty() {
+                    let lib_for_path = self.active_library();
+                    if let Some(track_path) =
+                        lib_for_path.and_then(|lib| self.get_current_track_path(lib))
+                    {
+                        self.tracks_to_edit = vec![track_path];
+                    }
+                } else {
+                    self.tracks_to_edit = self.selected_tracks.iter().cloned().collect();
+                    self.tracks_to_edit.sort();
+                }
+
+                if let Some(first_path) = self.tracks_to_edit.first() {
+                    self.editing_track_path = Some(first_path.clone());
+
+                    // 2. CORRECTHEID: Gebruik Option::and_then() om een waarde te krijgen of None terug te geven
+                    match Probe::open(first_path).and_then(|p| p.read()) {
+                        Ok(tagged_file) => {
+                            let mut raw_text = String::new();
+
+                            // 1. EFFICIËNTER: Gebruik writeln! i.p.v. push_str(&format!())
+                            for tag in tagged_file.tags() {
+                                let _ = writeln!(
+                                    &mut raw_text,
+                                    "--- Tag Type: {:?} ---",
+                                    tag.tag_type()
+                                );
+                                for item in tag.items() {
+                                    let _ = writeln!(
+                                        &mut raw_text,
+                                        "{:?}: {:?}",
+                                        item.key(),
+                                        item.value()
+                                    );
+                                }
+                            }
+
+                            self.raw_tags_display = if raw_text.is_empty() {
+                                "Geen tags gevonden.".to_string()
+                            } else {
+                                raw_text
+                            };
+
+                            if let Some(t) = tagged_file
+                                .primary_tag()
+                                .or_else(|| tagged_file.first_tag())
+                            {
+                                self.edit_title =
+                                    t.title().map(|s| s.to_string()).unwrap_or_default();
+                                self.edit_artist =
+                                    t.artist().map(|s| s.to_string()).unwrap_or_default();
+                                self.edit_album =
+                                    t.album().map(|s| s.to_string()).unwrap_or_default();
+
+                                // 2. CORRECTHEID: Laad ALLE genres in, gescheiden door een puntkomma
+                                let genres: Vec<String> = t
+                                    .items()
+                                    .filter(|item| item.key() == &ItemKey::Genre)
+                                    .filter_map(|item| match item.value() {
+                                        ItemValue::Text(text) => Some(text.clone()),
+                                        _ => None,
+                                    })
+                                    .collect();
+
+                                self.edit_genre = genres.join("; ");
+
+                                // 3. LEESBAARHEID: Gebruik de ingebouwde get_string() functie van Lofty
+                                self.edit_year = t
+                                    .items()
+                                    .find(|item| item.key() == &ItemKey::Year)
+                                    .and_then(|item| match item.value() {
+                                        ItemValue::Text(text) => Some(text.clone()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_default();
+
+                                // Hetzelfde voor Componist (Composer):
+                                self.edit_composer = t
+                                    .items()
+                                    .find(|item| item.key() == &ItemKey::Composer)
+                                    .and_then(|item| match item.value() {
+                                        ItemValue::Text(text) => Some(text.clone()),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_default();
+                            }
+                        }
+                        Err(e) => {
+                            self.read_error = Some(format!("{:?}", e));
+                            self.raw_tags_display =
+                                "Fout bij het parsen van de audio-container.".to_string();
+                        }
+                    }
+                }
+                self.show_track_details = true;
+            }
         }
 
         // --- PICKER NAVIGATION ---
@@ -430,83 +553,6 @@ impl MusicPlayerApp {
                 if let Some(parent) = Path::new(&track_path).parent() {
                     let _ = std::process::Command::new("explorer").arg(parent).spawn();
                 }
-            }
-        }
-
-        // --- I: TRACK DETAILS ---
-        if shortcuts::check_action(&cfg, ctx, "TrackDetails") {
-            let has_selection = !self.selected_tracks.is_empty();
-            if has_selection || self.current_level == NavLevel::Track {
-                self.save_status = None;
-                self.raw_tags_display.clear();
-                self.read_error = None;
-                self.edit_title.clear();
-                self.edit_artist.clear();
-                self.edit_album.clear();
-                self.edit_genre.clear();
-                self.update_title = false;
-                self.update_artist = false;
-                self.update_album = false;
-                self.update_genre = false;
-
-                use lofty::file::TaggedFileExt;
-                use lofty::probe::Probe;
-                use lofty::tag::Accessor;
-
-                if self.selected_tracks.is_empty() {
-                    if let Some(track_path) = self.get_current_track_path(&lib) {
-                        self.tracks_to_edit = vec![track_path];
-                    }
-                } else {
-                    self.tracks_to_edit = self.selected_tracks.iter().cloned().collect();
-                    self.tracks_to_edit.sort();
-                }
-
-                if let Some(first_path) = self.tracks_to_edit.first() {
-                    self.editing_track_path = Some(first_path.clone());
-
-                    match Probe::open(first_path).and_then(|p| p.read()) {
-                        Ok(tagged_file) => {
-                            let mut raw_text = String::new();
-                            for tag in tagged_file.tags() {
-                                raw_text
-                                    .push_str(&format!("--- Tag Type: {:?} ---\n", tag.tag_type()));
-                                for item in tag.items() {
-                                    raw_text.push_str(&format!(
-                                        "{:?}: {:?}\n",
-                                        item.key(),
-                                        item.value()
-                                    ));
-                                }
-                            }
-                            self.raw_tags_display = if raw_text.is_empty() {
-                                "Geen tags gevonden.".to_string()
-                            } else {
-                                raw_text
-                            };
-
-                            if let Some(t) = tagged_file
-                                .primary_tag()
-                                .or_else(|| tagged_file.first_tag())
-                            {
-                                self.edit_title =
-                                    t.title().map(|s| s.to_string()).unwrap_or_default();
-                                self.edit_artist =
-                                    t.artist().map(|s| s.to_string()).unwrap_or_default();
-                                self.edit_album =
-                                    t.album().map(|s| s.to_string()).unwrap_or_default();
-                                self.edit_genre =
-                                    t.genre().map(|s| s.to_string()).unwrap_or_default();
-                            }
-                        }
-                        Err(e) => {
-                            self.read_error = Some(format!("{:?}", e));
-                            self.raw_tags_display =
-                                "Fout bij het parsen van de audio-container.".to_string();
-                        }
-                    }
-                }
-                self.show_track_details = true;
             }
         }
 

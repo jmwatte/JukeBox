@@ -132,11 +132,7 @@ pub fn filter_by_genre(library: &Library, genre: &str) -> Library {
                                 .as_ref()
                                 .and_then(|g| {
                                     let track_genres = split_genres(g);
-                                    Some(
-                                        track_genres
-                                            .iter()
-                                            .any(|tg| tg.to_lowercase() == genre.to_lowercase()),
-                                    )
+                                    Some(track_genres.iter().any(|tg| tg == genre))
                                 })
                                 .unwrap_or(false)
                         }

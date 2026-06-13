@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, RichText, ScrollArea};
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, Tag, TagType};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
 
 use super::app::MusicPlayerApp;
 
@@ -47,6 +47,7 @@ impl MusicPlayerApp {
                     }
                 }
 
+                // --- STANDAARD VELDEN ---
                 if self.update_title {
                     tag.set_title(self.edit_title.clone());
                 }
@@ -56,8 +57,43 @@ impl MusicPlayerApp {
                 if self.update_album {
                     tag.set_album(self.edit_album.clone());
                 }
+
+                // --- MEERVOUDIGE GENRES (Gescheiden door ;) ---
                 if self.update_genre {
-                    tag.set_genre(self.edit_genre.clone());
+                    tag.remove_key(&ItemKey::Genre);
+                    for g in self.edit_genre.split(';') {
+                        let trimmed = g.trim();
+                        if !trimmed.is_empty() {
+                            tag.insert(TagItem::new(
+                                ItemKey::Genre,
+                                ItemValue::Text(trimmed.to_string()),
+                            ));
+                        }
+                    }
+                }
+
+                // --- JAAR ---
+                if self.update_year {
+                    tag.remove_key(&ItemKey::Year);
+                    let trimmed = self.edit_year.trim();
+                    if !trimmed.is_empty() {
+                        tag.insert(TagItem::new(
+                            ItemKey::Year,
+                            ItemValue::Text(trimmed.to_string()),
+                        ));
+                    }
+                }
+
+                // --- COMPONIST ---
+                if self.update_composer {
+                    tag.remove_key(&ItemKey::Composer);
+                    let trimmed = self.edit_composer.trim();
+                    if !trimmed.is_empty() {
+                        tag.insert(TagItem::new(
+                            ItemKey::Composer,
+                            ItemValue::Text(trimmed.to_string()),
+                        ));
+                    }
                 }
 
                 tagged_file.insert_tag(tag);
@@ -83,6 +119,13 @@ impl MusicPlayerApp {
                                             }
                                             if self.update_genre {
                                                 track.genre = Some(self.edit_genre.clone());
+                                            }
+                                            if self.update_year {
+                                                track.year =
+                                                    self.edit_year.trim().parse::<u32>().ok();
+                                            }
+                                            if self.update_composer {
+                                                track.composer = Some(self.edit_composer.clone());
                                             }
                                         }
                                     }
@@ -151,7 +194,7 @@ impl MusicPlayerApp {
         egui::Window::new(popup_title)
             .open(&mut is_open)
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
             .default_width(500.0)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
@@ -176,27 +219,30 @@ impl MusicPlayerApp {
                                 .strong()
                                 .size(14.0),
                         );
-                        ScrollArea::vertical().max_height(120.0).show(ui, |ui| {
-                            for track_path in &self.tracks_to_edit {
-                                ui.horizontal(|ui| {
-                                    let filename = Path::new(track_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy();
+                        ScrollArea::vertical()
+                            .id_source("batch_files_scroll")
+                            .max_height(120.0)
+                            .show(ui, |ui| {
+                                for track_path in &self.tracks_to_edit {
+                                    ui.horizontal(|ui| {
+                                        let filename = Path::new(track_path)
+                                            .file_name()
+                                            .unwrap_or_default()
+                                            .to_string_lossy();
 
-                                    ui.label(
-                                        RichText::new(filename.to_string())
-                                            .size(12.0)
-                                            .color(Color32::GRAY),
-                                    );
-                                    ui.add_space(10.0);
+                                        ui.label(
+                                            RichText::new(filename.to_string())
+                                                .size(12.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                        ui.add_space(10.0);
 
-                                    if ui.small_button("❌").clicked() {
-                                        path_to_remove = Some(track_path.clone());
-                                    }
-                                });
-                            }
-                        });
+                                        if ui.small_button("❌").clicked() {
+                                            path_to_remove = Some(track_path.clone());
+                                        }
+                                    });
+                                }
+                            });
                         ui.separator();
                         ui.add_space(5.0);
                     }
@@ -231,11 +277,29 @@ impl MusicPlayerApp {
                     });
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.update_genre, "");
-                        ui.label("Genre:");
+                        ui.label("Genre (scheid met ';'):");
                         ui.add_sized(
-                            [400.0, 20.0],
+                            [300.0, 20.0],
                             egui::TextEdit::singleline(&mut self.edit_genre)
                                 .interactive(self.update_genre),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.update_year, "");
+                        ui.label("Jaar:");
+                        ui.add_sized(
+                            [400.0, 20.0],
+                            egui::TextEdit::singleline(&mut self.edit_year)
+                                .interactive(self.update_year),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.update_composer, "");
+                        ui.label("Componist:");
+                        ui.add_sized(
+                            [400.0, 20.0],
+                            egui::TextEdit::singleline(&mut self.edit_composer)
+                                .interactive(self.update_composer),
                         );
                     });
 
@@ -262,14 +326,12 @@ impl MusicPlayerApp {
                     ui.add_space(5.0);
 
                     ui.label(RichText::new("Alle Ruwe Tags (Read-Only):").strong());
-                    ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.raw_tags_display)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .interactive(false),
-                        );
-                    });
+                    ScrollArea::vertical()
+                        .id_source("raw_tags_scroll")
+                        .max_height(200.0)
+                        .show(ui, |ui| {
+                            ui.label(RichText::new(&self.raw_tags_display).monospace().size(12.0));
+                        });
                 }
             });
 

@@ -166,7 +166,8 @@ pub async fn load_or_scan_library(
                                     // 4. OriginalYear als fallback (niet in alle lofty versies beschikbaar)
                                     lofty::tag::ItemKey::Unknown(key)
                                         if key.to_lowercase() == "originalyear"
-                                            || key.to_lowercase() == "toryear" =>
+                                            || key.to_lowercase() == "toryear"
+                                            || key.to_lowercase() == "recordingdate" =>
                                     {
                                         if year.is_none() {
                                             if let lofty::tag::ItemValue::Text(text) = item.value()

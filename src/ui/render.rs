@@ -32,7 +32,10 @@ impl eframe::App for MusicPlayerApp {
         }
 
         self.handle_keyboard_navigation(ctx);
-
+        // --- TRACK DETAILS POPUP ---
+        if self.show_track_details {
+            self.show_track_details_popup(ctx);
+        }
         // --- HELP SCHERM ---
         if self.show_help {
             let s = &self.config.shortcuts;
@@ -630,11 +633,6 @@ impl eframe::App for MusicPlayerApp {
         self.selected_track = st;
         self.current_level = cl;
         self.scroll_to_selection = sts;
-
-        // --- TRACK DETAILS POPUP ---
-        if self.show_track_details {
-            self.show_track_details_popup(ctx);
-        }
 
         self.scroll_to_selection = false;
         ctx.request_repaint();
