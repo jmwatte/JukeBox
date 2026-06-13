@@ -663,17 +663,42 @@ impl MusicPlayerApp {
             } else {
                 ScrollArea::vertical().show(ui, |ui| {
                     let available_ui_width = ui.available_width();
-                    let desired_thumb = 220.0_f32;
-                    let mut columns = (available_ui_width / desired_thumb).floor() as usize;
+                    let padding = 16.0_f32; // Ietsje ruimere padding toont mooier bij grotere hoezen
+
+                    // 1. Bepaal het aantal kolommen dynamisch
+                    let mut columns = if num_albums <= 4 {
+                        // Bij 2, 3 of 4 albums: forceer ze op 1 rij zodat ze de breedte perfect opvullen!
+                        num_albums
+                    } else {
+                        // Basis verhoogd naar 320px. Dit voorkomt een eindeloze horizontale
+                        // rij van kleine hoesjes en dwingt egui netjes naar een 2e of 3e rij.
+                        let desired_thumb = 320.0_f32;
+                        (available_ui_width / desired_thumb).floor() as usize
+                    };
+
+                    // Veiligheidscheck
                     if columns == 0 {
                         columns = 1;
                     }
-                    columns = std::cmp::min(columns, std::cmp::max(1, num_albums));
-                    let padding = 12.0_f32;
+                    columns = std::cmp::min(columns, num_albums);
+
+                    // 2. Anti-"weeskind" logica
+                    // Voorkomt dat er 1 eenzaam hoesje op de laatste rij valt.
+                    // Bijv: 9 albums verdeeld over 4 kolommen = 4 + 4 + 1.
+                    // Door kolommen met 1 te verlagen wordt dit een perfect 3x3 grid!
+                    if columns > 2 && num_albums > columns {
+                        if num_albums % columns == 1 {
+                            columns -= 1;
+                        }
+                    }
+
+                    // 3. Bereken de uiteindelijke breedte per hoes
                     let thumb_w = ((available_ui_width - padding * (columns as f32 + 1.0))
                         / columns as f32)
-                        .max(80.0)
-                        .min(600.0);
+                        .max(150.0)
+                        .min(800.0); // Maximum flink verhoogd zodat ze de beschikbare real estate echt mogen pakken
+
+                    let thumb_size = egui::vec2(thumb_w, thumb_w);
                     let thumb_size = egui::vec2(thumb_w, thumb_w);
 
                     if num_albums == 1 {

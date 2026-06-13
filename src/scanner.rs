@@ -153,26 +153,29 @@ pub async fn load_or_scan_library(
                                         }
                                     }
 
-                                    // 3. Year tag
-                                    lofty::tag::ItemKey::Year => {
+                                    // 3. Year tags (Groepeer alle bekende jaar-keys van Lofty)
+                                    lofty::tag::ItemKey::Year
+                                    | lofty::tag::ItemKey::RecordingDate
+                                    | lofty::tag::ItemKey::OriginalReleaseDate => {
                                         if year.is_none() {
-                                            if let lofty::tag::ItemValue::Text(text) = item.value()
-                                            {
-                                                year = text.parse::<u32>().ok();
+                                            if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                                // Neem alleen de eerste 4 karakters (voor het geval de tag "2011-05-12" is)
+                                                let year_str: String = text.chars().take(4).collect();
+                                                year = year_str.parse::<u32>().ok();
                                             }
                                         }
                                     }
 
-                                    // 4. OriginalYear als fallback (niet in alle lofty versies beschikbaar)
+                                    // 4. Echte onbekende of custom tags als fallback
                                     lofty::tag::ItemKey::Unknown(key)
                                         if key.to_lowercase() == "originalyear"
                                             || key.to_lowercase() == "toryear"
-                                            || key.to_lowercase() == "recordingdate" =>
-                                    {
+                                            // recordingdate mag hier weg, want die vangen we nu hierboven af!
+                                    => {
                                         if year.is_none() {
-                                            if let lofty::tag::ItemValue::Text(text) = item.value()
-                                            {
-                                                year = text.parse::<u32>().ok();
+                                            if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                                let year_str: String = text.chars().take(4).collect();
+                                                year = year_str.parse::<u32>().ok();
                                             }
                                         }
                                     }

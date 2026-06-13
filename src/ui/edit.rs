@@ -2,9 +2,9 @@ use std::path::Path;
 
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 use lofty::config::WriteOptions;
-use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
 
 use super::app::MusicPlayerApp;
 
@@ -20,7 +20,7 @@ impl MusicPlayerApp {
 
         for path in &self.tracks_to_edit {
             let result = (|| -> Result<(), String> {
-                let mut tagged_file = Probe::open(path)
+                let tagged_file = Probe::open(path)
                     .map_err(|e| format!("Open: {:?}", e))?
                     .read()
                     .map_err(|e| format!("Read: {:?}", e))?;
@@ -64,7 +64,7 @@ impl MusicPlayerApp {
                     for g in self.edit_genre.split(';') {
                         let trimmed = g.trim();
                         if !trimmed.is_empty() {
-                            tag.insert(TagItem::new(
+                            tag.push(TagItem::new(
                                 ItemKey::Genre,
                                 ItemValue::Text(trimmed.to_string()),
                             ));
@@ -96,10 +96,8 @@ impl MusicPlayerApp {
                     }
                 }
 
-                tagged_file.insert_tag(tag);
-                tagged_file
-                    .save_to_path(path, WriteOptions::default())
-                    .map_err(|e| format!("Save: {:?}", e))?;
+                tag.save_to_path(path, WriteOptions::default())
+                    .map_err(|e| format!("Save faalde: {:?}", e))?;
 
                 Ok(())
             })();
@@ -175,6 +173,7 @@ impl MusicPlayerApp {
         }
 
         self.selected_tracks.clear();
+        self.recompute();
     }
 
     /// Teken de Track Details / Batch Edit popup.
