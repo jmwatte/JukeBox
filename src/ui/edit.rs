@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32, RichText, ScrollArea};
 use lofty::config::WriteOptions;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::probe::Probe;
-use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagItem, TagType};
+use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
 
 use super::app::MusicPlayerApp;
 
@@ -129,8 +129,22 @@ impl MusicPlayerApp {
                 }
 
                 // Verwijder ALLE oude tags en voeg alleen de nieuwe (target) tag toe
-                // Dit voorkomt dat Id3v1 blijft staan met oude data
-                tagged_file.clear();
+                // Dit voorkomt dat Id3v1 (of andere types) blijft staan met oude data.
+                // Alleen de target_tag_type blijft bewaard (we schrijven die overschrijven we).
+                // let target = target_tag_type;
+                // for tag_type in [
+                //     TagType::Id3v1,
+                //     TagType::Id3v2,
+                //     TagType::Mp4Ilst,
+                //     TagType::VorbisComments,
+                //     TagType::RiffInfo,
+                // ] {
+                //     if tag_type != target {
+                //         tagged_file.remove(tag_type);
+                //     }
+                // }
+                // // Verwijder ook target zodat we een schone tag hebben om te vullen
+                // tagged_file.remove(target);
 
                 // --- STANDAARD VELDEN ---
                 if self.update_title {
@@ -180,15 +194,16 @@ impl MusicPlayerApp {
                         ));
                     }
                 }
+                if target_tag_type != TagType::Id3v1 {
+                    let _ = TagType::Id3v1.remove_from_path(path);
+                }
+                // DE MAGISCHE REGEL: vertel lofty om écht alle andere tags (zoals ID3v1)
+                // uit het fysieke bestand te verwijderen bij het opslaan!
+                let write_options = WriteOptions::new().remove_others(true);
 
-                // 1. Verwijder ALLE oude tags uit de container (wist ID3v1 én ID3v2)
-                tagged_file.clear();
-
-                // 2. Stop onze geüpdatete, moderne ID3v2 tag terug in de container
-                tagged_file.insert_tag(tag);
-                // 3. Sla de volledige container op (gebruik tagged_file, NIET tag!)
-                tagged_file
-                    .save_to_path(path, WriteOptions::default())
+                // Sla ALLEEN de 'tag' op, niet de 'tagged_file'.
+                // Dit verwijdert automatisch ID3v1 en andere ongewenste tags van de schijf.
+                tag.save_to_path(path, write_options)
                     .map_err(|e| format!("Save faalde: {:?}", e))?;
 
                 Ok(())
