@@ -85,6 +85,9 @@ pub struct MusicPlayerApp {
     pub selected_year: usize,
     pub composers: Vec<(String, usize)>,
     pub selected_composer: usize,
+
+    /// Split ratio between "Bestanden" and "Ruwe tags" columns in the batch edit panel (0.0–1.0).
+    pub edit_panel_split: f32,
 }
 
 impl MusicPlayerApp {
@@ -153,6 +156,7 @@ impl MusicPlayerApp {
             selected_year: 0,
             composers: Vec::new(),
             selected_composer: 0,
+            edit_panel_split: 0.4,
         }
     }
 

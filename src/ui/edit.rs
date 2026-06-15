@@ -375,87 +375,123 @@ impl MusicPlayerApp {
                     .color(Color32::GRAY),
             );
 
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(RichText::new("Bestanden:").strong().size(11.0));
-                    ScrollArea::vertical()
-                        .id_source("batch_files_scroll")
-                        .max_height(250.0)
-                        .show(ui, |ui| {
-                            // We clonen de lijst om borrow conflicts te voorkomen tijdens iteratie en mutatie
-                            let tracks_to_edit_clone = self.tracks_to_edit.clone();
-                            for track_path in &tracks_to_edit_clone {
-                                ui.horizontal(|ui| {
-                                    let filename = Path::new(track_path)
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy();
+            // Resizable split between "Bestanden" (left) and "Ruwe tags" (right)
+            let avail = ui.available_rect_before_wrap();
+            let sep_width = 4.0;
+            let total_w = avail.width();
+            let left_ratio = self.edit_panel_split;
+            let left_w = ((total_w - sep_width) * left_ratio).max(80.0);
+            let right_w = (total_w - sep_width - left_w).max(80.0);
+            // Recalculate ratio after clamping so it stays accurate
+            self.edit_panel_split = left_w / (left_w + right_w);
 
-                                    let is_selected =
-                                        self.editing_track_path.as_deref() == Some(track_path);
+            // Left column — file list
+            let left_rect =
+                egui::Rect::from_min_size(avail.min, egui::vec2(left_w, avail.height()));
+            let sep_rect = egui::Rect::from_min_size(
+                egui::pos2(avail.min.x + left_w, avail.min.y),
+                egui::vec2(sep_width, avail.height()),
+            );
+            let right_rect = egui::Rect::from_min_size(
+                egui::pos2(avail.min.x + left_w + sep_width, avail.min.y),
+                egui::vec2(right_w, avail.height()),
+            );
 
-                                    if ui.selectable_label(is_selected, filename).clicked() {
-                                        self.editing_track_path = Some(track_path.clone());
-                                        self.refresh_raw_tags_for_path(track_path);
-                                    }
+            // ---- Left panel ----
+            let mut left_ui = ui.child_ui(left_rect, *ui.layout(), None);
+            left_ui.vertical(|ui| {
+                ui.label(RichText::new("Bestanden:").strong().size(11.0));
+                ScrollArea::vertical()
+                    .id_source("batch_files_scroll")
+                    .show(ui, |ui| {
+                        // We clonen de lijst om borrow conflicts te voorkomen tijdens iteratie en mutatie
+                        let tracks_to_edit_clone = self.tracks_to_edit.clone();
+                        for track_path in &tracks_to_edit_clone {
+                            ui.horizontal(|ui| {
+                                let filename = Path::new(track_path)
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy();
 
-                                    if ui
-                                        .small_button("❌")
-                                        .on_hover_text("Verwijder uit selectie")
-                                        .clicked()
-                                    {
-                                        self.selected_tracks.remove(track_path);
-                                        self.tracks_to_edit.retain(|p| p != track_path);
+                                let is_selected =
+                                    self.editing_track_path.as_deref() == Some(track_path);
 
-                                        if self.editing_track_path.as_deref() == Some(track_path) {
-                                            if let Some(first) =
-                                                self.tracks_to_edit.first().cloned()
-                                            {
-                                                self.editing_track_path = Some(first.clone());
-                                                self.refresh_raw_tags_for_path(&first);
-                                            } else {
-                                                self.editing_track_path = None;
-                                            }
+                                if ui.selectable_label(is_selected, filename).clicked() {
+                                    self.editing_track_path = Some(track_path.clone());
+                                    self.refresh_raw_tags_for_path(track_path);
+                                }
+
+                                if ui
+                                    .small_button("❌")
+                                    .on_hover_text("Verwijder uit selectie")
+                                    .clicked()
+                                {
+                                    self.selected_tracks.remove(track_path);
+                                    self.tracks_to_edit.retain(|p| p != track_path);
+
+                                    if self.editing_track_path.as_deref() == Some(track_path) {
+                                        if let Some(first) = self.tracks_to_edit.first().cloned() {
+                                            self.editing_track_path = Some(first.clone());
+                                            self.refresh_raw_tags_for_path(&first);
+                                        } else {
+                                            self.editing_track_path = None;
                                         }
                                     }
-                                });
-                            }
-                        });
-                });
+                                }
+                            });
+                        }
+                    });
+            });
 
-                ui.vertical(|ui| {
-                    let current_file = self
-                        .editing_track_path
-                        .as_deref()
-                        .unwrap_or("Geen bestand geselecteerd");
-                    ui.label(
-                        RichText::new(format!(
-                            "Ruwe tags: {}",
-                            Path::new(current_file)
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                        ))
-                        .strong()
-                        .size(11.0),
-                    );
-                    ScrollArea::vertical()
-                        .id_source("raw_tags_scroll")
-                        .max_height(250.0)
-                        .show(ui, |ui| {
-                            if self.editing_track_path.is_some() {
-                                ui.label(
-                                    RichText::new(&self.raw_tags_display).monospace().size(10.0),
-                                );
-                            } else {
-                                ui.label(
-                                    RichText::new("Klik op een bestand links.")
-                                        .italics()
-                                        .color(Color32::GRAY),
-                                );
-                            }
-                        });
-                });
+            // ---- Draggable separator ----
+            let sep_response = ui.allocate_rect(sep_rect, egui::Sense::click_and_drag());
+            if ui.is_rect_visible(sep_rect) {
+                let stroke = ui.style().visuals.widgets.noninteractive.bg_stroke;
+                ui.painter()
+                    .vline(sep_rect.center().x, sep_rect.y_range(), stroke);
+            }
+            // Visual feedback when hovered / dragged
+            if sep_response.hovered() || sep_response.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+            }
+            if sep_response.dragged_by(egui::PointerButton::Primary) {
+                let delta = sep_response.drag_delta().x;
+                let new_left = left_w + delta;
+                let new_ratio = new_left / (total_w - sep_width);
+                self.edit_panel_split = new_ratio.clamp(0.15, 0.85);
+            }
+
+            // ---- Right panel ----
+            let mut right_ui = ui.child_ui(right_rect, *ui.layout(), None);
+            right_ui.vertical(|ui| {
+                let current_file = self
+                    .editing_track_path
+                    .as_deref()
+                    .unwrap_or("Geen bestand geselecteerd");
+                ui.label(
+                    RichText::new(format!(
+                        "Ruwe tags: {}",
+                        Path::new(current_file)
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    ))
+                    .strong()
+                    .size(11.0),
+                );
+                ScrollArea::vertical()
+                    .id_source("raw_tags_scroll")
+                    .show(ui, |ui| {
+                        if self.editing_track_path.is_some() {
+                            ui.label(RichText::new(&self.raw_tags_display).monospace().size(10.0));
+                        } else {
+                            ui.label(
+                                RichText::new("Klik op een bestand links.")
+                                    .italics()
+                                    .color(Color32::GRAY),
+                            );
+                        }
+                    });
             });
         });
     }
