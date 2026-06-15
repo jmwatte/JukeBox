@@ -33,9 +33,21 @@ impl eframe::App for MusicPlayerApp {
 
         self.handle_keyboard_navigation(ctx);
         // --- TRACK DETAILS POPUP ---
-        if self.show_track_details {
-            self.show_track_details_popup(ctx);
+        // if self.show_track_details {
+        //     // self.show_track_details_popup(ctx);
+        // }
+
+        // Optioneel: Maak een inschuifbaar zijpaneel dat alleen verschijnt als er iets geselecteerd is
+        if !self.tracks_to_edit.is_empty() {
+            egui::SidePanel::right("batch_edit_panel")
+                .default_width(350.0) // Breedte van het paneel
+                .resizable(true)
+                .show(ctx, |ui| {
+                    // Hier roepen we de nieuwe functie aan!
+                    self.show_batch_edit_panel(ui);
+                });
         }
+
         // --- HELP SCHERM ---
         if self.show_help {
             let s = &self.config.shortcuts;
@@ -229,11 +241,14 @@ impl eframe::App for MusicPlayerApp {
                         self.selected_track = 0;
 
                         // Search binnen de actieve gefilterde set
-                        let base_lib = self
-                            .filtered_library
-                            .as_ref()
-                            .or(self.cached_filtered.as_ref())
-                            .or(self.library.as_ref());
+                        // let base_lib = self
+                        //     .filtered_library
+                        //     .as_ref()
+                        //     .or(self.cached_filtered.as_ref())
+                        //     .or(self.library.as_ref());
+                        //
+                        let base_lib = self.cached_filtered.as_ref().or(self.library.as_ref());
+
                         if let Some(base_lib) = base_lib {
                             if self.search_query.trim().is_empty() {
                                 self.filtered_library = None;

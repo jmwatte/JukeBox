@@ -1,14 +1,12 @@
+use super::app::MusicPlayerApp;
 use eframe::egui::{self, Color32, RichText, ScrollArea};
 use lofty::config::WriteOptions;
-use std::path::Path;
-// FIX: TaggedFileExt toegevoegd voor de .tags() methode
-use super::app::MusicPlayerApp;
 use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
 use lofty::tag::{Accessor, ItemKey, ItemValue, Tag, TagExt, TagItem, TagType};
+use std::path::Path;
 
 impl MusicPlayerApp {
-    /// Tags wegschrijven naar bestand(en) met lofty.
     pub fn save_track_tags(&mut self) {
         if self.tracks_to_edit.is_empty() {
             return;
@@ -234,195 +232,234 @@ impl MusicPlayerApp {
         self.recompute();
     }
 
-    /// Teken de Track Details / Batch Edit popup.
-    pub fn show_track_details_popup(&mut self, ctx: &egui::Context) {
-        let mut is_open = self.show_track_details;
-        let popup_title = if self.tracks_to_edit.len() > 1 {
-            format!(
-                "Batch Edit: {} tracks geselecteerd",
-                self.tracks_to_edit.len()
-            )
-        } else {
-            "Track Details & Tags".to_string()
-        };
+    pub fn show_batch_edit_panel(&mut self, ui: &mut egui::Ui) {
+        if self.tracks_to_edit.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    RichText::new("Selecteer nummers om tags te bewerken")
+                        .color(Color32::GRAY)
+                        .italics(),
+                );
+            });
+            return;
+        }
 
-        let mut path_to_remove: Option<String> = None;
-        let mut newly_selected_path: Option<String> = None;
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "🎵 Batch Edit: {} bestanden",
+                        self.tracks_to_edit.len()
+                    ))
+                    .strong()
+                    .size(14.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("❌ Wis selectie").clicked() {
+                        self.selected_tracks.clear();
+                        self.tracks_to_edit.clear();
+                        self.editing_track_path = None;
+                    }
+                });
+            });
+            ui.separator();
+            ui.add_space(5.0);
 
-        egui::Window::new(popup_title)
-            .open(&mut is_open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(600.0)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                // FIX: We clonen het pad naar een owned String.
-                // Hierdoor leent current_path niet meer van self, wat de E0502 borrow-checker fout oplost!
-                if let Some(current_path) = self.editing_track_path.clone() {
+            ui.label(RichText::new("Te schrijven waarden:").strong().size(12.0));
+
+            // Helper die ALLEEN de UI tekent en true teruggeeft als op 📋 is geklikt.
+            // Geen self borrow hierbinnen, dus geen borrow checker conflicten!
+            let render_field =
+                |ui: &mut egui::Ui, label: &str, update: &mut bool, value: &mut String| -> bool {
+                    let mut copy_clicked = false;
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new("Huidig geselecteerd bestand:").strong());
-                        ui.label(RichText::new(&current_path).size(11.0).color(Color32::GRAY));
+                        ui.checkbox(update, "");
+                        ui.label(format!("{}:", label));
+                        ui.add_sized(
+                            [200.0, 20.0],
+                            egui::TextEdit::singleline(value).interactive(*update),
+                        );
+                        if ui
+                            .small_button("📋")
+                            .on_hover_text("Kopieer van hieronder geselecteerd bestand")
+                            .clicked()
+                        {
+                            copy_clicked = true;
+                        }
                     });
-                    ui.add_space(5.0);
+                    copy_clicked
+                };
 
-                    if let Some(err) = &self.read_error {
-                        ui.label(RichText::new(format!("⚠️ Leesfout: {}", err)).color(Color32::RED).strong());
-                        ui.add_space(5.0);
+            // De mutatie van self gebeurt nu BUITEN de closure
+            if render_field(ui, "Title", &mut self.update_title, &mut self.edit_title) {
+                if let Some(path) = self.editing_track_path.clone() {
+                    if let Some(val) = self.get_tag_value(&path, "title") {
+                        self.edit_title = val;
                     }
+                }
+            }
 
-                    if self.tracks_to_edit.len() > 1 {
-                        ui.label(RichText::new("Klik op een bestand om zijn tags te bekijken:").strong().size(13.0));
-                        ScrollArea::vertical()
-                            .id_source("batch_files_scroll")
-                            .max_height(120.0)
-                            .show(ui, |ui| {
-                                for track_path in &self.tracks_to_edit {
-                                    ui.horizontal(|ui| {
-                                        let filename = Path::new(track_path)
-                                            .file_name()
-                                            .unwrap_or_default()
-                                            .to_string_lossy();
-
-                                        let is_selected = self.editing_track_path.as_deref() == Some(track_path);
-
-                                        if ui.selectable_label(is_selected, filename).clicked() {
-                                            newly_selected_path = Some(track_path.clone());
-                                        }
-
-                                        ui.add_space(10.0);
-                                        if ui.small_button("❌").clicked() {
-                                            path_to_remove = Some(track_path.clone());
-                                        }
-                                    });
-                                }
-                            });
-                        ui.separator();
-                        ui.add_space(5.0);
+            if render_field(ui, "Artist", &mut self.update_artist, &mut self.edit_artist) {
+                if let Some(path) = self.editing_track_path.clone() {
+                    if let Some(val) = self.get_tag_value(&path, "artist") {
+                        self.edit_artist = val;
                     }
+                }
+            }
 
-                    ui.label(RichText::new("Te schrijven waarden (vink aan om toe te passen op ALLE geselecteerde bestanden):").strong());
-                    ui.add_space(5.0);
+            if render_field(ui, "Album", &mut self.update_album, &mut self.edit_album) {
+                if let Some(path) = self.editing_track_path.clone() {
+                    if let Some(val) = self.get_tag_value(&path, "album") {
+                        self.edit_album = val;
+                    }
+                }
+            }
 
-                    // FIX: `mut` verwijderd
-                    let render_field = |ui: &mut egui::Ui, label: &str, update: &mut bool, value: &mut String| -> bool {
-                        let mut copy_clicked = false;
-                        ui.horizontal(|ui| {
-                            ui.checkbox(update, "");
-                            ui.label(format!("{}:", label));
-                            ui.add_sized(
-                                [300.0, 20.0],
-                                egui::TextEdit::singleline(value).interactive(*update),
-                            );
-                            if ui.small_button("📋").on_hover_text("Kopieer van geselecteerd bestand").clicked() {
-                                copy_clicked = true;
-                            }
-                        });
-                        copy_clicked
+            if render_field(ui, "Genre", &mut self.update_genre, &mut self.edit_genre) {
+                if let Some(path) = self.editing_track_path.clone() {
+                    if let Some(val) = self.get_tag_value(&path, "genre") {
+                        self.edit_genre = val;
+                    }
+                }
+            }
+
+            if render_field(ui, "Jaar", &mut self.update_year, &mut self.edit_year) {
+                if let Some(path) = self.editing_track_path.clone() {
+                    if let Some(val) = self.get_tag_value(&path, "year") {
+                        self.edit_year = val;
+                    }
+                }
+            }
+
+            if render_field(
+                ui,
+                "Componist",
+                &mut self.update_composer,
+                &mut self.edit_composer,
+            ) {
+                if let Some(path) = self.editing_track_path.clone() {
+                    if let Some(val) = self.get_tag_value(&path, "composer") {
+                        self.edit_composer = val;
+                    }
+                }
+            }
+
+            ui.add_space(10.0);
+
+            ui.horizontal(|ui| {
+                if ui
+                    .button(RichText::new("💾 Opslaan in alle geselecteerde").strong())
+                    .clicked()
+                {
+                    self.save_track_tags();
+                }
+
+                if let Some(status) = &self.save_status {
+                    let color = if status.to_lowercase().contains("error")
+                        || status.to_lowercase().contains("faalden")
+                    {
+                        Color32::RED
+                    } else {
+                        Color32::GREEN
                     };
-
-                    if render_field(ui, "Title", &mut self.update_title, &mut self.edit_title) {
-                        if let Some(path) = self.editing_track_path.clone() {
-                            if let Some(val) = self.get_tag_value(&path, "title") {
-                                self.edit_title = val;
-                            }
-                        }
-                    }
-
-                    if render_field(ui, "Artist", &mut self.update_artist, &mut self.edit_artist) {
-                        if let Some(path) = self.editing_track_path.clone() {
-                            if let Some(val) = self.get_tag_value(&path, "artist") {
-                                self.edit_artist = val;
-                            }
-                        }
-                    }
-
-                    if render_field(ui, "Album", &mut self.update_album, &mut self.edit_album) {
-                        if let Some(path) = self.editing_track_path.clone() {
-                            if let Some(val) = self.get_tag_value(&path, "album") {
-                                self.edit_album = val;
-                            }
-                        }
-                    }
-
-                    if render_field(ui, "Genre", &mut self.update_genre, &mut self.edit_genre) {
-                        if let Some(path) = self.editing_track_path.clone() {
-                            if let Some(val) = self.get_tag_value(&path, "genre") {
-                                self.edit_genre = val;
-                            }
-                        }
-                    }
-
-                    if render_field(ui, "Jaar", &mut self.update_year, &mut self.edit_year) {
-                        if let Some(path) = self.editing_track_path.clone() {
-                            if let Some(val) = self.get_tag_value(&path, "year") {
-                                self.edit_year = val;
-                            }
-                        }
-                    }
-
-                    if render_field(ui, "Componist", &mut self.update_composer, &mut self.edit_composer) {
-                        if let Some(path) = self.editing_track_path.clone() {
-                            if let Some(val) = self.get_tag_value(&path, "composer") {
-                                self.edit_composer = val;
-                            }
-                        }
-                    }
-
-                    ui.add_space(15.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("💾 Save to All Selected").clicked() {
-                            self.save_track_tags();
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.show_track_details = false;
-                        }
-                        if let Some(status) = &self.save_status {
-                            let color = if status.to_lowercase().contains("error") || status.to_lowercase().contains("faalden") {
-                                Color32::RED
-                            } else {
-                                Color32::GREEN
-                            };
-                            ui.label(RichText::new(status).color(color));
-                        }
-                    });
-
-                    ui.add_space(15.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-
-                    ui.label(RichText::new(format!("Ruwe Tags van: {}", Path::new(&current_path).file_name().unwrap_or_default().to_string_lossy())).strong());
-                    ScrollArea::vertical()
-                        .id_source("raw_tags_scroll")
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            ui.label(RichText::new(&self.raw_tags_display).monospace().size(11.0));
-                        });
+                    ui.label(RichText::new(status).size(11.0).color(color));
                 }
             });
 
-        self.show_track_details = is_open;
+            ui.separator();
+            ui.add_space(5.0);
 
-        if let Some(new_path) = newly_selected_path {
-            self.editing_track_path = Some(new_path.clone());
-            self.refresh_raw_tags_for_path(&new_path);
-        }
+            ui.label(
+                RichText::new("Klik op een bestand om de tags te inspecteren:")
+                    .size(11.0)
+                    .color(Color32::GRAY),
+            );
 
-        if let Some(path) = path_to_remove {
-            self.selected_tracks.remove(&path);
-            self.tracks_to_edit.retain(|p| p != &path);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Bestanden:").strong().size(11.0));
+                    ScrollArea::vertical()
+                        .id_source("batch_files_scroll")
+                        .max_height(250.0)
+                        .show(ui, |ui| {
+                            // We clonen de lijst om borrow conflicts te voorkomen tijdens iteratie en mutatie
+                            let tracks_to_edit_clone = self.tracks_to_edit.clone();
+                            for track_path in &tracks_to_edit_clone {
+                                ui.horizontal(|ui| {
+                                    let filename = Path::new(track_path)
+                                        .file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy();
 
-            if self.editing_track_path.as_deref() == Some(&path) {
-                if let Some(first_path) = self.tracks_to_edit.first().cloned() {
-                    self.editing_track_path = Some(first_path.clone());
-                    self.refresh_raw_tags_for_path(&first_path);
-                } else {
-                    self.show_track_details = false;
-                }
-            }
-        }
+                                    let is_selected =
+                                        self.editing_track_path.as_deref() == Some(track_path);
+
+                                    if ui.selectable_label(is_selected, filename).clicked() {
+                                        self.editing_track_path = Some(track_path.clone());
+                                        self.refresh_raw_tags_for_path(track_path);
+                                    }
+
+                                    if ui
+                                        .small_button("❌")
+                                        .on_hover_text("Verwijder uit selectie")
+                                        .clicked()
+                                    {
+                                        self.selected_tracks.remove(track_path);
+                                        self.tracks_to_edit.retain(|p| p != track_path);
+
+                                        if self.editing_track_path.as_deref() == Some(track_path) {
+                                            if let Some(first) =
+                                                self.tracks_to_edit.first().cloned()
+                                            {
+                                                self.editing_track_path = Some(first.clone());
+                                                self.refresh_raw_tags_for_path(&first);
+                                            } else {
+                                                self.editing_track_path = None;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                });
+
+                ui.vertical(|ui| {
+                    let current_file = self
+                        .editing_track_path
+                        .as_deref()
+                        .unwrap_or("Geen bestand geselecteerd");
+                    ui.label(
+                        RichText::new(format!(
+                            "Ruwe tags: {}",
+                            Path::new(current_file)
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                        ))
+                        .strong()
+                        .size(11.0),
+                    );
+                    ScrollArea::vertical()
+                        .id_source("raw_tags_scroll")
+                        .max_height(250.0)
+                        .show(ui, |ui| {
+                            if self.editing_track_path.is_some() {
+                                ui.label(
+                                    RichText::new(&self.raw_tags_display).monospace().size(10.0),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("Klik op een bestand links.")
+                                        .italics()
+                                        .color(Color32::GRAY),
+                                );
+                            }
+                        });
+                });
+            });
+        });
     }
 
-    /// Helper: Haal een specifieke tagwaarde op van een gegeven bestandspad
     fn get_tag_value(&self, path: &str, key: &str) -> Option<String> {
         if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
             for tag in tagged_file.tags() {
@@ -479,7 +516,6 @@ impl MusicPlayerApp {
         None
     }
 
-    /// Helper: Ververs de raw_tags_display voor een specifiek pad
     fn refresh_raw_tags_for_path(&mut self, path: &str) {
         self.raw_tags_display.clear();
         if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
