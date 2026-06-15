@@ -38,6 +38,41 @@ impl MusicPlayerApp {
 
                 let mut tag = Tag::new(target_tag_type);
 
+                // --- Verwijder specifieke genre(s) uit bestaande tags ---
+                if self.update_remove_genre && !self.remove_genre_text.is_empty() {
+                    let to_remove: Vec<String> = self
+                        .remove_genre_text
+                        .split(';')
+                        .map(|s| s.trim().to_string())
+                        .collect();
+                    let mut cleaned_items: Vec<TagItem> = Vec::new();
+                    for existing_tag in tagged_file.tags() {
+                        if existing_tag.tag_type() == target_tag_type {
+                            for item in existing_tag.items() {
+                                let keep = match item.key() {
+                                    lofty::tag::ItemKey::Genre => {
+                                        if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                            !to_remove.contains(&text)
+                                        } else {
+                                            true
+                                        }
+                                    }
+                                    _ => true,
+                                };
+                                if keep {
+                                    cleaned_items.push(item.clone());
+                                }
+                            }
+                        }
+                    }
+                    tag.remove_key(&ItemKey::Genre);
+                    for item in cleaned_items {
+                        if matches!(item.key(), lofty::tag::ItemKey::Genre) {
+                            tag.push(item);
+                        }
+                    }
+                }
+
                 let mut existing_title: Option<String> = None;
                 let mut existing_artist: Option<String> = None;
                 let mut existing_album: Option<String> = None;
@@ -230,6 +265,9 @@ impl MusicPlayerApp {
 
         self.selected_tracks.clear();
         self.recompute();
+        if let Some(ref lib) = self.library {
+            crate::scanner::save_cache(lib);
+        }
     }
 
     pub fn show_batch_edit_panel(&mut self, ui: &mut egui::Ui) {
@@ -342,6 +380,24 @@ impl MusicPlayerApp {
                         self.edit_composer = val;
                     }
                 }
+            }
+
+            ui.add_space(3.0);
+            ui.separator();
+            ui.label(
+                RichText::new(
+                    "Verwijder genres uit bestaande tags (zonder andere te overschrijven):",
+                )
+                .size(11.0)
+                .color(Color32::GRAY),
+            );
+            if render_field(
+                ui,
+                "Verwijder",
+                &mut self.update_remove_genre,
+                &mut self.remove_genre_text,
+            ) {
+                // leeg — alleen kopieer-functionaliteit
             }
 
             ui.add_space(10.0);
@@ -486,7 +542,7 @@ impl MusicPlayerApp {
                             ui.label(RichText::new(&self.raw_tags_display).monospace().size(10.0));
                         } else {
                             ui.label(
-                                RichText::new("Klik op een bestand links.")
+                                RichText::new(" op een bestand links.")
                                     .italics()
                                     .color(Color32::GRAY),
                             );

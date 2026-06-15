@@ -77,6 +77,8 @@ pub struct MusicPlayerApp {
     pub update_genre: bool,
     pub update_year: bool,
     pub update_composer: bool,
+    pub update_remove_genre: bool,
+    pub remove_genre_text: String,
     pub selected_tracks: HashSet<String>,
     pub tracks_to_edit: Vec<String>,
 
@@ -150,6 +152,8 @@ impl MusicPlayerApp {
             update_genre: false,
             update_year: false,
             update_composer: false,
+            update_remove_genre: false,
+            remove_genre_text: String::new(),
             selected_tracks: HashSet::new(),
             tracks_to_edit: Vec::new(),
             years: Vec::new(),

@@ -16,7 +16,15 @@ pub enum ScannerMessage {
     ScanComplete,
 }
 
-const CACHE_FILE: &str = "library_cache.bin";
+pub const CACHE_FILE: &str = "library_cache.bin";
+/// Sla een Library direct naar de cache, zonder een volledige herscan.
+/// Dit is handig nadat tags in-memory zijn aangepast.
+pub fn save_cache(library: &Library) {
+    if let Ok(file) = std::fs::File::create(CACHE_FILE) {
+        let writer = std::io::BufWriter::new(file);
+        let _ = bincode::serialize_into(writer, library);
+    }
+}
 
 pub async fn load_or_scan_library(
     dir: String,
