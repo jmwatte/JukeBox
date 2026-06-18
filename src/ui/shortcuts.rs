@@ -47,6 +47,7 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("ReconnectAudio".into(), "F6".into());
     m.insert("Rescan".into(), "F5".into());
     m.insert("RescanMarked".into(), "Shift+R".into());
+    m.insert("WaveformOpen".into(), "0".into());
     m
 }
 
@@ -96,6 +97,8 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         "F10" => ctx.input(|i| i.key_pressed(Key::F10)),
         "F11" => ctx.input(|i| i.key_pressed(Key::F11)),
         "F12" => ctx.input(|i| i.key_pressed(Key::F12)),
+        // Cijfers
+        "0" => ctx.input(|i| i.key_pressed(Key::Num0)),
         // Speciale combinatie: Shift+M
         "Shift+M" => ctx.input(|i| i.key_pressed(Key::M) && i.modifiers.shift),
         // Speciale combinatie: Shift+R
@@ -178,7 +181,7 @@ fn is_valid_key_value(key: &str) -> bool {
         "Space" | "Enter" | "Escape" | "Tab" | "Backspace" | "Delete" | "ArrowUp" | "ArrowDown"
         | "ArrowLeft" | "ArrowRight" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8"
         | "F9" | "F10" | "F11" | "F12" | "Shift+M" | ";" | "'" | "=" | "-" | "/" | "?" | "["
-        | "]" | "\\" => true,
+        | "]" | "\\" | "0" => true,
         s if s.len() == 1 => {
             let c = s.chars().next().unwrap();
             c.is_ascii_alphabetic()

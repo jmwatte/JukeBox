@@ -112,6 +112,53 @@ impl MusicPlayerApp {
             self.compact_mode = !self.compact_mode;
         }
 
+        // --- 0: WAVEFORM EDITOR ---
+        if shortcuts::check_action(&cfg, ctx, "WaveformOpen") {
+            self.show_waveform = !self.show_waveform;
+            if self.show_waveform {
+                // Bepaal welk bestand te openen: huidige selectie of now_playing
+                let track_path = self
+                    .active_library()
+                    .and_then(|lib| self.get_current_track_path(lib))
+                    .or_else(|| self.now_playing_path.clone());
+
+                if let Some(path) = track_path {
+                    // Alleen herdecode als het een ander bestand is
+                    if self.waveform_state.path.as_deref() != Some(&path) {
+                        self.waveform_state.error = None;
+                        match crate::waveform::decode_audio(&path) {
+                            Ok((samples, sample_rate, duration_secs)) => {
+                                self.waveform_state = crate::waveform::WaveformState {
+                                    path: Some(path.clone()),
+                                    samples,
+                                    sample_rate,
+                                    duration_secs,
+                                    zoom: 50.0,
+                                    scroll_offset: 0.0,
+                                    loop_a_secs: self.loop_a,
+                                    loop_b_secs: self.loop_b,
+                                    error: None,
+                                };
+                            }
+                            Err(e) => {
+                                self.waveform_state = crate::waveform::WaveformState {
+                                    path: Some(path),
+                                    samples: Vec::new(),
+                                    sample_rate: 44100,
+                                    duration_secs: 0.0,
+                                    zoom: 50.0,
+                                    scroll_offset: 0.0,
+                                    loop_a_secs: None,
+                                    loop_b_secs: None,
+                                    error: Some(e),
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // --- G: GENRE PICKER ---
         if shortcuts::check_action(&cfg, ctx, "GenreBrowse") {
             self.toggle_genre_picker();

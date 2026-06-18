@@ -7,6 +7,7 @@ mod player;
 mod scanner;
 mod search;
 mod ui;
+mod waveform;
 use crossbeam_channel::unbounded;
 
 fn main() -> Result<(), eframe::Error> {

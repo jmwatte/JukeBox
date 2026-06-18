@@ -468,6 +468,90 @@ impl eframe::App for MusicPlayerApp {
             });
         }
 
+        // --- WAVEFORM EDITOR WINDOW ---
+        if self.show_waveform {
+            let waveform_path = self.waveform_state.path.clone();
+            let player_position = if self.now_playing_path.as_deref() == waveform_path.as_deref() {
+                Some(self.now_playing_position)
+            } else {
+                None
+            };
+
+            egui::Window::new("🌊 Waveform Editor")
+                .id(egui::Id::new("waveform_window"))
+                .collapsible(false)
+                .resizable(true)
+                .default_size([800.0, 350.0])
+                .show(ctx, |ui| {
+                    // Bestandsinfo
+                    if let Some(ref path) = self.waveform_state.path {
+                        let file_name = std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_else(|| std::borrow::Cow::from(path));
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("📄 {}", file_name))
+                                    .size(14.0)
+                                    .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{:.1}s  |  {} Hz  |  Zoom: {}x",
+                                            self.waveform_state.duration_secs,
+                                            self.waveform_state.sample_rate,
+                                            (self.waveform_state.zoom / 50.0 * 100.0) as u32
+                                        ))
+                                        .size(11.0)
+                                        .color(egui::Color32::GRAY),
+                                    );
+                                },
+                            );
+                        });
+                        ui.separator();
+                    }
+
+                    // Foutmelding
+                    if let Some(ref err) = self.waveform_state.error {
+                        ui.label(
+                            egui::RichText::new(format!("⚠ {}", err))
+                                .size(13.0)
+                                .color(egui::Color32::from_rgb(255, 100, 100)),
+                        );
+                    }
+
+                    // Waveform
+                    crate::waveform::render_waveform(ui, &mut self.waveform_state, player_position);
+
+                    ui.separator();
+
+                    // Zoom / scroll knoppen
+                    ui.horizontal(|ui| {
+                        if ui.button("🔍−").clicked() {
+                            self.waveform_state.zoom = (self.waveform_state.zoom / 1.3).max(5.0);
+                        }
+                        if ui.button("🔍+").clicked() {
+                            self.waveform_state.zoom = (self.waveform_state.zoom * 1.3).min(5000.0);
+                        }
+                        ui.separator();
+                        if ui.button("⟲ Reset zoom/scroll").clicked() {
+                            self.waveform_state.zoom = 50.0;
+                            self.waveform_state.scroll_offset = 0.0;
+                        }
+
+                        // Sluit-knop rechts
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("Sluit (0)").clicked() {
+                                self.show_waveform = false;
+                            }
+                        });
+                    });
+                });
+        }
+
         // Compacte modus: verberg bibliotheek, alleen now-playing balk
         if self.compact_mode {
             ctx.request_repaint();

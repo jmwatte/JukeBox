@@ -104,6 +104,10 @@ pub struct MusicPlayerApp {
 
     /// Split ratio between "Bestanden" and "Ruwe tags" columns in the batch edit panel (0.0–1.0).
     pub edit_panel_split: f32,
+
+    // Waveform Editor
+    pub show_waveform: bool,
+    pub waveform_state: crate::waveform::WaveformState,
 }
 
 impl MusicPlayerApp {
@@ -189,6 +193,8 @@ impl MusicPlayerApp {
             composers: Vec::new(),
             selected_composer: 0,
             edit_panel_split: 0.4,
+            show_waveform: false,
+            waveform_state: crate::waveform::WaveformState::default(),
         };
 
         // Valideer shortcuts bij opstarten
