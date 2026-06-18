@@ -31,6 +31,8 @@ pub struct MusicPlayerApp {
 
     // Status
     pub now_playing: Option<String>,
+    pub now_playing_position: f32,
+    pub now_playing_duration: f32,
     pub show_help: bool,
     pub _status_message: String,
 
@@ -116,6 +118,8 @@ impl MusicPlayerApp {
             filter_step: 0,
             cached_filtered: None,
             now_playing: None,
+            now_playing_position: 0.0,
+            now_playing_duration: 0.0,
             show_help: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
             filtered_library: None,

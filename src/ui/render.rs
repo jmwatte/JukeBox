@@ -18,6 +18,11 @@ impl eframe::App for MusicPlayerApp {
                     if let Some(file_name) = Path::new(&path).file_name() {
                         self.now_playing = Some(file_name.to_string_lossy().into_owned());
                     }
+                    self.now_playing_position = 0.0;
+                }
+                PlayerEvent::PositionUpdate(pos, dur) => {
+                    self.now_playing_position = pos;
+                    self.now_playing_duration = dur;
                 }
             }
         }
@@ -205,16 +210,43 @@ impl eframe::App for MusicPlayerApp {
         // --- NOW PLAYING BALK ---
         if let Some(track) = &self.now_playing {
             egui::TopBottomPanel::bottom("now_playing_panel").show(ctx, |ui| {
-                ui.add_space(8.0);
+                ui.add_space(6.0);
+
+                // Track info
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("🎵 Nu aan het spelen:")
+                        RichText::new("🎵")
                             .color(Color32::from_rgb(100, 200, 100))
-                            .strong(),
+                            .size(18.0),
                     );
-                    ui.label(track);
+                    ui.label(RichText::new(track).size(16.0).strong());
                 });
-                ui.add_space(8.0);
+
+                ui.add_space(4.0);
+
+                // Voortgangsbalk + tijd
+                if self.now_playing_duration > 0.0 {
+                    let pos_mins = (self.now_playing_position / 60.0) as u32;
+                    let pos_secs = self.now_playing_position as u32 % 60;
+                    let dur_mins = (self.now_playing_duration / 60.0) as u32;
+                    let dur_secs = self.now_playing_duration as u32 % 60;
+                    let time_text = format!(
+                        "{}:{:02}  /  {}:{:02}",
+                        pos_mins, pos_secs, dur_mins, dur_secs
+                    );
+
+                    ui.horizontal(|ui| {
+                        let fraction =
+                            (self.now_playing_position / self.now_playing_duration).clamp(0.0, 1.0);
+                        let bar = egui::ProgressBar::new(fraction)
+                            .show_percentage()
+                            .desired_width(ui.available_width() - 140.0);
+                        ui.add(bar);
+                        ui.label(RichText::new(time_text).size(12.0).color(Color32::GRAY));
+                    });
+                }
+
+                ui.add_space(6.0);
             });
         }
 

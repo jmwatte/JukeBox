@@ -1,5 +1,5 @@
 use crossbeam_channel::{Receiver, Sender};
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::{Decoder, OutputStream, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::time::Duration;
@@ -16,6 +16,7 @@ pub enum PlayerCommand {
 
 pub enum PlayerEvent {
     NowPlaying(String),
+    PositionUpdate(f32, f32), // (current_secs, total_secs)
 }
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
@@ -23,6 +24,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut _stream_data: Option<(OutputStream, rodio::OutputStreamHandle)> = None;
     let mut sink: Option<Sink> = None;
     let mut internal_queue: Vec<String> = Vec::new();
+    let mut current_track_duration: Option<Duration> = None;
 
     // Eerste verbinding bij het opstarten (INLINE, geen closure!)
     if let Ok((stream, handle)) = OutputStream::try_default() {
@@ -99,12 +101,24 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     let next_file = internal_queue.remove(0);
                     if let Ok(f) = File::open(&next_file) {
                         if let Ok(decoder) = Decoder::new(BufReader::new(f)) {
+                            current_track_duration = decoder.total_duration();
                             s.append(decoder);
                             s.play();
                             let _ = event_tx.send(PlayerEvent::NowPlaying(next_file));
                         }
                     }
                 }
+            }
+        }
+
+        // 3. Stuur positie-update (als er iets speelt)
+        if let Some(s) = &sink {
+            if !s.empty() {
+                let pos = s.get_pos().as_secs_f32();
+                let dur = current_track_duration
+                    .map(|d| d.as_secs_f32())
+                    .unwrap_or(0.0);
+                let _ = event_tx.send(PlayerEvent::PositionUpdate(pos, dur));
             }
         }
 

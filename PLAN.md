@@ -132,6 +132,28 @@ Een `Q`-shortcut die een zijpaneel toont met de huidige queue (tracks in `intern
 - Queue wissen
 - Queue opslaan als `.m3u`
 
+### Stap 3.4 – A-B loop (Mark A / Mark B / Play loop / Delete loop)
+
+**Afhankelijk van:** Stap 2.2 (positie-opvragen werkt al)
+
+Een loop-functie waarbinnen een specifiek gedeelte van een track wordt herhaald:
+
+**Functionaliteit:**
+- **Mark A** (`[`): zet loop-startpunt op huidige positie
+- **Mark B** (`]`): zet loop-eindpunt op huidige positie
+- **Play loop** (opnieuw `[` of `]` als A en B al zijn gezet): activeer loop
+- **Delete loop** (`\` of `Shift+[`): wis A- en B-punten, schakel loop uit
+
+**In `player.rs`:**
+- `loop_start: Option<Duration>` en `loop_end: Option<Duration>` bijhouden in audio-thread
+- `PlayerCommand::SetLoopStart`, `SetLoopEnd`, `ClearLoop` toevoegen
+- In de hoofdloop: als `loop_start` en `loop_end` ingesteld zijn, check of `sink.get_pos() >= loop_end` → seek naar `loop_start`
+
+**In `render.rs` / `navigation.rs`:**
+- Sneltoetsen toevoegen voor markeren en wissen
+- Visuele indicator in de now-playing balk (bv. `🔁 1:23 – 3:45`)
+- Kort visueel signaal bij markeren (bv. statusbericht in now-playing balk)
+
 ---
 
 ## Fase 4 – Afwerking
@@ -196,7 +218,8 @@ Fase 2: UI
 Fase 3: Afspeelmodi
   ├─ 3.1 Repeat
   ├─ 3.2 Shuffle
-  └─ 3.3 Queue beheer
+  ├─ 3.3 Queue beheer
+  └─ 3.4 A-B loop (Mark A / Mark B)
 
 Fase 4: Afwerking
   ├─ 4.1 Cache-invalidatie
