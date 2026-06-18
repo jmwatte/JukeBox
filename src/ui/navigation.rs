@@ -569,6 +569,9 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "Skip") {
             let _ = self.player_tx.send(PlayerCommand::Skip);
         }
+        if shortcuts::check_action(&cfg, ctx, "Rewind") {
+            let _ = self.player_tx.send(PlayerCommand::Rewind);
+        }
 
         // --- O: OPEN FOLDER ---
         if shortcuts::check_action(&cfg, ctx, "OpenFolder") {

@@ -94,6 +94,10 @@ impl eframe::App for MusicPlayerApp {
                         "• {} : Skip naar het volgende nummer",
                         shortcuts::get_key_display(s, "Skip")
                     ));
+                    ui.label(format!(
+                        "• {} : Spoel 2 seconden terug",
+                        shortcuts::get_key_display(s, "Rewind")
+                    ));
                     ui.add_space(5.0);
                     ui.label(RichText::new("Extra").strong());
                     ui.label(format!(

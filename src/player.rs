@@ -8,6 +8,7 @@ pub enum PlayerCommand {
     PlayPause,
 
     Skip,
+    Rewind,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     ReconnectAudio, // NIEUW: Commando om audio-apparaat te hervatten
@@ -49,6 +50,13 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::Skip => {
                     if let Some(s) = &sink {
                         s.skip_one();
+                    }
+                }
+                PlayerCommand::Rewind => {
+                    if let Some(s) = &sink {
+                        let pos = s.get_pos();
+                        let new_pos = pos.saturating_sub(Duration::from_secs(2));
+                        let _ = s.try_seek(new_pos);
                     }
                 }
                 PlayerCommand::ReplaceQueue(files) => {
