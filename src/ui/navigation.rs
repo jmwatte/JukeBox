@@ -137,6 +137,8 @@ impl MusicPlayerApp {
                                     scroll_offset: 0.0,
                                     loop_a_secs: self.loop_a,
                                     loop_b_secs: self.loop_b,
+                                    pitch_semitones: 0.0,
+                                    tempo: 1.0,
                                     error: None,
                                 };
                             }
@@ -150,6 +152,8 @@ impl MusicPlayerApp {
                                     scroll_offset: 0.0,
                                     loop_a_secs: None,
                                     loop_b_secs: None,
+                                    pitch_semitones: 0.0,
+                                    tempo: 1.0,
                                     error: Some(e),
                                 };
                             }

@@ -17,6 +17,8 @@ pub struct WaveformState {
     pub scroll_offset: f32, // scroll offset in seconds
     pub loop_a_secs: Option<f32>,
     pub loop_b_secs: Option<f32>,
+    pub pitch_semitones: f32,
+    pub tempo: f32,
     pub error: Option<String>,
 }
 
@@ -31,6 +33,8 @@ impl Default for WaveformState {
             scroll_offset: 0.0,
             loop_a_secs: None,
             loop_b_secs: None,
+            pitch_semitones: 0.0,
+            tempo: 1.0,
             error: None,
         }
     }

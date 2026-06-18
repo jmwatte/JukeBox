@@ -7,6 +7,7 @@ use crate::search::{
     filter_by_year,
 };
 use crate::ui::types::{FilterNode, NavLevel, ViewMode};
+use crate::waveform_player::{WaveformCommand, WaveformEvent};
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui;
 use std::collections::HashSet;
@@ -15,6 +16,8 @@ pub struct MusicPlayerApp {
     pub config: Config,
     pub player_tx: Sender<PlayerCommand>,
     pub player_event_rx: Receiver<PlayerEvent>,
+    pub waveform_cmd_tx: Sender<WaveformCommand>,
+    pub waveform_event_rx: Receiver<WaveformEvent>,
     pub scanner_tx: Sender<ScannerMessage>,
     pub scanner_rx: Receiver<ScannerMessage>,
     pub library: Option<Library>,
@@ -108,8 +111,10 @@ pub struct MusicPlayerApp {
     // Waveform Editor
     pub show_waveform: bool,
     pub waveform_state: crate::waveform::WaveformState,
-    /// Als ingesteld: na `NowPlaying` event naar deze positie seeken + loop instellen
     pub waveform_pending_loop: Option<(f32, f32)>,
+    pub waveform_is_playing: bool,
+    pub waveform_play_position: f32,
+    pub waveform_play_duration: f32,
 }
 
 impl MusicPlayerApp {
@@ -119,6 +124,8 @@ impl MusicPlayerApp {
         player_event_rx: Receiver<PlayerEvent>,
         scanner_tx: Sender<ScannerMessage>,
         scanner_rx: Receiver<ScannerMessage>,
+        waveform_cmd_tx: Sender<WaveformCommand>,
+        waveform_event_rx: Receiver<WaveformEvent>,
     ) -> Self {
         let view_mode = if config.startup_view == "cover" {
             ViewMode::AlbumCover
@@ -198,6 +205,11 @@ impl MusicPlayerApp {
             show_waveform: false,
             waveform_state: crate::waveform::WaveformState::default(),
             waveform_pending_loop: None,
+            waveform_is_playing: false,
+            waveform_play_position: 0.0,
+            waveform_play_duration: 0.0,
+            waveform_cmd_tx,
+            waveform_event_rx,
         };
 
         // Valideer shortcuts bij opstarten
