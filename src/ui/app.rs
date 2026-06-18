@@ -108,6 +108,8 @@ pub struct MusicPlayerApp {
     // Waveform Editor
     pub show_waveform: bool,
     pub waveform_state: crate::waveform::WaveformState,
+    /// Als ingesteld: na `NowPlaying` event naar deze positie seeken + loop instellen
+    pub waveform_pending_loop: Option<(f32, f32)>,
 }
 
 impl MusicPlayerApp {
@@ -195,6 +197,7 @@ impl MusicPlayerApp {
             edit_panel_split: 0.4,
             show_waveform: false,
             waveform_state: crate::waveform::WaveformState::default(),
+            waveform_pending_loop: None,
         };
 
         // Valideer shortcuts bij opstarten

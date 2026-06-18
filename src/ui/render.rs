@@ -21,6 +21,13 @@ impl eframe::App for MusicPlayerApp {
                     self.now_playing_path = Some(path);
                     self.now_playing_position = 0.0;
                     self.status_error = None; // Wis foutmelding bij nieuwe track
+
+                    // Pending loop van waveform editor: seek + stel A-B in
+                    if let Some((a, b)) = self.waveform_pending_loop.take() {
+                        let _ = self.player_tx.send(PlayerCommand::SeekTo(a));
+                        let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                        let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                    }
                 }
                 PlayerEvent::PositionUpdate(pos, dur) => {
                     self.now_playing_position = pos;
@@ -559,8 +566,36 @@ impl eframe::App for MusicPlayerApp {
 
                     ui.separator();
 
-                    // Zoom / scroll knoppen
+                    // Loop controls + zoom
                     ui.horizontal(|ui| {
+                        // Play Loop knop (alleen als A en B zijn ingesteld)
+                        if let (Some(a), Some(b)) = (
+                            self.waveform_state.loop_a_secs,
+                            self.waveform_state.loop_b_secs,
+                        ) {
+                            if b > a {
+                                if ui.button("▶ Play Loop").clicked() {
+                                    if let Some(ref path) = self.waveform_state.path {
+                                        // Vervang queue met deze track
+                                        let _ = self
+                                            .player_tx
+                                            .send(PlayerCommand::ReplaceQueue(vec![path.clone()]));
+                                        // Na NowPlaying event: seek + loop instellen
+                                        self.waveform_pending_loop = Some((a, b));
+                                    }
+                                }
+                            }
+                        }
+
+                        // Stop Loop knop (als loop actief is)
+                        if self.loop_a.is_some() || self.loop_b.is_some() {
+                            if ui.button("⏹ Stop Loop").clicked() {
+                                let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+                            }
+                        }
+
+                        ui.separator();
+
                         if ui.button("🔍−").clicked() {
                             self.waveform_state.zoom = (self.waveform_state.zoom / 1.3).max(5.0);
                         }

@@ -29,6 +29,7 @@ pub enum PlayerCommand {
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     SetVolume(f32),
+    SeekTo(f32),
     ReconnectAudio, // NIEUW: Commando om audio-apparaat te hervatten
 }
 
@@ -193,6 +194,18 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::SetVolume(vol) => {
                     if let Some(s) = &sink {
                         s.set_volume(vol);
+                    }
+                }
+                PlayerCommand::SeekTo(pos) => {
+                    if let Some(s) = &sink {
+                        let seek_pos = Duration::from_secs_f32(pos);
+                        if let Some(dur) = current_track_duration {
+                            if seek_pos < dur {
+                                let _ = s.try_seek(seek_pos);
+                            }
+                        } else {
+                            let _ = s.try_seek(seek_pos);
+                        }
                     }
                 }
                 PlayerCommand::ReconnectAudio => {
