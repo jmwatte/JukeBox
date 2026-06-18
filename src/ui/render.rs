@@ -38,6 +38,11 @@ impl eframe::App for MusicPlayerApp {
                 PlayerEvent::LoopChanged(a, b) => {
                     self.loop_a = a;
                     self.loop_b = b;
+                    // Sync ook de waveform state als het venster open is
+                    if self.show_waveform {
+                        self.waveform_state.loop_a_secs = a;
+                        self.waveform_state.loop_b_secs = b;
+                    }
                 }
                 PlayerEvent::PlaybackError(msg) => {
                     self.status_error = Some(msg);
@@ -523,8 +528,34 @@ impl eframe::App for MusicPlayerApp {
                         );
                     }
 
-                    // Waveform
-                    crate::waveform::render_waveform(ui, &mut self.waveform_state, player_position);
+                    // Waveform — geeft terug of A-B markers zijn gewijzigd
+                    let loop_changed = crate::waveform::render_waveform(
+                        ui,
+                        &mut self.waveform_state,
+                        player_position,
+                    );
+
+                    // Bij wijzigingen: stuur naar player audio-thread
+                    if loop_changed {
+                        match (
+                            self.waveform_state.loop_a_secs,
+                            self.waveform_state.loop_b_secs,
+                        ) {
+                            (Some(a), Some(b)) => {
+                                let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                                let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                            }
+                            (None, None) => {
+                                let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+                            }
+                            (Some(a), None) => {
+                                let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                            }
+                            (None, Some(b)) => {
+                                let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                            }
+                        }
+                    }
 
                     ui.separator();
 

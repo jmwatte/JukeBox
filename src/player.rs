@@ -23,6 +23,8 @@ pub enum PlayerCommand {
     ClearQueue,
     SetLoopA,
     SetLoopB,
+    SetLoopAAt(f32),
+    SetLoopBAt(f32),
     ClearLoop,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
@@ -145,6 +147,24 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         let b = loop_b.map(|d| d.as_secs_f32());
                         let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
                     }
+                }
+                PlayerCommand::SetLoopAAt(secs) => {
+                    loop_a = Some(Duration::from_secs_f32(secs));
+                    let a = loop_a.map(|d| d.as_secs_f32());
+                    let b = loop_b.map(|d| d.as_secs_f32());
+                    let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
+                }
+                PlayerCommand::SetLoopBAt(secs) => {
+                    loop_b = Some(Duration::from_secs_f32(secs));
+                    if let (Some(a), Some(b)) = (loop_a, loop_b) {
+                        if b < a {
+                            loop_a = Some(b);
+                            loop_b = Some(a);
+                        }
+                    }
+                    let a = loop_a.map(|d| d.as_secs_f32());
+                    let b = loop_b.map(|d| d.as_secs_f32());
+                    let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
                 }
                 PlayerCommand::ClearLoop => {
                     loop_a = None;

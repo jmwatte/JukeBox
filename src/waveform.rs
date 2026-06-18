@@ -141,21 +141,24 @@ pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
 }
 
 /// Teken de waveform in een egui UI.
+/// Geeft `true` terug als de A-B loop markers zijn gewijzigd door de gebruiker.
 pub fn render_waveform(
     ui: &mut egui::Ui,
     state: &mut WaveformState,
     now_playing_position: Option<f32>,
-) {
+) -> bool {
     let width = ui.available_width().max(100.0);
     let height = 200.0;
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
 
+    let id_base = ui.id();
     let painter = ui.painter();
     let center_y = rect.center().y;
 
+    let mut loop_changed = false;
+
     if state.samples.is_empty() {
-        // Geen samples geladen
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
@@ -163,13 +166,12 @@ pub fn render_waveform(
             egui::TextStyle::Body.resolve(ui.style()),
             egui::Color32::GRAY,
         );
-        return;
+        return false;
     }
 
     let total_samples = state.samples.len();
     let sample_rate = state.sample_rate;
 
-    // Bepaal zichtbaar tijdsbereik
     let visible_secs = width / state.zoom;
     let start_sec = state.scroll_offset;
     let end_sec = (start_sec + visible_secs).min(state.duration_secs);
@@ -179,23 +181,23 @@ pub fn render_waveform(
     let visible_samples = end_sample.saturating_sub(start_sample);
 
     if visible_samples == 0 {
-        return;
+        return false;
     }
 
     let samples_per_pixel = (visible_samples as f32 / width).ceil() as usize;
 
-    // Teken achtergrond
+    // Achtergrond
     painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 20, 30));
 
-    // Teken tijdschaal
+    // Tijdschaal
     let time_interval = if state.zoom < 20.0 {
-        30.0 // elke 30 seconden
+        30.0
     } else if state.zoom < 50.0 {
-        10.0 // elke 10 seconden
+        10.0
     } else if state.zoom < 100.0 {
-        5.0 // elke 5 seconden
+        5.0
     } else {
-        1.0 // elke seconde
+        1.0
     };
 
     let first_mark = (start_sec / time_interval).ceil() * time_interval;
@@ -223,7 +225,7 @@ pub fn render_waveform(
         t += time_interval;
     }
 
-    // Teken waveform lijnen
+    // Waveform lijnen
     let mut x = rect.left();
     let mut pixel_idx = 0usize;
     while x <= rect.right() && pixel_idx * samples_per_pixel < visible_samples {
@@ -255,7 +257,17 @@ pub fn render_waveform(
         pixel_idx += 1;
     }
 
-    // Teken A-B loop gebied (lichtblauw tussen A en B)
+    // ---- Interactieve A-B markers ----
+    // Huidige muispositie in seconden (voor click-to-place)
+    let mouse_sec = ui.ctx().input(|i| {
+        i.pointer
+            .hover_pos()
+            .map(|p| (p.x - rect.left()) / state.zoom + start_sec)
+    });
+
+    // Teken A-B highlight gebied en markers (vóór interactie, zodat interactie eroverheen kan)
+    let marker_half_width = 6.0; // hit area half-width
+
     if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
         if b > a && b > start_sec && a < end_sec {
             let a_x = rect.left() + (a - start_sec) * state.zoom;
@@ -274,7 +286,7 @@ pub fn render_waveform(
                 );
             }
 
-            // A marker (groen)
+            // A marker tekenen
             if a_x >= rect.left() && a_x <= rect.right() {
                 painter.line_segment(
                     [egui::pos2(a_x, rect.top()), egui::pos2(a_x, rect.bottom())],
@@ -289,7 +301,7 @@ pub fn render_waveform(
                 );
             }
 
-            // B marker (rood)
+            // B marker tekenen
             if b_x >= rect.left() && b_x <= rect.right() {
                 painter.line_segment(
                     [egui::pos2(b_x, rect.top()), egui::pos2(b_x, rect.bottom())],
@@ -306,7 +318,62 @@ pub fn render_waveform(
         }
     }
 
-    // Teken huidige positie-indicator (als de track speelt)
+    // Sleepbare A marker interactie
+    if let Some(a) = state.loop_a_secs {
+        let a_x = rect.left() + (a - start_sec) * state.zoom;
+        // Alleen interactief als zichtbaar
+        if a_x >= rect.left() - marker_half_width && a_x <= rect.right() + marker_half_width {
+            let marker_rect = egui::Rect::from_center_size(
+                egui::pos2(a_x.clamp(rect.left(), rect.right()), rect.center().y),
+                egui::vec2(marker_half_width * 2.0, rect.height()),
+            );
+            let marker_id = id_base.with("drag_a");
+            let marker_response = ui.interact(marker_rect, marker_id, egui::Sense::drag());
+
+            if marker_response.dragged() {
+                if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                    let new_a = ((pos.x - rect.left()) / state.zoom + start_sec)
+                        .clamp(0.0, state.duration_secs);
+                    state.loop_a_secs = Some(new_a);
+                    loop_changed = true;
+                }
+            }
+        }
+    }
+
+    // Sleepbare B marker interactie
+    if let Some(b) = state.loop_b_secs {
+        let b_x = rect.left() + (b - start_sec) * state.zoom;
+        if b_x >= rect.left() - marker_half_width && b_x <= rect.right() + marker_half_width {
+            let marker_rect = egui::Rect::from_center_size(
+                egui::pos2(b_x.clamp(rect.left(), rect.right()), rect.center().y),
+                egui::vec2(marker_half_width * 2.0, rect.height()),
+            );
+            let marker_id = id_base.with("drag_b");
+            let marker_response = ui.interact(marker_rect, marker_id, egui::Sense::drag());
+
+            if marker_response.dragged() {
+                if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                    let new_b = ((pos.x - rect.left()) / state.zoom + start_sec)
+                        .clamp(0.0, state.duration_secs);
+                    state.loop_b_secs = Some(new_b);
+                    loop_changed = true;
+                }
+            }
+        }
+    }
+
+    // Als A en B beide gezet zijn, zorg dat A < B
+    if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
+        if b < a {
+            // Verwissel ze
+            state.loop_a_secs = Some(b);
+            state.loop_b_secs = Some(a);
+            loop_changed = true;
+        }
+    }
+
+    // Huidige positie-indicator
     if let Some(pos) = now_playing_position {
         if pos >= start_sec && pos <= end_sec {
             let pos_x = rect.left() + (pos - start_sec) * state.zoom;
@@ -320,13 +387,36 @@ pub fn render_waveform(
         }
     }
 
-    // Muis interactie: scrollen (slepen) en zoomen (wiel)
+    // Rechterklik op waveform: wis loop
+    if response.secondary_clicked() {
+        state.loop_a_secs = None;
+        state.loop_b_secs = None;
+        loop_changed = true;
+    }
+
+    // Dubbelklik: zet A op muispositie (als A nog niet gezet is)
+    // Shift+dubbelklik: zet B
+    if response.double_clicked() {
+        if let Some(sec) = mouse_sec {
+            let sec = sec.clamp(0.0, state.duration_secs);
+            if ui.ctx().input(|i| i.modifiers.shift) {
+                state.loop_b_secs = Some(sec);
+                // Als A niet gezet is, default naar begin
+                if state.loop_a_secs.is_none() {
+                    state.loop_a_secs = Some(0.0);
+                }
+            } else {
+                state.loop_a_secs = Some(sec);
+            }
+            loop_changed = true;
+        }
+    }
+
+    // Zoom met muiswiel
     if response.hovered() {
-        // Zoom met Ctrl+Wiel
         ui.ctx().input(|i| {
             let scroll = i.raw_scroll_delta.y;
             if scroll != 0.0 {
-                // Zoom rond muispositie
                 let mouse_x = i
                     .pointer
                     .hover_pos()
@@ -341,7 +431,6 @@ pub fn render_waveform(
                 let zoom_factor = if scroll > 0.0 { 1.15 } else { 1.0 / 1.15 };
                 let new_zoom = (state.zoom * zoom_factor).clamp(5.0, 5000.0);
 
-                // Houd muispositie vast
                 let new_scroll = mouse_sec - (mouse_x - rect.left()) / new_zoom;
                 state.scroll_offset = new_scroll.max(0.0);
                 state.zoom = new_zoom;
@@ -349,10 +438,12 @@ pub fn render_waveform(
         });
     }
 
-    // Slepen om te scrollen
-    if response.dragged_by(egui::PointerButton::Primary) {
+    // Slepen op waveform (alleen als we niet op een marker slepen)
+    if response.dragged_by(egui::PointerButton::Primary) && !loop_changed {
         let drag_delta = response.drag_delta();
         state.scroll_offset -= drag_delta.x / state.zoom;
         state.scroll_offset = state.scroll_offset.max(0.0);
     }
+
+    loop_changed
 }
