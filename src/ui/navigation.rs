@@ -593,6 +593,17 @@ impl MusicPlayerApp {
             let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
         }
 
+        // --- A-B LOOP ---
+        if shortcuts::check_action(&cfg, ctx, "LoopA") {
+            let _ = self.player_tx.send(PlayerCommand::SetLoopA);
+        }
+        if shortcuts::check_action(&cfg, ctx, "LoopB") {
+            let _ = self.player_tx.send(PlayerCommand::SetLoopB);
+        }
+        if shortcuts::check_action(&cfg, ctx, "ClearLoop") {
+            let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+        }
+
         // --- F2: NOW PLAYING NAVIGATIE ---
         if shortcuts::check_action(&cfg, ctx, "NowPlaying") {
             if let Some(ref target) = self.now_playing_path {

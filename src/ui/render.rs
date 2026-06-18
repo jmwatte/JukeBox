@@ -34,6 +34,10 @@ impl eframe::App for MusicPlayerApp {
                 PlayerEvent::QueueChanged(queue) => {
                     self.queue = queue;
                 }
+                PlayerEvent::LoopChanged(a, b) => {
+                    self.loop_a = a;
+                    self.loop_b = b;
+                }
             }
         }
 
@@ -188,6 +192,18 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(format!(
                         "• {} : Volume omlaag",
                         shortcuts::get_key_display(s, "VolumeDown")
+                    ));
+                    ui.label(format!(
+                        "• {} : Zet loop-punt A",
+                        shortcuts::get_key_display(s, "LoopA")
+                    ));
+                    ui.label(format!(
+                        "• {} : Zet loop-punt B",
+                        shortcuts::get_key_display(s, "LoopB")
+                    ));
+                    ui.label(format!(
+                        "• {} : Wis A-B loop",
+                        shortcuts::get_key_display(s, "ClearLoop")
                     ));
                     ui.add_space(5.0);
                     ui.label(RichText::new("Extra").strong());
@@ -366,6 +382,22 @@ impl eframe::App for MusicPlayerApp {
                                 RichText::new("🔀")
                                     .size(12.0)
                                     .color(Color32::from_rgb(100, 200, 100)),
+                            );
+                        }
+
+                        // A-B loop indicator
+                        if let (Some(a), Some(b)) = (self.loop_a, self.loop_b) {
+                            let a_mins = (a / 60.0) as u32;
+                            let a_secs = a as u32 % 60;
+                            let b_mins = (b / 60.0) as u32;
+                            let b_secs = b as u32 % 60;
+                            ui.label(
+                                RichText::new(format!(
+                                    "🔁 [{:02}:{:02} → {:02}:{:02}]",
+                                    a_mins, a_secs, b_mins, b_secs
+                                ))
+                                .size(12.0)
+                                .color(Color32::from_rgb(255, 200, 100)),
                             );
                         }
                     });

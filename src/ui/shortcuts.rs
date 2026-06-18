@@ -36,6 +36,9 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("Forward".into(), "'".into());
     m.insert("RepeatToggle".into(), "X".into());
     m.insert("ShuffleToggle".into(), "F8".into());
+    m.insert("LoopA".into(), "[".into());
+    m.insert("LoopB".into(), "]".into());
+    m.insert("ClearLoop".into(), "\\".into());
     m.insert("QueueToggle".into(), "Q".into());
     m.insert("NowPlaying".into(), "F2".into());
     m.insert("VolumeUp".into(), "=".into());
@@ -144,6 +147,22 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
             i.events
                 .iter()
                 .any(|e| matches!(e, egui::Event::Text(t) if t == "?"))
+        }),
+        s if s == "[" => ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Text(t) if t == "["))
+        }),
+        s if s == "]" => ctx.input(|i| {
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Text(t) if t == "]"))
+        }),
+        s if s == "\\" => ctx.input(|i| {
+            i.key_pressed(Key::Backslash)
+                || i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(t) if t == "\\"))
         }),
         _ => false,
     }

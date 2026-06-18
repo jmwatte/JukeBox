@@ -182,6 +182,32 @@ Een loop-functie waarbinnen een specifiek gedeelte van een track wordt herhaald:
 
 Een `F11`-achtige toggle die de UI minimaliseert tot alleen de now-playing balk met basiscontrols. Handig voor gebruik als kleine speler naast andere vensters.
 
+### Stap 4.6 – Config validatie (shortcuts) & opstart-hulp
+
+**Probleem:** De `shortcuts` in `config.toml` worden direct geladen in een `HashMap<String, String>`. Als een gebruiker handmatig fouten maakt in de config (dubbele entries, ongeldige toetswaarden, verkeerde actienamen), zijn de shortcuts onvoorspelbaar of werken ze niet.
+
+**Oplossing:**
+
+1. **Validatie bij opstarten** — controleer de geladen shortcuts:
+   - Zijn alle actienamen geldig? (vergelijk met `default_shortcuts()` keys)
+   - Zijn de toetswaarden bekend bij `key_pressed()`? (`Space`, `Enter`, `F1`–`F12`, letters, `;`, `'`, `=`, `-`, `[`, `]`, `\`, `/`, `?`)
+   - Wordt een toets aan meerdere acties toegewezen? (dubbele entry)
+   - Verzamel een lijst van fouten/warnings
+
+2. **Helpscherm bij fouten** — als er config-fouten zijn gedetecteerd:
+   - Toon automatisch het helpscherm bij opstarten (geforceerd, niet pas na H-toets)
+   - Toon de foutmeldingen in een aparte rode sectie bovenaan het helpscherm
+   - Bij elke fout: toon de actie, de ongeldige waarde, en wat de fout is
+   - Toon een `[Herstel standaard shortcuts]`-knop die `config.toml` herschrijft met de standaardwaarden
+   - Toon een `[Negeer en herinner later]`-knop
+
+3. **Reset-functionaliteit** — de knop roept `default_shortcuts()` aan en schrijft deze weg naar `config.toml`, zonder andere config-velden aan te tasten.
+
+**Acties:**
+- Validatiefunctie in `config.rs` of `shortcuts.rs`: `fn validate_shortcuts(&HashMap<String, String>) -> Vec<String>`
+- Uitbreiding `MusicPlayerApp` met `config_errors: Vec<String>` en `force_help: bool`
+- In `render.rs`: als `force_help`, helpvenster tonen met errors en resetknop
+
 ---
 
 ## Fase 5 – Optionele extra's (lagere prioriteit)
@@ -223,5 +249,7 @@ Fase 4: Afwerking
   ├─ 4.1 Cache-invalidatie
   ├─ 4.2 Error handling
   ├─ 4.3 Echte random
-  └─ 4.4 Slaaptimer
+  ├─ 4.4 Slaaptimer
+  ├─ 4.5 Compacte modus
+  └─ 4.6 Config validatie & opstart-hulp
 ```

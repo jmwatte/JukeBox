@@ -21,6 +21,9 @@ pub enum PlayerCommand {
     ToggleShuffle,
     RemoveFromQueue(usize),
     ClearQueue,
+    SetLoopA,
+    SetLoopB,
+    ClearLoop,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     SetVolume(f32),
@@ -32,7 +35,8 @@ pub enum PlayerEvent {
     PositionUpdate(f32, f32), // (current_secs, total_secs)
     RepeatModeChanged(RepeatMode),
     ShuffleModeChanged(bool),
-    QueueChanged(Vec<String>), // (overige tracks in wachtrij)
+    QueueChanged(Vec<String>),             // (overige tracks in wachtrij)
+    LoopChanged(Option<f32>, Option<f32>), // (A_secs, B_secs)
 }
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
@@ -43,6 +47,8 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut current_track_duration: Option<Duration> = None;
     let mut repeat_mode = RepeatMode::None;
     let mut shuffle_on = false;
+    let mut loop_a: Option<Duration> = None;
+    let mut loop_b: Option<Duration> = None;
     let mut original_queue: Vec<String> = Vec::new();
     let mut last_track: Option<String> = None;
 
@@ -116,7 +122,38 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     internal_queue.clear();
                     let _ = event_tx.send(PlayerEvent::QueueChanged(Vec::new()));
                 }
+                PlayerCommand::SetLoopA => {
+                    if let Some(s) = &sink {
+                        loop_a = Some(s.get_pos());
+                        let a = loop_a.map(|d| d.as_secs_f32());
+                        let b = loop_b.map(|d| d.as_secs_f32());
+                        let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
+                    }
+                }
+                PlayerCommand::SetLoopB => {
+                    if let Some(s) = &sink {
+                        loop_b = Some(s.get_pos());
+                        // Als B voor A ligt, wissel ze om
+                        if let (Some(a), Some(b)) = (loop_a, loop_b) {
+                            if b < a {
+                                loop_a = Some(b);
+                                loop_b = Some(a);
+                            }
+                        }
+                        let a = loop_a.map(|d| d.as_secs_f32());
+                        let b = loop_b.map(|d| d.as_secs_f32());
+                        let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
+                    }
+                }
+                PlayerCommand::ClearLoop => {
+                    loop_a = None;
+                    loop_b = None;
+                    let _ = event_tx.send(PlayerEvent::LoopChanged(None, None));
+                }
                 PlayerCommand::ReplaceQueue(files) => {
+                    loop_a = None;
+                    loop_b = None;
+                    let _ = event_tx.send(PlayerEvent::LoopChanged(None, None));
                     original_queue = files.clone();
                     internal_queue = files;
                     if shuffle_on {
@@ -202,7 +239,16 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
             }
         }
 
-        // 3. Stuur positie-update (als er iets speelt)
+        // 3. A-B loop: als positie >= B, spring terug naar A
+        if let (Some(a), Some(b)) = (loop_a, loop_b) {
+            if let Some(s) = &sink {
+                if !s.empty() && s.get_pos() >= b {
+                    let _ = s.try_seek(a);
+                }
+            }
+        }
+
+        // 4. Stuur positie-update (als er iets speelt)
         if let Some(s) = &sink {
             if !s.empty() {
                 let pos = s.get_pos().as_secs_f32();
