@@ -182,7 +182,7 @@ Een loop-functie waarbinnen een specifiek gedeelte van een track wordt herhaald:
 
 Een `F11`-achtige toggle die de UI minimaliseert tot alleen de now-playing balk met basiscontrols. Handig voor gebruik als kleine speler naast andere vensters.
 
-### Stap 4.6 – Config validatie (shortcuts) & opstart-hulp
+### Stap 4.6 – Config validatie (shortcuts) & opstart-hulp ✅
 
 **Probleem:** De `shortcuts` in `config.toml` worden direct geladen in een `HashMap<String, String>`. Als een gebruiker handmatig fouten maakt in de config (dubbele entries, ongeldige toetswaarden, verkeerde actienamen), zijn de shortcuts onvoorspelbaar of werken ze niet.
 

@@ -128,12 +128,36 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- HELP SCHERM ---
-        if self.show_help {
+        let mut reset_shortcuts = false;
+        if self.show_help || self.force_help {
             let s = &self.config.shortcuts;
             egui::Window::new("Sneltoetsen & Help")
                 .collapsible(false)
                 .resizable(false)
                 .show(ctx, |ui| {
+                    // Configuratie fouten (indien aanwezig)
+                    if !self.config_errors.is_empty() {
+                        ui.label(
+                            RichText::new("⚠ Configuratieproblemen")
+                                .size(16.0)
+                                .color(Color32::from_rgb(255, 100, 100))
+                                .strong(),
+                        );
+                        for err in &self.config_errors {
+                            ui.label(
+                                RichText::new(format!("  • {}", err))
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(255, 150, 150)),
+                            );
+                        }
+                        if ui.button("Herstel standaard shortcuts").clicked() {
+                            reset_shortcuts = true;
+                        }
+                        if ui.button("Negeer").clicked() {
+                            self.force_help = false;
+                        }
+                        ui.separator();
+                    }
                     ui.label(RichText::new("Toetsenbord Navigatie").strong());
                     ui.label(format!(
                         "• {} : Navigeer omlaag",
@@ -286,6 +310,15 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "ComposerBrowse")
                     ));
                 });
+        }
+
+        // Reset shortcuts indien gevraagd
+        if reset_shortcuts {
+            self.config.shortcuts = crate::ui::shortcuts::default_shortcuts();
+            if let Ok(toml_str) = toml::to_string(&self.config) {
+                let _ = std::fs::write("config.toml", toml_str);
+            }
+            self.config_errors.clear();
         }
 
         // --- Verwerk scanner events ---

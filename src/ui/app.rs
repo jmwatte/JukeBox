@@ -43,6 +43,8 @@ pub struct MusicPlayerApp {
     pub loop_b: Option<f32>,
     pub status_error: Option<String>,
     pub compact_mode: bool,
+    pub config_errors: Vec<String>,
+    pub force_help: bool,
     pub show_help: bool,
     pub _status_message: String,
 
@@ -117,7 +119,7 @@ impl MusicPlayerApp {
         } else {
             ViewMode::Tracklist
         };
-        Self {
+        let mut app = Self {
             config,
             player_tx,
             player_event_rx,
@@ -140,6 +142,8 @@ impl MusicPlayerApp {
             loop_b: None,
             status_error: None,
             compact_mode: false,
+            config_errors: Vec::new(),
+            force_help: false,
             show_help: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
             filtered_library: None,
@@ -185,7 +189,16 @@ impl MusicPlayerApp {
             composers: Vec::new(),
             selected_composer: 0,
             edit_panel_split: 0.4,
+        };
+
+        // Valideer shortcuts bij opstarten
+        let errors = crate::ui::shortcuts::validate_shortcuts(&app.config.shortcuts);
+        if !errors.is_empty() {
+            app.config_errors = errors;
+            app.force_help = true;
         }
+
+        app
     }
 
     // === FILTER PIPELINE ===

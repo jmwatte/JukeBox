@@ -169,6 +169,74 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
     }
 }
 
+/// Controleer of een toetswaarde bekend is in `key_pressed`.
+fn is_valid_key_value(key: &str) -> bool {
+    match key {
+        "Space" | "Enter" | "Escape" | "Tab" | "Backspace" | "Delete" | "ArrowUp" | "ArrowDown"
+        | "ArrowLeft" | "ArrowRight" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8"
+        | "F9" | "F10" | "F11" | "F12" | "Shift+M" | ";" | "'" | "=" | "-" | "/" | "?" | "["
+        | "]" | "\\" => true,
+        s if s.len() == 1 => {
+            let c = s.chars().next().unwrap();
+            c.is_ascii_alphabetic()
+        }
+        _ => false,
+    }
+}
+
+/// Valideer een shortcuts HashMap en geef een lijst met foutmeldingen terug.
+pub fn validate_shortcuts(shortcuts: &HashMap<String, String>) -> Vec<String> {
+    let mut errors = Vec::new();
+    let defaults = default_shortcuts();
+
+    for (action, key) in shortcuts {
+        if !defaults.contains_key(action) {
+            errors.push(format!(
+                "Onbekende actie \"{}\" (toets: \"{}\")",
+                action, key
+            ));
+        }
+    }
+
+    for (action, default_key) in &defaults {
+        if !shortcuts.contains_key(action) {
+            errors.push(format!(
+                "Actie \"{}\" ontbreekt (standaard: \"{}\")",
+                action, default_key
+            ));
+        }
+    }
+
+    for (action, key) in shortcuts {
+        if !is_valid_key_value(key) {
+            errors.push(format!(
+                "Actie \"{}\" heeft ongeldige toets \"{}\"",
+                action, key
+            ));
+        }
+    }
+
+    let mut seen: HashMap<&String, Vec<&String>> = HashMap::new();
+    for (action, key) in shortcuts {
+        seen.entry(key).or_default().push(action);
+    }
+    for (key, actions) in &seen {
+        if actions.len() > 1 {
+            errors.push(format!(
+                "Dubbele toets \"{}\" voor acties: {}",
+                key,
+                actions
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+    }
+
+    errors
+}
+
 fn char_to_key(c: char) -> Option<Key> {
     match c {
         'A' | 'a' => Some(Key::A),
