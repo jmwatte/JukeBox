@@ -41,6 +41,8 @@ pub struct MusicPlayerApp {
     pub queue: Vec<String>,
     pub loop_a: Option<f32>,
     pub loop_b: Option<f32>,
+    pub status_error: Option<String>,
+    pub compact_mode: bool,
     pub show_help: bool,
     pub _status_message: String,
 
@@ -136,6 +138,8 @@ impl MusicPlayerApp {
             queue: Vec::new(),
             loop_a: None,
             loop_b: None,
+            status_error: None,
+            compact_mode: false,
             show_help: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
             filtered_library: None,

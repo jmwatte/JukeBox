@@ -41,4 +41,5 @@ lru = "0.12" # Least-Recently-Used cache om RAM-gebruik van albumhoezen in toom 
 bincode = "1.3" # Voor razendsnelle binaire wegschrijving van de database
 natord = "1.0"
 rayon = "1.8"
+rand = "0.8"
 [workspace]

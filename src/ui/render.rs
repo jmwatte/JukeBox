@@ -20,6 +20,7 @@ impl eframe::App for MusicPlayerApp {
                     }
                     self.now_playing_path = Some(path);
                     self.now_playing_position = 0.0;
+                    self.status_error = None; // Wis foutmelding bij nieuwe track
                 }
                 PlayerEvent::PositionUpdate(pos, dur) => {
                     self.now_playing_position = pos;
@@ -37,6 +38,9 @@ impl eframe::App for MusicPlayerApp {
                 PlayerEvent::LoopChanged(a, b) => {
                     self.loop_a = a;
                     self.loop_b = b;
+                }
+                PlayerEvent::PlaybackError(msg) => {
+                    self.status_error = Some(msg);
                 }
             }
         }
@@ -248,6 +252,10 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "Rescan")
                     ));
                     ui.label(format!(
+                        "• {} : Compacte modus (alleen speler)",
+                        shortcuts::get_key_display(s, "CompactToggle")
+                    ));
+                    ui.label(format!(
                         "• {} : Herstel audio verbinding",
                         shortcuts::get_key_display(s, "ReconnectAudio")
                     ));
@@ -318,7 +326,7 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- NOW PLAYING BALK ---
-        if let Some(track) = &self.now_playing {
+        if self.now_playing.is_some() || self.status_error.is_some() {
             egui::TopBottomPanel::bottom("now_playing_panel").show(ctx, |ui| {
                 ui.add_space(6.0);
 
@@ -329,10 +337,24 @@ impl eframe::App for MusicPlayerApp {
                             .color(Color32::from_rgb(100, 200, 100))
                             .size(18.0),
                     );
-                    ui.label(RichText::new(track).size(16.0).strong());
+                    if let Some(track) = &self.now_playing {
+                        ui.label(RichText::new(track).size(16.0).strong());
+                    }
                 });
 
                 ui.add_space(4.0);
+
+                // Foutmelding (rood, tijdelijk)
+                if let Some(ref err) = self.status_error {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("⚠ {}", err))
+                                .size(13.0)
+                                .color(Color32::from_rgb(255, 100, 100)),
+                        );
+                    });
+                    ui.add_space(2.0);
+                }
 
                 // Voortgangsbalk + tijd
                 if self.now_playing_duration > 0.0 {
@@ -405,6 +427,12 @@ impl eframe::App for MusicPlayerApp {
 
                 ui.add_space(6.0);
             });
+        }
+
+        // Compacte modus: verberg bibliotheek, alleen now-playing balk
+        if self.compact_mode {
+            ctx.request_repaint();
+            return;
         }
 
         // --- ZOEKBALK ---

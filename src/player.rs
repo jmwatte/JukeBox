@@ -37,6 +37,7 @@ pub enum PlayerEvent {
     ShuffleModeChanged(bool),
     QueueChanged(Vec<String>),             // (overige tracks in wachtrij)
     LoopChanged(Option<f32>, Option<f32>), // (A_secs, B_secs)
+    PlaybackError(String),
 }
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
@@ -224,15 +225,39 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
 
                 if !internal_queue.is_empty() {
                     let next_file = internal_queue.remove(0);
-                    if let Ok(f) = File::open(&next_file) {
-                        if let Ok(decoder) = Decoder::new(BufReader::new(f)) {
-                            current_track_duration = decoder.total_duration();
-                            last_track = Some(next_file.clone());
-                            s.append(decoder);
-                            s.play();
-                            let _ = event_tx.send(PlayerEvent::NowPlaying(next_file));
-                            let _ =
-                                event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
+                    match File::open(&next_file) {
+                        Ok(f) => match Decoder::new(BufReader::new(f)) {
+                            Ok(decoder) => {
+                                current_track_duration = decoder.total_duration();
+                                last_track = Some(next_file.clone());
+                                s.append(decoder);
+                                s.play();
+                                let _ = event_tx.send(PlayerEvent::NowPlaying(next_file));
+                                let _ = event_tx
+                                    .send(PlayerEvent::QueueChanged(internal_queue.clone()));
+                            }
+                            Err(e) => {
+                                let msg = format!(
+                                    "Kan bestand niet decoderen: {} ({})",
+                                    std::path::Path::new(&next_file)
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy())
+                                        .unwrap_or_else(|| std::borrow::Cow::from(&next_file)),
+                                    e
+                                );
+                                let _ = event_tx.send(PlayerEvent::PlaybackError(msg));
+                            }
+                        },
+                        Err(e) => {
+                            let msg = format!(
+                                "Kan bestand niet openen: {} ({})",
+                                std::path::Path::new(&next_file)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy())
+                                    .unwrap_or_else(|| std::borrow::Cow::from(&next_file)),
+                                e
+                            );
+                            let _ = event_tx.send(PlayerEvent::PlaybackError(msg));
                         }
                     }
                 }

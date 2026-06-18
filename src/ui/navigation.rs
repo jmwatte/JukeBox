@@ -93,6 +93,9 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "QueueToggle") {
             self.show_queue = !self.show_queue;
         }
+        if shortcuts::check_action(&cfg, ctx, "CompactToggle") {
+            self.compact_mode = !self.compact_mode;
+        }
 
         // --- G: GENRE PICKER ---
         if shortcuts::check_action(&cfg, ctx, "GenreBrowse") {
@@ -536,13 +539,11 @@ impl MusicPlayerApp {
         // --- R: RANDOM ALBUM ---
         if shortcuts::check_action(&cfg, ctx, "RandomAlbum") {
             if !lib.artists.is_empty() {
-                let time = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as usize;
-                let random_artist = time % lib.artists.len();
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let random_artist = rng.gen_range(0..lib.artists.len());
                 if !lib.artists[random_artist].albums.is_empty() {
-                    let random_album = (time / 100) % lib.artists[random_artist].albums.len();
+                    let random_album = rng.gen_range(0..lib.artists[random_artist].albums.len());
                     self.selected_artist = random_artist;
                     self.selected_album = random_album;
                     self.current_level = NavLevel::Album;
