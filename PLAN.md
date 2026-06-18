@@ -85,21 +85,19 @@ In `player.rs`:
 - In `navigation.rs` `=` en `-` als shortcuts
 - Volume-indicator in now-playing balk 🔊 100%
 
-### Stap 2.4 – Forward seek
+### Stap 2.4 – Forward seek ✅
 
 **Afhankelijk van:** Stap 2.2 (positie-opvragen werkt al)
 
-Symmetrisch aan de `;`-rewind, maar dan vooruit. Suggestie: `'` (apostrof).
+Symmetrisch aan de `;`-rewind, maar dan vooruit. Toets: `'` (apostrof).
 
-### Stap 2.5 – "Now Playing" navigatie
+### Stap 2.5 – "Now Playing" navigatie ✅
 
-Sneltoets (bv. `Ctrl+N` of `F2`) die de bibliotheekselectie verplaatst naar het huidig spelende nummer.
+Sneltoets (`F2`) die de bibliotheekselectie verplaatst naar het huidig spelende nummer.
 
-In `navigation.rs`:
-- Zoek het huidige `now_playing`-pad op in de library
-- Stel `selected_artist`, `selected_album`, `selected_disk`, `selected_track` in
-- Zet `current_level` op `NavLevel::Track`
-- Scroll naar de selectie
+In `app.rs`:
+- `now_playing_path: Option<String>` bijgehouden (volledig pad, niet alleen bestandsnaam)
+- `navigate_to_now_playing()` zoekt het pad in de library en stelt selectie in
 
 ---
 

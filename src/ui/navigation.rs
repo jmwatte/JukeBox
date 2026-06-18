@@ -584,6 +584,31 @@ impl MusicPlayerApp {
             let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
         }
 
+        // --- F2: NOW PLAYING NAVIGATIE ---
+        if shortcuts::check_action(&cfg, ctx, "NowPlaying") {
+            if let Some(ref target) = self.now_playing_path {
+                if let Some(ref lib) = self.library {
+                    for (ai, artist) in lib.artists.iter().enumerate() {
+                        for (ali, album) in artist.albums.iter().enumerate() {
+                            for (di, disk) in album.disks.iter().enumerate() {
+                                for (ti, track) in disk.tracks.iter().enumerate() {
+                                    if track.path == *target {
+                                        self.selected_artist = ai;
+                                        self.selected_album = ali;
+                                        self.selected_disk = di;
+                                        self.selected_track = ti;
+                                        self.current_level = NavLevel::Track;
+                                        self.scroll_to_selection = true;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // --- O: OPEN FOLDER ---
         if shortcuts::check_action(&cfg, ctx, "OpenFolder") {
             if let Some(track_path) = self.get_current_track_path(&lib) {

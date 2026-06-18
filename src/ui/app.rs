@@ -31,6 +31,7 @@ pub struct MusicPlayerApp {
 
     // Status
     pub now_playing: Option<String>,
+    pub now_playing_path: Option<String>,
     pub now_playing_position: f32,
     pub now_playing_duration: f32,
     pub volume: f32,
@@ -119,6 +120,7 @@ impl MusicPlayerApp {
             filter_step: 0,
             cached_filtered: None,
             now_playing: None,
+            now_playing_path: None,
             now_playing_position: 0.0,
             now_playing_duration: 0.0,
             volume: 1.0,
@@ -636,6 +638,32 @@ impl MusicPlayerApp {
             .and_then(|al| al.disks.get(self.selected_disk))
             .and_then(|d| d.tracks.get(self.selected_track))
             .map(|t| t.path.clone())
+    }
+
+    /// Navigeer naar het huidig spelende nummer in de bibliotheek
+    pub fn navigate_to_now_playing(&mut self, lib: &Library) {
+        let target = match &self.now_playing_path {
+            Some(p) => p.clone(),
+            None => return,
+        };
+
+        for (ai, artist) in lib.artists.iter().enumerate() {
+            for (ali, album) in artist.albums.iter().enumerate() {
+                for (di, disk) in album.disks.iter().enumerate() {
+                    for (ti, track) in disk.tracks.iter().enumerate() {
+                        if track.path == target {
+                            self.selected_artist = ai;
+                            self.selected_album = ali;
+                            self.selected_disk = di;
+                            self.selected_track = ti;
+                            self.current_level = crate::ui::types::NavLevel::Track;
+                            self.scroll_to_selection = true;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // === MARKERING OP ALLE NIVEAUS ===

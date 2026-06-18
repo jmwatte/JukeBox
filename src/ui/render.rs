@@ -18,6 +18,7 @@ impl eframe::App for MusicPlayerApp {
                     if let Some(file_name) = Path::new(&path).file_name() {
                         self.now_playing = Some(file_name.to_string_lossy().into_owned());
                     }
+                    self.now_playing_path = Some(path);
                     self.now_playing_position = 0.0;
                 }
                 PlayerEvent::PositionUpdate(pos, dur) => {
@@ -164,6 +165,10 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(format!(
                         "• {} : Toon / verberg dit helpvenster",
                         shortcuts::get_key_display(s, "Help")
+                    ));
+                    ui.label(format!(
+                        "• {} : Navigeer naar huidig nummer",
+                        shortcuts::get_key_display(s, "NowPlaying")
                     ));
                     ui.separator();
                     if ui.button("Sluiten").clicked() {
