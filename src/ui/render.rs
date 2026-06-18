@@ -150,7 +150,7 @@ impl eframe::App for MusicPlayerApp {
                                     .color(Color32::from_rgb(255, 150, 150)),
                             );
                         }
-                        if ui.button("Herstel standaard shortcuts").clicked() {
+                        if ui.button("Herstel foutieve shortcuts").clicked() {
                             reset_shortcuts = true;
                         }
                         if ui.button("Negeer").clicked() {
@@ -302,6 +302,7 @@ impl eframe::App for MusicPlayerApp {
                     ui.separator();
                     if ui.button("Sluiten").clicked() {
                         self.show_help = false;
+                        self.force_help = false;
                     }
                     ui.add_space(4.0);
                     ui.label(RichText::new("Bladeren op metadata").strong());
@@ -316,13 +317,14 @@ impl eframe::App for MusicPlayerApp {
                 });
         }
 
-        // Reset shortcuts indien gevraagd
+        // Reset shortcuts indien gevraagd (alleen foutieve, behoud custom)
         if reset_shortcuts {
-            self.config.shortcuts = crate::ui::shortcuts::default_shortcuts();
+            crate::ui::shortcuts::repair_shortcuts(&mut self.config.shortcuts, &self.config_errors);
             if let Ok(toml_str) = toml::to_string(&self.config) {
                 let _ = std::fs::write("config.toml", toml_str);
             }
             self.config_errors.clear();
+            self.force_help = false;
         }
 
         // --- Verwerk scanner events ---

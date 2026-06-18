@@ -240,6 +240,44 @@ pub fn validate_shortcuts(shortcuts: &HashMap<String, String>) -> Vec<String> {
     errors
 }
 
+/// Herstel alleen de foutieve shortcuts naar hun standaardwaarde.
+/// Geldige custom shortcuts blijven behouden.
+pub fn repair_shortcuts(shortcuts: &mut HashMap<String, String>, errors: &[String]) {
+    let defaults = default_shortcuts();
+
+    for error in errors {
+        // Error-patronen:
+        // "Onbekende actie \"Foo\" (toets: \"X\")" → verwijder
+        if let Some(start) = error.find("\"") {
+            if let Some(end) = error[start + 1..].find("\"") {
+                let action = &error[start + 1..start + 1 + end];
+
+                if error.starts_with("Onbekende actie") {
+                    shortcuts.remove(action);
+                } else if error.starts_with("Actie") && error.contains("ontbreekt") {
+                    if let Some(default_key) = defaults.get(action) {
+                        shortcuts.insert(action.to_string(), default_key.clone());
+                    }
+                } else if error.starts_with("Actie") && error.contains("ongeldige toets") {
+                    if let Some(default_key) = defaults.get(action) {
+                        shortcuts.insert(action.to_string(), default_key.clone());
+                    }
+                } else if error.starts_with("Dubbele toets") {
+                    // Reset alle acties in deze foutmelding
+                    for a in error.split_whitespace() {
+                        let a = a.trim_matches('"').to_string();
+                        if defaults.contains_key(&a) {
+                            if let Some(default_key) = defaults.get(&a) {
+                                shortcuts.insert(a, default_key.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn char_to_key(c: char) -> Option<Key> {
     match c {
         'A' | 'a' => Some(Key::A),
