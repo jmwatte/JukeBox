@@ -578,6 +578,9 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "RepeatToggle") {
             let _ = self.player_tx.send(PlayerCommand::ToggleRepeat);
         }
+        if shortcuts::check_action(&cfg, ctx, "ShuffleToggle") {
+            let _ = self.player_tx.send(PlayerCommand::ToggleShuffle);
+        }
         if shortcuts::check_action(&cfg, ctx, "VolumeUp") {
             self.volume = (self.volume + 0.1).min(2.0);
             let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));

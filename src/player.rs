@@ -18,6 +18,7 @@ pub enum PlayerCommand {
     Rewind,
     Forward,
     ToggleRepeat,
+    ToggleShuffle,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     SetVolume(f32),
@@ -28,6 +29,7 @@ pub enum PlayerEvent {
     NowPlaying(String),
     PositionUpdate(f32, f32), // (current_secs, total_secs)
     RepeatModeChanged(RepeatMode),
+    ShuffleModeChanged(bool),
 }
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
@@ -37,6 +39,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut internal_queue: Vec<String> = Vec::new();
     let mut current_track_duration: Option<Duration> = None;
     let mut repeat_mode = RepeatMode::None;
+    let mut shuffle_on = false;
     let mut original_queue: Vec<String> = Vec::new();
     let mut last_track: Option<String> = None;
 
@@ -96,9 +99,16 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     };
                     let _ = event_tx.send(PlayerEvent::RepeatModeChanged(repeat_mode));
                 }
+                PlayerCommand::ToggleShuffle => {
+                    shuffle_on = !shuffle_on;
+                    let _ = event_tx.send(PlayerEvent::ShuffleModeChanged(shuffle_on));
+                }
                 PlayerCommand::ReplaceQueue(files) => {
                     original_queue = files.clone();
                     internal_queue = files;
+                    if shuffle_on {
+                        shuffle_vec(&mut internal_queue);
+                    }
                     if let Some(s) = &sink {
                         s.clear(); // Leeg de rodio wachtrij zodat hij niet doorspeelt
                         s.skip_one(); // Forceer direct naar de nieuwe lijst
@@ -148,6 +158,9 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         }
                         RepeatMode::All => {
                             internal_queue = original_queue.clone();
+                            if shuffle_on {
+                                shuffle_vec(&mut internal_queue);
+                            }
                         }
                         RepeatMode::None => {}
                     }
@@ -181,5 +194,22 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
 
         // Korte pauze om CPU te besparen
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Eenvoudige Fisher-Yates shuffle met SystemTime als seed
+fn shuffle_vec<T>(vec: &mut Vec<T>) {
+    let seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut rng = seed;
+    let len = vec.len();
+    for i in (1..len).rev() {
+        rng = rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let j = (rng % (i as u128 + 1)) as usize;
+        vec.swap(i, j);
     }
 }

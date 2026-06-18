@@ -28,6 +28,9 @@ impl eframe::App for MusicPlayerApp {
                 PlayerEvent::RepeatModeChanged(mode) => {
                     self.repeat_mode = mode;
                 }
+                PlayerEvent::ShuffleModeChanged(on) => {
+                    self.shuffle_on = on;
+                }
             }
         }
 
@@ -114,6 +117,10 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(format!(
                         "• {} : Herhaalmodus (Uit / 1 / Alles)",
                         shortcuts::get_key_display(s, "RepeatToggle")
+                    ));
+                    ui.label(format!(
+                        "• {} : Shuffle aan / uit",
+                        shortcuts::get_key_display(s, "ShuffleToggle")
                     ));
                     ui.label(format!(
                         "• {} : Volume omhoog",
@@ -285,6 +292,15 @@ impl eframe::App for MusicPlayerApp {
                         if !repeat_text.is_empty() {
                             ui.label(
                                 RichText::new(repeat_text)
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(100, 200, 100)),
+                            );
+                        }
+
+                        // Shuffle indicator
+                        if self.shuffle_on {
+                            ui.label(
+                                RichText::new("🔀")
                                     .size(12.0)
                                     .color(Color32::from_rgb(100, 200, 100)),
                             );
