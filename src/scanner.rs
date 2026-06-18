@@ -1,8 +1,11 @@
 use crate::models::{Album, Artist, Disk, Library, Track};
 use crossbeam_channel::Sender;
+use lofty::file::AudioFile;
 use lofty::file::TaggedFileExt;
 use lofty::probe::Probe;
+use lofty::tag::Accessor;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -16,13 +19,25 @@ pub enum ScannerMessage {
     ScanComplete,
 }
 
+pub const CACHE_VERSION: u32 = 1;
 pub const CACHE_FILE: &str = "library_cache.bin";
+
+#[derive(Serialize, Deserialize)]
+struct CacheData {
+    version: u32,
+    library: Library,
+}
+
 /// Sla een Library direct naar de cache, zonder een volledige herscan.
 /// Dit is handig nadat tags in-memory zijn aangepast.
 pub fn save_cache(library: &Library) {
     if let Ok(file) = std::fs::File::create(CACHE_FILE) {
         let writer = std::io::BufWriter::new(file);
-        let _ = bincode::serialize_into(writer, library);
+        let data = CacheData {
+            version: CACHE_VERSION,
+            library: library.clone(),
+        };
+        let _ = bincode::serialize_into(writer, &data);
     }
 }
 
@@ -38,17 +53,27 @@ pub async fn load_or_scan_library(
         let _ = tx.send(ScannerMessage::Progress("Cache laden...".into()));
         if let Ok(file) = File::open(CACHE_FILE) {
             let reader = BufReader::new(file);
-            if let Ok(library) = bincode::deserialize_from::<_, Library>(reader) {
-                // Alleen cache gebruiken als er ook echt artiesten in zitten.
-                // Anders was de cache van een lege/dode map en moeten we opnieuw scannen.
-                if !library.artists.is_empty() {
-                    let _ = tx.send(ScannerMessage::LibraryLoaded(library));
-                    let _ = tx.send(ScannerMessage::ScanComplete);
-                    return;
+            match bincode::deserialize_from::<_, CacheData>(reader) {
+                Ok(cache) if cache.version == CACHE_VERSION => {
+                    let library = cache.library;
+                    if !library.artists.is_empty() {
+                        let _ = tx.send(ScannerMessage::LibraryLoaded(library));
+                        let _ = tx.send(ScannerMessage::ScanComplete);
+                        return;
+                    }
+                }
+                Ok(cache) => {
+                    println!(
+                        "Cache versie {} komt niet overeen met verwachte {} — opnieuw scannen.",
+                        cache.version, CACHE_VERSION
+                    );
+                }
+                Err(e) => {
+                    println!("Cache corrupt ({:?}) — opnieuw scannen.", e);
                 }
             }
         }
-        // Cache was leeg of corrupt — verwijder hem en scan opnieuw
+        // Cache was leeg, corrupt of verouderd — verwijder hem en scan opnieuw
         let _ = std::fs::remove_file(CACHE_FILE);
     }
 
@@ -133,26 +158,72 @@ pub async fn load_or_scan_library(
                             }
                         }
                     }
-                    // Lees ALLE Genre tags (niet alleen de eerste!)
+                    // Lees ALLE metadata uit tags
+                    let mut title: Option<String> = None;
+                    let mut track_number: Option<u32> = None;
+                    let mut disc_number: Option<u32> = None;
+                    let mut track_artist: Option<String> = None;
+                    let mut album_artist: Option<String> = None;
                     let mut year: Option<u32> = None;
                     let mut composer: Option<String> = None;
+                    let mut duration_secs: u32 = 0;
 
                     if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
                         let mut all_genres = Vec::new();
 
                         for tag in tagged_file.tags() {
-                            // 1. Verzamel alle standaard genre tags
-                            // tag.genre() geeft alleen de eerste, dus we moeten zelf itereren
+                            // Titel en artiest via Accessor (werkt over alle tag-standaarden)
+                            if title.is_none() {
+                                if let Some(t) = tag.title() {
+                                    title = Some(t.to_string());
+                                }
+                            }
+                            if track_artist.is_none() {
+                                if let Some(a) = tag.artist() {
+                                    track_artist = Some(a.to_string());
+                                }
+                            }
+
                             for item in tag.items() {
                                 match item.key() {
-                                    // 1. Standaard Genre tag
+                                    // 1. Tracknummer
+                                    lofty::tag::ItemKey::TrackNumber => {
+                                        if track_number.is_none() {
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                track_number = text.parse::<u32>().ok();
+                                            }
+                                        }
+                                    }
+
+                                    // 2. Schijfnummer
+                                    lofty::tag::ItemKey::DiscNumber => {
+                                        if disc_number.is_none() {
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                disc_number = text.parse::<u32>().ok();
+                                            }
+                                        }
+                                    }
+
+                                    // 3. Album artiest
+                                    lofty::tag::ItemKey::AlbumArtist => {
+                                        if album_artist.is_none() {
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                album_artist = Some(text.to_string());
+                                            }
+                                        }
+                                    }
+
+                                    // 4. Genre (alle tags verzamelen)
                                     lofty::tag::ItemKey::Genre => {
                                         if let lofty::tag::ItemValue::Text(text) = item.value() {
                                             all_genres.push(text.clone());
                                         }
                                     }
 
-                                    // 2. Custom iTunes Genre tag (hoofdletterongevoelig)
+                                    // 5. Custom iTunes Genre tag
                                     lofty::tag::ItemKey::Unknown(key)
                                         if key.to_lowercase() == "----:com.apple.itunes:genre" =>
                                     {
@@ -161,34 +232,36 @@ pub async fn load_or_scan_library(
                                         }
                                     }
 
-                                    // 3. Year tags (Groepeer alle bekende jaar-keys van Lofty)
+                                    // 6. Jaartallen
                                     lofty::tag::ItemKey::Year
                                     | lofty::tag::ItemKey::RecordingDate
                                     | lofty::tag::ItemKey::OriginalReleaseDate => {
                                         if year.is_none() {
-                                            if let lofty::tag::ItemValue::Text(text) = item.value() {
-                                                // Neem alleen de eerste 4 karakters (voor het geval de tag "2011-05-12" is)
-                                                let year_str: String = text.chars().take(4).collect();
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                let year_str: String =
+                                                    text.chars().take(4).collect();
                                                 year = year_str.parse::<u32>().ok();
                                             }
                                         }
                                     }
 
-                                    // 4. Echte onbekende of custom tags als fallback
+                                    // 7. Jaartal-fallbacks (custom keys)
                                     lofty::tag::ItemKey::Unknown(key)
                                         if key.to_lowercase() == "originalyear"
-                                            || key.to_lowercase() == "toryear"
-                                            // recordingdate mag hier weg, want die vangen we nu hierboven af!
-                                    => {
+                                            || key.to_lowercase() == "toryear" =>
+                                    {
                                         if year.is_none() {
-                                            if let lofty::tag::ItemValue::Text(text) = item.value() {
-                                                let year_str: String = text.chars().take(4).collect();
+                                            if let lofty::tag::ItemValue::Text(text) = item.value()
+                                            {
+                                                let year_str: String =
+                                                    text.chars().take(4).collect();
                                                 year = year_str.parse::<u32>().ok();
                                             }
                                         }
                                     }
 
-                                    // 5. Composer
+                                    // 8. Componist
                                     lofty::tag::ItemKey::Composer => {
                                         if composer.is_none() {
                                             if let lofty::tag::ItemValue::Text(text) = item.value()
@@ -198,26 +271,34 @@ pub async fn load_or_scan_library(
                                         }
                                     }
 
-                                    // 6. Alle andere tags negeren
                                     _ => {}
                                 }
                             }
                         }
 
-                        // Voeg alle gevonden genres samen met een separator
+                        // Duur uit properties
+                        duration_secs = tagged_file.properties().duration().as_secs() as u32;
+
+                        // Voeg alle gevonden genres samen met separator
                         if !all_genres.is_empty() {
                             genre = all_genres.join(";");
                         }
                     }
-                    let track = Track {
-                        path: path.to_string_lossy().to_string(),
-                        title: path
-                            .file_stem()
+
+                    let track_title = title.unwrap_or_else(|| {
+                        path.file_stem()
                             .unwrap_or_default()
                             .to_string_lossy()
-                            .to_string(),
-                        track_number: 0,
-                        duration_secs: 0,
+                            .to_string()
+                    });
+                    let track = Track {
+                        path: path.to_string_lossy().to_string(),
+                        title: track_title,
+                        artist: track_artist,
+                        album_artist,
+                        track_number: track_number.unwrap_or(0),
+                        disc_number: disc_number.unwrap_or(0),
+                        duration_secs,
                         genre: Some(genre),
                         year,
                         composer,
@@ -326,7 +407,11 @@ pub async fn load_or_scan_library(
     let _ = tx.send(ScannerMessage::Progress("Bibliotheek opslaan... ".into()));
     if let Ok(file) = File::create(CACHE_FILE) {
         let writer = BufWriter::new(file);
-        let _ = bincode::serialize_into(writer, &library);
+        let data = CacheData {
+            version: CACHE_VERSION,
+            library: library.clone(),
+        };
+        let _ = bincode::serialize_into(writer, &data);
     }
 
     // 5. Stuur het eindresultaat

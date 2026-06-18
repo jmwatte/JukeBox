@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 pub struct Track {
     pub path: String,
     pub title: String,
+    pub artist: Option<String>,
+    pub album_artist: Option<String>,
     pub track_number: u32,
+    pub disc_number: u32,
     pub duration_secs: u32,
     pub genre: Option<String>,
     pub year: Option<u32>,
