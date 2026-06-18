@@ -1,5 +1,5 @@
 use crate::models::Library;
-use crate::player::PlayerEvent;
+use crate::player::{PlayerEvent, RepeatMode};
 use crate::scanner::ScannerMessage;
 use crate::search::filter_library;
 use crate::ui::shortcuts;
@@ -24,6 +24,9 @@ impl eframe::App for MusicPlayerApp {
                 PlayerEvent::PositionUpdate(pos, dur) => {
                     self.now_playing_position = pos;
                     self.now_playing_duration = dur;
+                }
+                PlayerEvent::RepeatModeChanged(mode) => {
+                    self.repeat_mode = mode;
                 }
             }
         }
@@ -107,6 +110,10 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(format!(
                         "• {} : Spoel 2 seconden vooruit",
                         shortcuts::get_key_display(s, "Forward")
+                    ));
+                    ui.label(format!(
+                        "• {} : Herhaalmodus (Uit / 1 / Alles)",
+                        shortcuts::get_key_display(s, "RepeatToggle")
                     ));
                     ui.label(format!(
                         "• {} : Volume omhoog",
@@ -268,6 +275,20 @@ impl eframe::App for MusicPlayerApp {
                                 .size(12.0)
                                 .color(Color32::GRAY),
                         );
+
+                        // Herhaalmodus indicator
+                        let repeat_text = match self.repeat_mode {
+                            RepeatMode::None => "",
+                            RepeatMode::One => "🔂 1",
+                            RepeatMode::All => "🔁 All",
+                        };
+                        if !repeat_text.is_empty() {
+                            ui.label(
+                                RichText::new(repeat_text)
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(100, 200, 100)),
+                            );
+                        }
                     });
                 }
 

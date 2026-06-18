@@ -34,6 +34,7 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     // Systeem
     m.insert("Rewind".into(), ";".into());
     m.insert("Forward".into(), "'".into());
+    m.insert("RepeatToggle".into(), "X".into());
     m.insert("NowPlaying".into(), "F2".into());
     m.insert("VolumeUp".into(), "=".into());
     m.insert("VolumeDown".into(), "-".into());

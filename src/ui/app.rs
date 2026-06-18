@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::models::{Album, Library};
-use crate::player::{PlayerCommand, PlayerEvent};
+use crate::player::{PlayerCommand, PlayerEvent, RepeatMode};
 use crate::scanner::ScannerMessage;
 use crate::search::{
     collect_composers, collect_genres, collect_years, filter_by_composer, filter_by_genre,
@@ -35,6 +35,7 @@ pub struct MusicPlayerApp {
     pub now_playing_position: f32,
     pub now_playing_duration: f32,
     pub volume: f32,
+    pub repeat_mode: RepeatMode,
     pub show_help: bool,
     pub _status_message: String,
 
@@ -124,6 +125,7 @@ impl MusicPlayerApp {
             now_playing_position: 0.0,
             now_playing_duration: 0.0,
             volume: 1.0,
+            repeat_mode: RepeatMode::None,
             show_help: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
             filtered_library: None,

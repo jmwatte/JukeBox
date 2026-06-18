@@ -4,12 +4,20 @@ use std::fs::File;
 use std::io::BufReader;
 use std::time::Duration;
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RepeatMode {
+    None,
+    One,
+    All,
+}
+
 pub enum PlayerCommand {
     PlayPause,
 
     Skip,
     Rewind,
     Forward,
+    ToggleRepeat,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     SetVolume(f32),
@@ -19,6 +27,7 @@ pub enum PlayerCommand {
 pub enum PlayerEvent {
     NowPlaying(String),
     PositionUpdate(f32, f32), // (current_secs, total_secs)
+    RepeatModeChanged(RepeatMode),
 }
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
@@ -27,6 +36,9 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut sink: Option<Sink> = None;
     let mut internal_queue: Vec<String> = Vec::new();
     let mut current_track_duration: Option<Duration> = None;
+    let mut repeat_mode = RepeatMode::None;
+    let mut original_queue: Vec<String> = Vec::new();
+    let mut last_track: Option<String> = None;
 
     // Eerste verbinding bij het opstarten (INLINE, geen closure!)
     if let Ok((stream, handle)) = OutputStream::try_default() {
@@ -76,7 +88,16 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         }
                     }
                 }
+                PlayerCommand::ToggleRepeat => {
+                    repeat_mode = match repeat_mode {
+                        RepeatMode::None => RepeatMode::One,
+                        RepeatMode::One => RepeatMode::All,
+                        RepeatMode::All => RepeatMode::None,
+                    };
+                    let _ = event_tx.send(PlayerEvent::RepeatModeChanged(repeat_mode));
+                }
                 PlayerCommand::ReplaceQueue(files) => {
+                    original_queue = files.clone();
                     internal_queue = files;
                     if let Some(s) = &sink {
                         s.clear(); // Leeg de rodio wachtrij zodat hij niet doorspeelt
@@ -117,11 +138,27 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
         // 2. Beheer de weergave
         if let Some(s) = &sink {
             if s.empty() {
+                // Herhaalmodus: vul queue opnieuw als deze leeg is
+                if internal_queue.is_empty() {
+                    match repeat_mode {
+                        RepeatMode::One => {
+                            if let Some(ref track) = last_track {
+                                internal_queue.push(track.clone());
+                            }
+                        }
+                        RepeatMode::All => {
+                            internal_queue = original_queue.clone();
+                        }
+                        RepeatMode::None => {}
+                    }
+                }
+
                 if !internal_queue.is_empty() {
                     let next_file = internal_queue.remove(0);
                     if let Ok(f) = File::open(&next_file) {
                         if let Ok(decoder) = Decoder::new(BufReader::new(f)) {
                             current_track_duration = decoder.total_duration();
+                            last_track = Some(next_file.clone());
                             s.append(decoder);
                             s.play();
                             let _ = event_tx.send(PlayerEvent::NowPlaying(next_file));
