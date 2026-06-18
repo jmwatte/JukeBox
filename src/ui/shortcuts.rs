@@ -46,6 +46,7 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("VolumeDown".into(), "-".into());
     m.insert("ReconnectAudio".into(), "F6".into());
     m.insert("Rescan".into(), "F5".into());
+    m.insert("RescanMarked".into(), "Shift+R".into());
     m
 }
 
@@ -97,6 +98,8 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         "F12" => ctx.input(|i| i.key_pressed(Key::F12)),
         // Speciale combinatie: Shift+M
         "Shift+M" => ctx.input(|i| i.key_pressed(Key::M) && i.modifiers.shift),
+        // Speciale combinatie: Shift+R
+        "Shift+R" => ctx.input(|i| i.key_pressed(Key::R) && i.modifiers.shift),
         // Lettertoets: een enkele letter (hoofdletter = key, kleine letter = text event)
         s if s.len() == 1 => {
             let c = s.chars().next().unwrap();

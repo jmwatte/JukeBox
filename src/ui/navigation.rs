@@ -55,22 +55,25 @@ impl MusicPlayerApp {
 
         // --- F5: RESCAN ---
         if shortcuts::check_action(&cfg, ctx, "Rescan") {
+            // Herlaad config van schijf (voor als gebruiker pad heeft aangepast)
+            let fresh_config = crate::config::Config::load_or_create();
+            self.config = fresh_config.clone();
             let _ = std::fs::remove_file("library_cache.bin");
             self.library = None;
             self.filtered_library = None;
             self.cached_filtered = None;
             self.filter_path.clear();
             self.filter_step = 0;
+            self._status_message = format!("Scannen: {}", fresh_config.music_directory);
             let tx = self.scanner_tx.clone();
-            let config = self.config.clone();
             std::thread::spawn(move || {
                 if let Ok(rt) = tokio::runtime::Runtime::new() {
                     rt.block_on(async {
                         crate::scanner::load_or_scan_library(
-                            config.music_directory,
-                            config.audio_extensions,
-                            config.cover_names,
-                            config.cover_extensions,
+                            fresh_config.music_directory,
+                            fresh_config.audio_extensions,
+                            fresh_config.cover_names,
+                            fresh_config.cover_extensions,
                             tx,
                         )
                         .await;
@@ -78,6 +81,18 @@ impl MusicPlayerApp {
                 }
             });
             return;
+        }
+
+        // --- SHIFT+R: RESCAN GEMARKEERDE TRACKS ---
+        if shortcuts::check_action(&cfg, ctx, "RescanMarked") {
+            if !self.selected_tracks.is_empty() {
+                let paths: Vec<String> = self.selected_tracks.iter().cloned().collect();
+                if let Some(ref mut lib) = self.library {
+                    crate::scanner::rescan_tracks(&paths, lib);
+                    crate::scanner::save_cache(lib);
+                    self.recompute();
+                }
+            }
         }
 
         // --- F6: RECONNECT AUDIO ---

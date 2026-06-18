@@ -437,3 +437,149 @@ pub async fn load_or_scan_library(
     let _ = tx.send(ScannerMessage::LibraryLoaded(library));
     let _ = tx.send(ScannerMessage::ScanComplete);
 }
+
+/// Hernummer de tags van een lijst met tracks en werk de library bij.
+/// Dit is handig nadat de gebruiker tags op schijf heeft aangepast (bv. met een externe tag editor)
+/// en alleen de geselecteerde tracks opnieuw wil inlezen zonder volledige rescan.
+pub fn rescan_tracks(paths: &[String], library: &mut Library) {
+    for path in paths {
+        // Tags uitlezen (zelfde logica als in load_or_scan_library)
+        let mut title: Option<String> = None;
+        let mut track_number: Option<u32> = None;
+        let mut disc_number: Option<u32> = None;
+        let mut track_artist: Option<String> = None;
+        let mut album_artist: Option<String> = None;
+        let mut year: Option<u32> = None;
+        let mut composer: Option<String> = None;
+        let mut genre: String = String::new();
+        let mut duration_secs: u32 = 0;
+
+        if let Ok(tagged_file) = Probe::open(path).and_then(|p| p.read()) {
+            let mut all_genres = Vec::new();
+
+            for tag in tagged_file.tags() {
+                if title.is_none() {
+                    if let Some(t) = tag.title() {
+                        title = Some(t.to_string());
+                    }
+                }
+                if track_artist.is_none() {
+                    if let Some(a) = tag.artist() {
+                        track_artist = Some(a.to_string());
+                    }
+                }
+
+                for item in tag.items() {
+                    match item.key() {
+                        lofty::tag::ItemKey::TrackNumber => {
+                            if track_number.is_none() {
+                                if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                    track_number = text.parse::<u32>().ok();
+                                }
+                            }
+                        }
+                        lofty::tag::ItemKey::DiscNumber => {
+                            if disc_number.is_none() {
+                                if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                    disc_number = text.parse::<u32>().ok();
+                                }
+                            }
+                        }
+                        lofty::tag::ItemKey::AlbumArtist => {
+                            if album_artist.is_none() {
+                                if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                    album_artist = Some(text.to_string());
+                                }
+                            }
+                        }
+                        lofty::tag::ItemKey::Genre => {
+                            if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                all_genres.push(text.clone());
+                            }
+                        }
+                        lofty::tag::ItemKey::Unknown(key)
+                            if key.to_lowercase() == "----:com.apple.itunes:genre" =>
+                        {
+                            if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                all_genres.push(text.clone());
+                            }
+                        }
+                        lofty::tag::ItemKey::Year
+                        | lofty::tag::ItemKey::RecordingDate
+                        | lofty::tag::ItemKey::OriginalReleaseDate => {
+                            if year.is_none() {
+                                if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                    let year_str: String = text.chars().take(4).collect();
+                                    year = year_str.parse::<u32>().ok();
+                                }
+                            }
+                        }
+                        lofty::tag::ItemKey::Unknown(key)
+                            if key.to_lowercase() == "originalyear"
+                                || key.to_lowercase() == "toryear" =>
+                        {
+                            if year.is_none() {
+                                if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                    let year_str: String = text.chars().take(4).collect();
+                                    year = year_str.parse::<u32>().ok();
+                                }
+                            }
+                        }
+                        lofty::tag::ItemKey::Composer => {
+                            if composer.is_none() {
+                                if let lofty::tag::ItemValue::Text(text) = item.value() {
+                                    composer = Some(text.to_string());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            duration_secs = tagged_file.properties().duration().as_secs() as u32;
+
+            if !all_genres.is_empty() {
+                genre = all_genres.join(";");
+            }
+        }
+
+        // Zoek de track in de library en werk bij
+        for artist in &mut library.artists {
+            for album in &mut artist.albums {
+                for disk in &mut album.disks {
+                    for track in &mut disk.tracks {
+                        if track.path == *path {
+                            if let Some(ref t) = title {
+                                track.title = t.clone();
+                            }
+                            if let Some(ref a) = track_artist {
+                                track.artist = Some(a.clone());
+                            }
+                            if let Some(ref a) = album_artist {
+                                track.album_artist = Some(a.clone());
+                            }
+                            if let Some(n) = track_number {
+                                track.track_number = n;
+                            }
+                            if let Some(n) = disc_number {
+                                track.disc_number = n;
+                            }
+                            track.duration_secs = duration_secs;
+                            if !genre.is_empty() {
+                                track.genre = Some(genre.clone());
+                            }
+                            if let Some(y) = year {
+                                track.year = Some(y);
+                            }
+                            if let Some(ref c) = composer {
+                                track.composer = Some(c.clone());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

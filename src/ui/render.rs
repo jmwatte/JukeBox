@@ -276,6 +276,10 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "Rescan")
                     ));
                     ui.label(format!(
+                        "• {} : Rescan alleen gemarkeerde tracks",
+                        shortcuts::get_key_display(s, "RescanMarked")
+                    ));
+                    ui.label(format!(
                         "• {} : Compacte modus (alleen speler)",
                         shortcuts::get_key_display(s, "CompactToggle")
                     ));
