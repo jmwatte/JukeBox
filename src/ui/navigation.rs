@@ -572,6 +572,14 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "Rewind") {
             let _ = self.player_tx.send(PlayerCommand::Rewind);
         }
+        if shortcuts::check_action(&cfg, ctx, "VolumeUp") {
+            self.volume = (self.volume + 0.1).min(2.0);
+            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
+        }
+        if shortcuts::check_action(&cfg, ctx, "VolumeDown") {
+            self.volume = (self.volume - 0.1).max(0.0);
+            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
+        }
 
         // --- O: OPEN FOLDER ---
         if shortcuts::check_action(&cfg, ctx, "OpenFolder") {

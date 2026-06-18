@@ -103,6 +103,14 @@ impl eframe::App for MusicPlayerApp {
                         "• {} : Spoel 2 seconden terug",
                         shortcuts::get_key_display(s, "Rewind")
                     ));
+                    ui.label(format!(
+                        "• {} : Volume omhoog",
+                        shortcuts::get_key_display(s, "VolumeUp")
+                    ));
+                    ui.label(format!(
+                        "• {} : Volume omlaag",
+                        shortcuts::get_key_display(s, "VolumeDown")
+                    ));
                     ui.add_space(5.0);
                     ui.label(RichText::new("Extra").strong());
                     ui.label(format!(
@@ -240,9 +248,17 @@ impl eframe::App for MusicPlayerApp {
                             (self.now_playing_position / self.now_playing_duration).clamp(0.0, 1.0);
                         let bar = egui::ProgressBar::new(fraction)
                             .show_percentage()
-                            .desired_width(ui.available_width() - 140.0);
+                            .desired_width(ui.available_width() - 180.0);
                         ui.add(bar);
                         ui.label(RichText::new(time_text).size(12.0).color(Color32::GRAY));
+
+                        // Volume indicator
+                        let vol_percent = (self.volume * 100.0) as u32;
+                        ui.label(
+                            RichText::new(format!("🔊 {}%", vol_percent))
+                                .size(12.0)
+                                .color(Color32::GRAY),
+                        );
                     });
                 }
 

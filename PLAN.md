@@ -78,12 +78,12 @@ In `player.rs`:
 
 **Optioneel:** klikken op de balk seekt naar die positie.
 
-### Stap 2.3 – Volume control
+### Stap 2.3 – Volume control ✅
 
 In `player.rs`:
 - `PlayerCommand::SetVolume(f32)` toevoegen
-- In `navigation.rs` `+` en `-` (of `[` / `]`) als shortcuts
-- Volume-indicator in now-playing balk (kleine horizontale balk of percentage)
+- In `navigation.rs` `=` en `-` als shortcuts
+- Volume-indicator in now-playing balk 🔊 100%
 
 ### Stap 2.4 – Forward seek
 

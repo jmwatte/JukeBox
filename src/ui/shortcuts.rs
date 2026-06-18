@@ -33,6 +33,8 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("ComposerBrowse".into(), "C".into());
     // Systeem
     m.insert("Rewind".into(), ";".into());
+    m.insert("VolumeUp".into(), "=".into());
+    m.insert("VolumeDown".into(), "-".into());
     m.insert("ReconnectAudio".into(), "F6".into());
     m.insert("Rescan".into(), "F5".into());
     m
@@ -110,6 +112,18 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
                 || i.events
                     .iter()
                     .any(|e| matches!(e, egui::Event::Text(t) if t == ";"))
+        }),
+        s if s == "=" => ctx.input(|i| {
+            i.key_pressed(Key::Plus)
+                || i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(t) if t == "=" || t == "+"))
+        }),
+        s if s == "-" => ctx.input(|i| {
+            i.key_pressed(Key::Minus)
+                || i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(t) if t == "-"))
         }),
         s if s == "/" => ctx.input(|i| {
             i.events

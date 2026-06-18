@@ -11,6 +11,7 @@ pub enum PlayerCommand {
     Rewind,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
+    SetVolume(f32),
     ReconnectAudio, // NIEUW: Commando om audio-apparaat te hervatten
 }
 
@@ -70,6 +71,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 }
                 PlayerCommand::AppendToQueue(files) => {
                     internal_queue.extend(files);
+                }
+                PlayerCommand::SetVolume(vol) => {
+                    if let Some(s) = &sink {
+                        s.set_volume(vol);
+                    }
                 }
                 PlayerCommand::ReconnectAudio => {
                     println!("Reconnecting audio device...");
