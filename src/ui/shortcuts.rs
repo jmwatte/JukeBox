@@ -99,10 +99,15 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         "F12" => ctx.input(|i| i.key_pressed(Key::F12)),
         // Cijfers
         "0" => ctx.input(|i| i.key_pressed(Key::Num0)),
-        // Speciale combinatie: Shift+M
-        "Shift+M" => ctx.input(|i| i.key_pressed(Key::M) && i.modifiers.shift),
-        // Speciale combinatie: Shift+R
-        "Shift+R" => ctx.input(|i| i.key_pressed(Key::R) && i.modifiers.shift),
+        // Shift+Letter combinaties (generiek voor alle letters)
+        s if s.starts_with("Shift+") && s.len() == 7 => {
+            let c = s.chars().nth(6).unwrap();
+            if let Some(key) = char_to_key(c) {
+                ctx.input(|i| i.key_pressed(key) && i.modifiers.shift)
+            } else {
+                false
+            }
+        }
         // Lettertoets: een enkele letter (hoofdletter = key, kleine letter = text event)
         s if s.len() == 1 => {
             let c = s.chars().next().unwrap();
@@ -180,8 +185,12 @@ fn is_valid_key_value(key: &str) -> bool {
     match key {
         "Space" | "Enter" | "Escape" | "Tab" | "Backspace" | "Delete" | "ArrowUp" | "ArrowDown"
         | "ArrowLeft" | "ArrowRight" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8"
-        | "F9" | "F10" | "F11" | "F12" | "Shift+M" | ";" | "'" | "=" | "-" | "/" | "?" | "["
-        | "]" | "\\" | "0" => true,
+        | "F9" | "F10" | "F11" | "F12" | ";" | "'" | "=" | "-" | "/" | "?" | "[" | "]" | "\\"
+        | "0" => true,
+        // Shift+Letter combinaties
+        s if s.starts_with("Shift+") && s.len() == 7 => {
+            s.chars().nth(6).map_or(false, |c| c.is_ascii_alphabetic())
+        }
         s if s.len() == 1 => {
             let c = s.chars().next().unwrap();
             c.is_ascii_alphabetic()
