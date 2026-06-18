@@ -210,7 +210,275 @@ Een `F11`-achtige toggle die de UI minimaliseert tot alleen de now-playing balk 
 
 ---
 
-## Fase 5 – Optionele extra's (lagere prioriteit)
+## Fase W – Waveform Editor (transcribe-achtige functies)
+
+**Doel:** Een waveform-editor waarmee de gebruiker een gemarkeerde track kan openen (shortcut `0`),
+de waveform kan zien, visueel A-B loops kan instellen, pitch-shiften en tempo kan vertragen.
+
+### Huidige codebase context (voor AI bij nieuwe chat)
+
+Dit project is een egui/eframe desktop app in Rust. Belangrijke bestanden:
+
+| Bestand | Functie |
+|---|---|
+| `src/main.rs` | Entrypoint, start audio-thread + UI-thread |
+| `src/player.rs` | Audio-thread met rodio Sink, `PlayerCommand`/`PlayerEvent` kanalen |
+| `src/models.rs` | Data modellen: `Track`, `Album`, `Artist`, `Library` |
+| `src/scanner.rs` | Bibliotheek scanner + cache |
+| `src/ui/` | Egui UI: `app.rs` (state), `render.rs` (tekenen), `navigation.rs` (shortcuts), `edit.rs` (batch tag editor), `shortcuts.rs` (toetsen) |
+
+**Key architecture:**
+- Audio draait in een aparte `std::thread` met `crossbeam_channel` voor communicatie
+- `PlayerCommand` wordt van UI naar audio-thread gestuurd
+- `PlayerEvent` wordt van audio-thread naar UI gestuurd
+- UI thread draait egui via `eframe::run_native()`
+- `MusicPlayerApp` in `app.rs` is de centrale state struct
+
+**Bestaande A-B loop (in player.rs):**
+```rust
+// PlayerCommand::SetLoopA / SetLoopB / ClearLoop
+// loop_a: Option<Duration>, loop_b: Option<Duration>
+// Check: if s.get_pos() >= loop_b { s.try_seek(loop_a); }
+// Event: PlayerEvent::LoopChanged(Option<f32>, Option<f32>)
+```
+
+---
+
+### Stap W1 – PCM-decoding + waveform render
+
+**Nieuwe file:** `src/waveform.rs`
+
+**Doel:** Open een audiobestand, decodeer naar PCM samples, teken de waveform in een egui window.
+
+**Wat moet er gebeuren:**
+
+1. **Directe symphonia decoding (niet via rodio):**
+   - Gebruik `symphonia::default::get_codecs()` en `symphonia::core::io::MediaSourceStream`
+   - Decodeer het hele bestand naar `Vec<f32>` (mono, gemiddelde van kanalen)
+   - Of decodeer in chunks voor grote bestanden (streaming)
+
+2. **Downsamplen voor weergave:**
+   - Bepaal hoeveel samples per pixel (afhankelijk van zoom-niveau en vensterbreedte)
+   - Voor elke pixel: bepaal de min en max sample in dat blok
+   - Teken verticale lijnen van min naar max per pixel
+
+3. **Egui waveform render:**
+   - Open een egui `Window` via shortcut `0`
+   - `ui.painter().add(egui::Shape::line(...))` voor de waveform
+   - Tijdschaal onderaan (elke seconde / 5 seconden een markering)
+   - Muiswiel voor zoomen, slepen voor scrollen
+
+**Key API's:**
+```rust
+// Symphonia direct decoding (voorbeeld, aanpassen aan symphonia 0.5)
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::probe::Hint;
+
+let src = std::fs::File::open(path)?;
+let mss = MediaSourceStream::new(Box::new(src), Default::default());
+let mut hint = Hint::new();
+hint.with_extension("mp3");
+let probed = symphonia::default::get_probe().format(&hint, mss, &Default::default(), &Default::default())?;
+
+// Decodeer naar Vec<f32> (mono)
+let track_id = probed.format.default_track().codec_params.track_id;
+let mut decoder = symphonia::default::get_codecs().make(&probed.format.default_track().codec_params, &Default::default())?;
+let mut samples: Vec<f32> = Vec::new();
+loop {
+    let packet = probed.format.next_packet()?;
+    let decoded = decoder.decode(&packet)?;
+    // converteer naar f32, mix naar mono
+}
+
+// Egui waveform
+let painter = ui.painter();
+let rect = ui.allocate_space(egui::vec2(ui.available_width(), 200.0));
+for x in 0..rect.width() as usize {
+    let min = get_min_sample(x, zoom, &samples);
+    let max = get_max_sample(x, zoom, &samples);
+    let p1 = egui::pos2(rect.left() + x as f32, rect.center().y + min * rect.height() / 2.0);
+    let p2 = egui::pos2(rect.left() + x as f32, rect.center().y + max * rect.height() / 2.0);
+    painter.line_segment([p1, p2], (1.0, egui::Color32::from_gray(180)));
+}
+```
+
+---
+
+### Stap W2 – Visuele A-B loop op waveform
+
+**Doel:** Sleepbare A- en B-markers op de waveform, met oplichtend loop-gebied.
+
+**Wat moet er gebeuren:**
+
+1. **Twee verticale lijnen** op de waveform:
+   - A (groen) en B (rood)
+   - Sleepbaar via `ui.interact()` met `Sense::drag()`
+   - Positie wordt vertaald naar sample-index / tijd
+
+2. **Geselecteerd gebied oplichten:**
+   - Tussen A en B: lichtblauwe of gele achtergrond
+   - `painter.rect_filled()` met transparante kleur
+
+3. **Huidige positie-indicator:**
+   - Dunne rode lijn die meebeweegt tijdens afspelen
+   - Update via `now_playing_position` uit `MusicPlayerApp`
+
+4. **Koppeling met bestaande A-B loop in player.rs:**
+   - Bij slepen van A of B: stuur `PlayerCommand::SetLoopA` / `SetLoopB`
+   - Bij wijzigen via bestaande shortcuts `[` / `]` / `\`: waveform update via `LoopChanged` event
+   - Sync bidirectional: wat de waveform doet, moet de player doen en vice versa
+
+**UI state in app.rs / nieuwe waveform struct:**
+```rust
+pub struct WaveformState {
+    pub path: Option<String>,
+    pub samples: Vec<f32>,         // PCM samples (mono, gemixt)
+    pub sample_rate: u32,
+    pub duration_secs: f32,
+    pub zoom: f32,                  // pixels per second
+    pub scroll_offset: f32,         // scroll offset in seconds
+    pub loop_a_secs: Option<f32>,
+    pub loop_b_secs: Option<f32>,
+}
+```
+
+---
+
+### Stap W3 – Loops afspelen via aparte audio-thread
+
+**Doel:** Het A-B segment afspelen via een aparte audio-thread (of via de bestaande player).
+
+**Optie A (simpler): via bestaande player**
+- Stel de loop A en B in via `PlayerCommand::SetLoopA` / `SetLoopB`
+- De bestaande loop-logic in player.rs speelt het segment af
+- Nadeel: geen fine control over pitch/tempo
+
+**Optie B (krachtiger): aparte waveform audio-thread**
+- Nieuwe thread die symphonia gebruikt om alleen het A-B segment te decoderen
+- rodio Sink voor output
+- `WaveformCommand::PlayLoop(start_secs, end_secs)`
+- `WaveformCommand::Stop`, `WaveformCommand::SetPitch(f32)`, `WaveformCommand::SetTempo(f32)`
+- Telt als voorbereiding op W4
+
+**Aanbevolen:** Start met optie A (simpel), breid later uit naar optie B voor W4.
+
+---
+
+### Stap W4 – Pitch shifting & time stretching (rubato)
+
+**Nieuwe dependency:** `rubato = "0.15"`
+
+**Doel:** Vertragen/versnellen zonder toonhoogte-verandering, en pitch-shiften.
+
+**Wat moet er gebeuren:**
+
+1. **Rubato configureren:**
+```rust
+use rubato::{PitchShifter, Resampler, SincFixedIn, InterpolationType, WindowFunction};
+
+let pitch_shift = 0.0; // semitones
+let tempo = 1.0;        // 0.5 = half tempo, 2.0 = dubbel tempo
+
+let mut resampler = SincFixedIn::<f32>::new(
+    tempo,          // scale factor
+    1.0,            // sample rate ratio
+    SincFixedIn::generate_coefficients(256, 10, InterpolationType::Linear, WindowFunction::BlackmanHarris2);
+    samples.len(),  // chunk size
+    1,              // channels
+)?;
+
+let processed = resampler.process(&[&samples], None)?;
+```
+
+2. **Pitch shift zonder tempo-verandering:**
+   - Gebruik `rubato::PitchShifter`
+   - Pitch shift in semitones: `f32::powf(2.0, semitones / 12.0)`
+
+3. **UI controls:**
+   - Schuifregelaar `-12 .. 0 .. +12` semitones
+   - Schuifregelaar `25% .. 100% .. 200%` tempo
+   - Reset knoppen
+
+4. **Audio pipeline:**
+   - Decodeer A-B segment samples
+   - Verwerk door rubato
+   - Stuur naar rodio Sink
+   - Bij wijzigen pitch/tempo: stop huidige sink, verwerk opnieuw, speel af
+
+---
+
+### Stap W5 – Loops opslaan / beheren
+
+**Doel:** Opgeslagen loops bewaren, terugvinden, en exporteren.
+
+**Bestandsformaat:** JSON bestand `loops.json` in de app directory
+```rust
+#[derive(Serialize, Deserialize)]
+pub struct SavedLoop {
+    pub track_path: String,
+    pub label: String,
+    pub loop_a_secs: f32,
+    pub loop_b_secs: f32,
+    pub pitch_semitones: f32,
+    pub tempo: f32,
+}
+```
+
+**Functionaliteit:**
+- Loop opslaan met een naam (standaard: tracknaam + " - Loop 1")
+- Loop bibliotheek: window met alle opgeslagen loops
+- Click op een loop: open waveform met die instellingen
+- Delete loop
+- Export A-B segment als `.wav` met hound crate (of symphonia)
+
+---
+
+### Sneltoetsen (voor shortcuts.rs)
+
+| Actie | Toets |
+|---|---|
+| `WaveformOpen` | `0` |
+| `WaveformPlayLoop` | `Space` (als waveform focus heeft) |
+| `WaveformSetA` | `[` (als waveform open is) |
+| `WaveformSetB` | `]` (als waveform open is) |
+| `WaveformClearLoop` | `\` (als waveform open is) |
+| `WaveformSaveLoop` | `Ctrl+S` |
+
+### Nieuwe files
+
+| Bestand | Inhoud |
+|---|---|
+| `src/waveform.rs` | WaveformState, decode, render, interactie |
+| `src/loops.rs` | SavedLoop struct, save/load JSON, loop bibliotheek |
+
+### Nieuwe dependencies in Cargo.toml
+
+```toml
+rubato = "0.15"     # pitch shift + time stretch
+# Optioneel voor W5:
+# hound = "3.5"     # WAV export
+```
+
+---
+
+### Uitvoeringsvolgorde
+
+```
+W1: PCM decoderen + waveform tekenen op scherm
+  └─ test met een kort mp3/flac bestand
+
+W2: A-B markers sleepbaar op waveform
+  └─ koppelen met bestaande player.rs loop logic
+
+W3: Loop afspelen via player
+  └─ W1 + W2 vormen een werkende visuele loop-editor
+
+W4: rubato pitch/tempo
+  └─ aparte audio thread voor realtime verwerking
+
+W5: Opslaan / beheren / exporteren
+  └─ loops.json + loop bibliotheek venster
+```
 
 | Feature | Korte beschrijving |
 |---|---|
@@ -252,4 +520,11 @@ Fase 4: Afwerking
   ├─ 4.4 Slaaptimer
   ├─ 4.5 Compacte modus
   └─ 4.6 Config validatie & opstart-hulp
+
+Fase W: Waveform Editor
+  ├─ W1 PCM-decoding + waveform render
+  ├─ W2 Visuele A-B loop
+  ├─ W3 Loops afspelen (aparte audio)
+  ├─ W4 Pitch / Tempo (rubato)
+  └─ W5 Loops opslaan / beheren
 ```
