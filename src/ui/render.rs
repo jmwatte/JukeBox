@@ -917,69 +917,50 @@ impl MusicPlayerApp {
                         }
                     }
                     NavLevel::Track => {
-                        // Links uitlijnen zodat tracknummers en duur mooi onder elkaar staan
-                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                            for (i, track) in current_lib.artists[*selected_artist].albums
-                                [*selected_album]
-                                .disks[*selected_disk]
-                                .tracks
-                                .iter()
-                                .enumerate()
-                            {
-                                let is_selected = i == *selected_track;
-                                let is_marked = selected_tracks.contains(&track.path);
-                                let mut resp: Option<egui::Response> = None;
+                        let row_height = ui.spacing().interact_size.y;
+                        let full_width = ui.available_width();
 
-                                ui.horizontal(|ui| {
-                                    // Tracknummer links
-                                    if track.track_number > 0 {
-                                        ui.label(
-                                            RichText::new(format!("{:02}.", track.track_number))
-                                                .size(16.0)
-                                                .color(Color32::GRAY),
-                                        );
-                                        ui.add_space(4.0);
-                                    }
+                        for (i, track) in current_lib.artists[*selected_artist].albums
+                            [*selected_album]
+                            .disks[*selected_disk]
+                            .tracks
+                            .iter()
+                            .enumerate()
+                        {
+                            let is_selected = i == *selected_track;
+                            let is_marked = selected_tracks.contains(&track.path);
 
-                                    // Titel met markering (selectable, vult breedte)
-                                    let mark = if is_marked { "☑ " } else { "" };
-                                    let display = format!("{}{}", mark, track.title);
-                                    let label = egui::SelectableLabel::new(
-                                        is_selected,
-                                        RichText::new(&display).size(16.0),
-                                    );
-                                    let r = ui.add_sized(
-                                        egui::vec2(
-                                            ui.available_width(),
-                                            ui.spacing().interact_size.y,
-                                        ),
-                                        label,
-                                    );
-                                    resp = Some(r);
+                            // Bouw de labeltekst met tracknummer, titel en duur
+                            let track_num_str = if track.track_number > 0 {
+                                format!("{:02}.  ", track.track_number)
+                            } else {
+                                String::new()
+                            };
+                            let mark_str = if is_marked { "☑ " } else { "" };
+                            let dur_str = if track.duration_secs > 0 {
+                                let mins = track.duration_secs / 60;
+                                let secs = track.duration_secs % 60;
+                                format!("   {}:{:02}", mins, secs)
+                            } else {
+                                String::new()
+                            };
+                            let text =
+                                format!("{}{}{}{}", track_num_str, mark_str, track.title, dur_str);
 
-                                    // Duur rechts
-                                    if track.duration_secs > 0 {
-                                        let mins = track.duration_secs / 60;
-                                        let secs = track.duration_secs % 60;
-                                        ui.label(
-                                            RichText::new(format!("{}:{:02}", mins, secs))
-                                                .size(14.0)
-                                                .color(Color32::GRAY),
-                                        );
-                                    }
-                                });
+                            let label = egui::SelectableLabel::new(
+                                is_selected,
+                                RichText::new(&text).size(16.0),
+                            );
+                            let resp = ui.add_sized(egui::vec2(full_width, row_height), label);
 
-                                if let Some(resp) = resp {
-                                    if resp.clicked() {
-                                        *selected_track = i;
-                                        *scroll_to_selection = true;
-                                    }
-                                    if is_selected && *scroll_to_selection {
-                                        resp.scroll_to_me(None);
-                                    }
-                                }
+                            if resp.clicked() {
+                                *selected_track = i;
+                                *scroll_to_selection = true;
                             }
-                        });
+                            if is_selected && *scroll_to_selection {
+                                resp.scroll_to_me(None);
+                            }
+                        }
                     }
                 },
             );
