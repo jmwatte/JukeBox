@@ -917,32 +917,69 @@ impl MusicPlayerApp {
                         }
                     }
                     NavLevel::Track => {
-                        for (i, track) in current_lib.artists[*selected_artist].albums
-                            [*selected_album]
-                            .disks[*selected_disk]
-                            .tracks
-                            .iter()
-                            .enumerate()
-                        {
-                            let is_selected = i == *selected_track;
-                            let is_marked = selected_tracks.contains(&track.path);
-                            let display_title = if is_marked {
-                                format!("☑ {}", track.title)
-                            } else {
-                                track.title.clone()
-                            };
-                            let resp = ui.selectable_label(
-                                is_selected,
-                                RichText::new(&display_title).size(16.0),
-                            );
-                            if resp.clicked() {
-                                *selected_track = i;
-                                *scroll_to_selection = true;
+                        // Links uitlijnen zodat tracknummers en duur mooi onder elkaar staan
+                        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            for (i, track) in current_lib.artists[*selected_artist].albums
+                                [*selected_album]
+                                .disks[*selected_disk]
+                                .tracks
+                                .iter()
+                                .enumerate()
+                            {
+                                let is_selected = i == *selected_track;
+                                let is_marked = selected_tracks.contains(&track.path);
+                                let mut resp: Option<egui::Response> = None;
+
+                                ui.horizontal(|ui| {
+                                    // Tracknummer links
+                                    if track.track_number > 0 {
+                                        ui.label(
+                                            RichText::new(format!("{:02}.", track.track_number))
+                                                .size(16.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                        ui.add_space(4.0);
+                                    }
+
+                                    // Titel met markering (selectable, vult breedte)
+                                    let mark = if is_marked { "☑ " } else { "" };
+                                    let display = format!("{}{}", mark, track.title);
+                                    let label = egui::SelectableLabel::new(
+                                        is_selected,
+                                        RichText::new(&display).size(16.0),
+                                    );
+                                    let r = ui.add_sized(
+                                        egui::vec2(
+                                            ui.available_width(),
+                                            ui.spacing().interact_size.y,
+                                        ),
+                                        label,
+                                    );
+                                    resp = Some(r);
+
+                                    // Duur rechts
+                                    if track.duration_secs > 0 {
+                                        let mins = track.duration_secs / 60;
+                                        let secs = track.duration_secs % 60;
+                                        ui.label(
+                                            RichText::new(format!("{}:{:02}", mins, secs))
+                                                .size(14.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                    }
+                                });
+
+                                if let Some(resp) = resp {
+                                    if resp.clicked() {
+                                        *selected_track = i;
+                                        *scroll_to_selection = true;
+                                    }
+                                    if is_selected && *scroll_to_selection {
+                                        resp.scroll_to_me(None);
+                                    }
+                                }
                             }
-                            if is_selected && *scroll_to_selection {
-                                resp.scroll_to_me(None);
-                            }
-                        }
+                        });
                     }
                 },
             );

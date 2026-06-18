@@ -58,7 +58,7 @@ Deze waarde opslaan in `track.duration_secs` (als `u32` seconden, `.as_secs()`).
 
 ## Fase 2 – UI opwaarderen
 
-### Stap 2.1 – Tracknummer en duur tonen in tracklist
+### Stap 2.1 – Tracknummer en duur tonen in tracklist ✅
 
 **Afhankelijk van:** Stap 1.1, 1.3
 
