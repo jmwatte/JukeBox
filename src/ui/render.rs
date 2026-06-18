@@ -1,5 +1,5 @@
 use crate::models::Library;
-use crate::player::{PlayerEvent, RepeatMode};
+use crate::player::{PlayerCommand, PlayerEvent, RepeatMode};
 use crate::scanner::ScannerMessage;
 use crate::search::filter_library;
 use crate::ui::shortcuts;
@@ -31,6 +31,9 @@ impl eframe::App for MusicPlayerApp {
                 PlayerEvent::ShuffleModeChanged(on) => {
                     self.shuffle_on = on;
                 }
+                PlayerEvent::QueueChanged(queue) => {
+                    self.queue = queue;
+                }
             }
         }
 
@@ -57,6 +60,62 @@ impl eframe::App for MusicPlayerApp {
                 .show(ctx, |ui| {
                     // Hier roepen we de nieuwe functie aan!
                     self.show_batch_edit_panel(ui);
+                });
+        }
+
+        // --- WACHTRIJ PANEEL ---
+        if self.show_queue {
+            let tx = self.player_tx.clone();
+            egui::SidePanel::right("queue_panel")
+                .default_width(300.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("Wachtrij");
+                    ui.separator();
+
+                    // Huidig nummer
+                    if let Some(ref track) = self.now_playing {
+                        ui.label(
+                            RichText::new(format!("▶ {}", track))
+                                .size(14.0)
+                                .color(Color32::from_rgb(100, 200, 100))
+                                .strong(),
+                        );
+                        ui.add_space(4.0);
+                    }
+
+                    // Overige tracks in queue
+                    if self.queue.is_empty() {
+                        ui.label("Geen nummers in wachtrij.");
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(ui.available_height() - 40.0)
+                            .show(ui, |ui| {
+                                for (i, path) in self.queue.iter().enumerate() {
+                                    let file_name = std::path::Path::new(path)
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| path.clone());
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!("{:02}.", i + 1))
+                                                .size(12.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                        ui.label(RichText::new(&file_name).size(13.0));
+                                        if ui.button("❌").clicked() {
+                                            let _ = tx.send(PlayerCommand::RemoveFromQueue(i));
+                                        }
+                                    });
+                                }
+                            });
+
+                        ui.add_space(8.0);
+                        if ui.button("Wis wachtrij").clicked() {
+                            let _ = tx.send(PlayerCommand::ClearQueue);
+                        }
+                    }
                 });
         }
 
@@ -179,6 +238,10 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(format!(
                         "• {} : Toon / verberg dit helpvenster",
                         shortcuts::get_key_display(s, "Help")
+                    ));
+                    ui.label(format!(
+                        "• {} : Toon / verberg wachtrij",
+                        shortcuts::get_key_display(s, "QueueToggle")
                     ));
                     ui.label(format!(
                         "• {} : Navigeer naar huidig nummer",

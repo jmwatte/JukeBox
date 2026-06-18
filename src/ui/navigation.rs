@@ -90,6 +90,9 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "Help") {
             self.show_help = !self.show_help;
         }
+        if shortcuts::check_action(&cfg, ctx, "QueueToggle") {
+            self.show_queue = !self.show_queue;
+        }
 
         // --- G: GENRE PICKER ---
         if shortcuts::check_action(&cfg, ctx, "GenreBrowse") {

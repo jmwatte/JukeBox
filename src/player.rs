@@ -19,6 +19,8 @@ pub enum PlayerCommand {
     Forward,
     ToggleRepeat,
     ToggleShuffle,
+    RemoveFromQueue(usize),
+    ClearQueue,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     SetVolume(f32),
@@ -30,6 +32,7 @@ pub enum PlayerEvent {
     PositionUpdate(f32, f32), // (current_secs, total_secs)
     RepeatModeChanged(RepeatMode),
     ShuffleModeChanged(bool),
+    QueueChanged(Vec<String>), // (overige tracks in wachtrij)
 }
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
@@ -103,6 +106,16 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     shuffle_on = !shuffle_on;
                     let _ = event_tx.send(PlayerEvent::ShuffleModeChanged(shuffle_on));
                 }
+                PlayerCommand::RemoveFromQueue(idx) => {
+                    if idx < internal_queue.len() {
+                        internal_queue.remove(idx);
+                        let _ = event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
+                    }
+                }
+                PlayerCommand::ClearQueue => {
+                    internal_queue.clear();
+                    let _ = event_tx.send(PlayerEvent::QueueChanged(Vec::new()));
+                }
                 PlayerCommand::ReplaceQueue(files) => {
                     original_queue = files.clone();
                     internal_queue = files;
@@ -113,9 +126,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         s.clear(); // Leeg de rodio wachtrij zodat hij niet doorspeelt
                         s.skip_one(); // Forceer direct naar de nieuwe lijst
                     }
+                    let _ = event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
                 }
                 PlayerCommand::AppendToQueue(files) => {
                     internal_queue.extend(files);
+                    let _ = event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
                 }
                 PlayerCommand::SetVolume(vol) => {
                     if let Some(s) = &sink {
@@ -154,6 +169,8 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         RepeatMode::One => {
                             if let Some(ref track) = last_track {
                                 internal_queue.push(track.clone());
+                                let _ = event_tx
+                                    .send(PlayerEvent::QueueChanged(internal_queue.clone()));
                             }
                         }
                         RepeatMode::All => {
@@ -161,6 +178,8 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                             if shuffle_on {
                                 shuffle_vec(&mut internal_queue);
                             }
+                            let _ =
+                                event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
                         }
                         RepeatMode::None => {}
                     }
@@ -175,6 +194,8 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                             s.append(decoder);
                             s.play();
                             let _ = event_tx.send(PlayerEvent::NowPlaying(next_file));
+                            let _ =
+                                event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
                         }
                     }
                 }
