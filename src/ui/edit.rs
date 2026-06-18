@@ -264,6 +264,9 @@ impl MusicPlayerApp {
         }
 
         self.selected_tracks.clear();
+        self.tracks_to_edit.clear();
+        self.editing_track_path = None;
+        self.show_track_details = false;
         self.recompute();
         if let Some(ref lib) = self.library {
             crate::scanner::save_cache(lib);

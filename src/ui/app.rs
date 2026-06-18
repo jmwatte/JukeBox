@@ -233,6 +233,52 @@ impl MusicPlayerApp {
             }
         }
         self.cached_filtered = Some(result);
+
+        // Veiligheid: selectie-indices resetten als ze out-of-bounds zijn
+        if let Some(ref lib) = self.cached_filtered {
+            if lib.artists.is_empty() {
+                self.current_level = NavLevel::Artist;
+                self.selected_artist = 0;
+                self.selected_album = 0;
+                self.selected_disk = 0;
+                self.selected_track = 0;
+            } else {
+                if self.selected_artist >= lib.artists.len() {
+                    self.selected_artist = lib.artists.len().saturating_sub(1);
+                    self.selected_album = 0;
+                    self.selected_disk = 0;
+                    self.selected_track = 0;
+                }
+                let albums = &lib.artists[self.selected_artist].albums;
+                if self.selected_album >= albums.len() {
+                    self.selected_album = albums.len().saturating_sub(1);
+                    self.selected_disk = 0;
+                    self.selected_track = 0;
+                }
+                if !albums.is_empty() {
+                    let disks = &albums[self.selected_album].disks;
+                    if self.selected_disk >= disks.len() {
+                        self.selected_disk = disks.len().saturating_sub(1);
+                        self.selected_track = 0;
+                    }
+                    if !disks.is_empty() {
+                        let tracks = &disks[self.selected_disk].tracks;
+                        if self.selected_track >= tracks.len() {
+                            self.selected_track = tracks.len().saturating_sub(1);
+                        }
+                    }
+                }
+            }
+            if self.selected_genre >= self.genres.len() && !self.genres.is_empty() {
+                self.selected_genre = self.genres.len().saturating_sub(1);
+            }
+            if self.selected_year >= self.years.len() && !self.years.is_empty() {
+                self.selected_year = self.years.len().saturating_sub(1);
+            }
+            if self.selected_composer >= self.composers.len() && !self.composers.is_empty() {
+                self.selected_composer = self.composers.len().saturating_sub(1);
+            }
+        }
     }
 
     /// Vul de huidige picker met data uit de (tot filter_step) gefilterde library.
