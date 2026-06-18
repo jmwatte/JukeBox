@@ -48,6 +48,7 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("Rescan".into(), "F5".into());
     m.insert("RescanMarked".into(), "Shift+R".into());
     m.insert("WaveformOpen".into(), "0".into());
+    m.insert("WaveformSaveLoop".into(), "Ctrl+S".into());
     m
 }
 
@@ -99,11 +100,20 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         "F12" => ctx.input(|i| i.key_pressed(Key::F12)),
         // Cijfers
         "0" => ctx.input(|i| i.key_pressed(Key::Num0)),
-        // Shift+Letter combinaties (generiek voor alle letters)
+        // Shift+Letter combinaties (generiek)
         s if s.starts_with("Shift+") && s.len() == 7 => {
             let c = s.chars().nth(6).unwrap();
             if let Some(key) = char_to_key(c) {
                 ctx.input(|i| i.key_pressed(key) && i.modifiers.shift)
+            } else {
+                false
+            }
+        }
+        // Ctrl+Letter combinaties (generiek)
+        s if s.starts_with("Ctrl+") && s.len() == 6 => {
+            let c = s.chars().nth(5).unwrap();
+            if let Some(key) = char_to_key(c) {
+                ctx.input(|i| i.key_pressed(key) && i.modifiers.ctrl)
             } else {
                 false
             }
@@ -187,6 +197,10 @@ fn is_valid_key_value(key: &str) -> bool {
         | "ArrowLeft" | "ArrowRight" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8"
         | "F9" | "F10" | "F11" | "F12" | ";" | "'" | "=" | "-" | "/" | "?" | "[" | "]" | "\\"
         | "0" => true,
+        // Ctrl+Letter combinaties
+        s if s.starts_with("Ctrl+") && s.len() == 6 => {
+            s.chars().nth(5).map_or(false, |c| c.is_ascii_alphabetic())
+        }
         // Shift+Letter combinaties
         s if s.starts_with("Shift+") && s.len() == 7 => {
             s.chars().nth(6).map_or(false, |c| c.is_ascii_alphabetic())

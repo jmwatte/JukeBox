@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod config;
+mod loops;
 mod models;
 mod player;
 mod scanner;

@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::loops::SavedLoop;
 use crate::models::{Album, Library};
 use crate::player::{PlayerCommand, PlayerEvent, RepeatMode};
 use crate::scanner::ScannerMessage;
@@ -115,6 +116,10 @@ pub struct MusicPlayerApp {
     pub waveform_is_playing: bool,
     pub waveform_play_position: f32,
     pub waveform_play_duration: f32,
+
+    // Loop bibliotheek
+    pub saved_loops: Vec<SavedLoop>,
+    pub show_loop_library: bool,
 }
 
 impl MusicPlayerApp {
@@ -210,6 +215,8 @@ impl MusicPlayerApp {
             waveform_play_duration: 0.0,
             waveform_cmd_tx,
             waveform_event_rx,
+            saved_loops: crate::loops::load_loops(),
+            show_loop_library: false,
         };
 
         // Valideer shortcuts bij opstarten

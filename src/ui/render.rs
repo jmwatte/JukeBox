@@ -680,6 +680,51 @@ impl eframe::App for MusicPlayerApp {
                             }
                         }
 
+                        // Save Loop knop
+                        if self.waveform_state.loop_a_secs.is_some()
+                            && self.waveform_state.loop_b_secs.is_some()
+                        {
+                            if ui.button("💾 Save Loop").clicked() {
+                                if let (Some(a), Some(b)) = (
+                                    self.waveform_state.loop_a_secs,
+                                    self.waveform_state.loop_b_secs,
+                                ) {
+                                    if b > a {
+                                        if let Some(ref path) = self.waveform_state.path {
+                                            let label = crate::loops::generate_label(
+                                                path,
+                                                &self.saved_loops,
+                                            );
+                                            let saved = crate::loops::SavedLoop {
+                                                track_path: path.clone(),
+                                                label,
+                                                loop_a_secs: a,
+                                                loop_b_secs: b,
+                                                pitch_semitones: self
+                                                    .waveform_state
+                                                    .pitch_semitones,
+                                                tempo: self.waveform_state.tempo,
+                                            };
+                                            crate::loops::add_loop(&mut self.saved_loops, saved);
+                                            self._status_message = format!(
+                                                "Loop opgeslagen! ({} totaal)",
+                                                self.saved_loops.len()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ui.separator();
+
+                        // Loop Bibliotheek toggle
+                        if ui.button("📚 Loops").clicked() {
+                            self.show_loop_library = !self.show_loop_library;
+                        }
+
+                        ui.separator();
+
                         // Stop via main player (oude A-B loop)
                         if self.loop_a.is_some() || self.loop_b.is_some() {
                             if ui.button("⏹ Clear Loop").clicked() {
@@ -710,6 +755,93 @@ impl eframe::App for MusicPlayerApp {
                             }
                         });
                     });
+                });
+        }
+
+        // --- LOOP BIBLIOTHEEK WINDOW ---
+        if self.show_loop_library {
+            egui::Window::new("📚 Loop Bibliotheek")
+                .id(egui::Id::new("loop_library_window"))
+                .resizable(true)
+                .default_size([500.0, 400.0])
+                .show(ctx, |ui| {
+                    if self.saved_loops.is_empty() {
+                        ui.label("Geen opgeslagen loops. Maak een A-B loop en klik 'Save Loop'.");
+                    } else {
+                        let mut delete_idx: Option<usize> = None;
+                        let mut load_loop: Option<usize> = None;
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for (i, saved) in self.saved_loops.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    // Naam
+                                    ui.label(RichText::new(&saved.label).size(14.0).strong());
+
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        // Delete knop
+                                        if ui.button("❌").clicked() {
+                                            delete_idx = Some(i);
+                                        }
+
+                                        // Load knop
+                                        if ui.button("▶ Open").clicked() {
+                                            load_loop = Some(i);
+                                        }
+
+                                        // Info
+                                        let a_mins = (saved.loop_a_secs / 60.0) as u32;
+                                        let a_secs = saved.loop_a_secs as u32 % 60;
+                                        let b_mins = (saved.loop_b_secs / 60.0) as u32;
+                                        let b_secs = saved.loop_b_secs as u32 % 60;
+                                        let pitch = saved.pitch_semitones;
+                                        let tempo = saved.tempo;
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "[{:02}:{:02} → {:02}:{:02}]  pitch: {:+.1}  tempo: {:.0}%",
+                                                a_mins, a_secs, b_mins, b_secs,
+                                                pitch, tempo * 100.0
+                                            ))
+                                            .size(11.0)
+                                            .color(Color32::GRAY),
+                                        );
+                                    });
+                                });
+                                ui.separator();
+                            }
+                        });
+
+                        if let Some(idx) = delete_idx {
+                            crate::loops::remove_loop(&mut self.saved_loops, idx);
+                        }
+
+                        if let Some(idx) = load_loop {
+                            if let Some(saved) = self.saved_loops.get(idx).cloned() {
+                                // Open waveform met deze instellingen
+                                self.show_waveform = true;
+                                let path = saved.track_path.clone();
+                                match crate::waveform::decode_audio(&path) {
+                                    Ok((samples, sample_rate, duration_secs)) => {
+                                        self.waveform_state = crate::waveform::WaveformState {
+                                            path: Some(path),
+                                            samples,
+                                            sample_rate,
+                                            duration_secs,
+                                            zoom: 50.0,
+                                            scroll_offset: 0.0,
+                                            loop_a_secs: Some(saved.loop_a_secs),
+                                            loop_b_secs: Some(saved.loop_b_secs),
+                                            pitch_semitones: saved.pitch_semitones,
+                                            tempo: saved.tempo,
+                                            error: None,
+                                        };
+                                    }
+                                    Err(e) => {
+                                        self.waveform_state.error = Some(e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 });
         }
 

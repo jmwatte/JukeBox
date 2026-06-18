@@ -113,6 +113,32 @@ impl MusicPlayerApp {
         }
 
         // --- 0: WAVEFORM EDITOR ---
+        // --- Ctrl+S: SAVE LOOP (alleen als waveform open is) ---
+        if shortcuts::check_action(&cfg, ctx, "WaveformSaveLoop") && self.show_waveform {
+            if let (Some(a), Some(b)) = (
+                self.waveform_state.loop_a_secs,
+                self.waveform_state.loop_b_secs,
+            ) {
+                if b > a {
+                    if let Some(ref path) = self.waveform_state.path {
+                        let label = crate::loops::generate_label(path, &self.saved_loops);
+                        let saved = crate::loops::SavedLoop {
+                            track_path: path.clone(),
+                            label,
+                            loop_a_secs: a,
+                            loop_b_secs: b,
+                            pitch_semitones: self.waveform_state.pitch_semitones,
+                            tempo: self.waveform_state.tempo,
+                        };
+                        crate::loops::add_loop(&mut self.saved_loops, saved);
+                        self._status_message =
+                            format!("Loop opgeslagen! ({} totaal)", self.saved_loops.len());
+                    }
+                }
+            }
+        }
+
+        // --- 0: WAVEFORM EDITOR ---
         if shortcuts::check_action(&cfg, ctx, "WaveformOpen") {
             self.show_waveform = !self.show_waveform;
             if self.show_waveform {
