@@ -572,6 +572,9 @@ impl MusicPlayerApp {
         if shortcuts::check_action(&cfg, ctx, "Rewind") {
             let _ = self.player_tx.send(PlayerCommand::Rewind);
         }
+        if shortcuts::check_action(&cfg, ctx, "Forward") {
+            let _ = self.player_tx.send(PlayerCommand::Forward);
+        }
         if shortcuts::check_action(&cfg, ctx, "VolumeUp") {
             self.volume = (self.volume + 0.1).min(2.0);
             let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));

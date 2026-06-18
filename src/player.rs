@@ -9,6 +9,7 @@ pub enum PlayerCommand {
 
     Skip,
     Rewind,
+    Forward,
     AppendToQueue(Vec<String>),
     ReplaceQueue(Vec<String>),
     SetVolume(f32),
@@ -60,6 +61,19 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         let pos = s.get_pos();
                         let new_pos = pos.saturating_sub(Duration::from_secs(2));
                         let _ = s.try_seek(new_pos);
+                    }
+                }
+                PlayerCommand::Forward => {
+                    if let Some(s) = &sink {
+                        let pos = s.get_pos();
+                        let new_pos = pos + Duration::from_secs(2);
+                        if let Some(dur) = current_track_duration {
+                            if new_pos < dur {
+                                let _ = s.try_seek(new_pos);
+                            }
+                        } else {
+                            let _ = s.try_seek(new_pos);
+                        }
                     }
                 }
                 PlayerCommand::ReplaceQueue(files) => {

@@ -104,6 +104,10 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "Rewind")
                     ));
                     ui.label(format!(
+                        "• {} : Spoel 2 seconden vooruit",
+                        shortcuts::get_key_display(s, "Forward")
+                    ));
+                    ui.label(format!(
                         "• {} : Volume omhoog",
                         shortcuts::get_key_display(s, "VolumeUp")
                     ));
