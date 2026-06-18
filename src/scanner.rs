@@ -25,16 +25,19 @@ pub const CACHE_FILE: &str = "library_cache.bin";
 #[derive(Serialize, Deserialize)]
 struct CacheData {
     version: u32,
+    dir_modified: u64, // UNIX timestamp van de muziekmap bij cache-aanmaak
     library: Library,
 }
 
 /// Sla een Library direct naar de cache, zonder een volledige herscan.
 /// Dit is handig nadat tags in-memory zijn aangepast.
+/// OPMERKING: dir_modified wordt op 0 gezet, dus volgende startup zal opnieuw scannen.
 pub fn save_cache(library: &Library) {
     if let Ok(file) = std::fs::File::create(CACHE_FILE) {
         let writer = std::io::BufWriter::new(file);
         let data = CacheData {
             version: CACHE_VERSION,
+            dir_modified: 0,
             library: library.clone(),
         };
         let _ = bincode::serialize_into(writer, &data);
@@ -48,13 +51,24 @@ pub async fn load_or_scan_library(
     cover_exts: Vec<String>,
     tx: Sender<ScannerMessage>,
 ) {
+    // Huidige modificatietijd van de muziekdirectory
+    let current_dir_modified = std::fs::metadata(&dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
     // 1. Probeer de cache in te laden
     if Path::new(CACHE_FILE).exists() {
         let _ = tx.send(ScannerMessage::Progress("Cache laden...".into()));
         if let Ok(file) = File::open(CACHE_FILE) {
             let reader = BufReader::new(file);
             match bincode::deserialize_from::<_, CacheData>(reader) {
-                Ok(cache) if cache.version == CACHE_VERSION => {
+                Ok(cache)
+                    if cache.version == CACHE_VERSION
+                        && cache.dir_modified == current_dir_modified =>
+                {
                     let library = cache.library;
                     if !library.artists.is_empty() {
                         let _ = tx.send(ScannerMessage::LibraryLoaded(library));
@@ -63,10 +77,14 @@ pub async fn load_or_scan_library(
                     }
                 }
                 Ok(cache) => {
-                    println!(
-                        "Cache versie {} komt niet overeen met verwachte {} — opnieuw scannen.",
-                        cache.version, CACHE_VERSION
-                    );
+                    if cache.version != CACHE_VERSION {
+                        println!(
+                            "Cache versie {} != verwachte {} — opnieuw scannen.",
+                            cache.version, CACHE_VERSION
+                        );
+                    } else {
+                        println!("Muziekmap gewijzigd sinds cache — opnieuw scannen.");
+                    }
                 }
                 Err(e) => {
                     println!("Cache corrupt ({:?}) — opnieuw scannen.", e);
@@ -409,6 +427,7 @@ pub async fn load_or_scan_library(
         let writer = BufWriter::new(file);
         let data = CacheData {
             version: CACHE_VERSION,
+            dir_modified: current_dir_modified,
             library: library.clone(),
         };
         let _ = bincode::serialize_into(writer, &data);
