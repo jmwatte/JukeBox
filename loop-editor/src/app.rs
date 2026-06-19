@@ -107,22 +107,24 @@ impl eframe::App for LoopEditorApp {
         }
 
         // ── Keyboard Shortcuts ──
+        // ── Keyboard Shortcuts ──
         let is_text_focused = ctx.memory(|mem| mem.focused().is_some());
         if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             if self.waveform_is_playing {
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
             } else if let Some(ref path) = self.waveform_state.path {
-                // Start playing from current position or loop start
-                let (start, end) = match (
+                // 🔥 FIX: Always start from the current playhead position
+                let start = self.waveform_play_position;
+
+                // Determine end point: Loop end (if loop exists) or Track end
+                let end = match (
                     self.waveform_state.loop_a_secs,
                     self.waveform_state.loop_b_secs,
                 ) {
-                    (Some(a), Some(b)) if b > a => (a, b),
-                    _ => (
-                        self.waveform_play_position,
-                        self.waveform_state.duration_secs,
-                    ),
+                    (Some(a), Some(b)) if b > a => b,
+                    _ => self.waveform_state.duration_secs,
                 };
+
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                     path: path.clone(),
                     start_sec: start,
@@ -224,8 +226,10 @@ impl eframe::App for LoopEditorApp {
                 render_waveform(ui, &mut self.waveform_state, play_position);
 
             // Click of drag-release: update playhead position and optionally restart playback
+            // ✅ THE FIXED CODE
+            // Click of drag-release: update playhead position and optionally restart playback
             if let Some(seek_pos) = seek_to {
-                // 🔥 FIX: Always update the UI playhead position, even if not playing!
+                // 🔥 CRITICAL FIX: Always update the UI playhead position, even if not playing!
                 self.waveform_play_position = seek_pos;
 
                 // If currently playing, send command to audio thread to restart from new position
