@@ -183,7 +183,13 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     is_playing = false;
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 } else {
-                    let pos = s.get_pos().as_secs_f32();
+                    let raw_pos = s.get_pos().as_secs_f32();
+                    // Toon positie binnen de loop (modulo loopduur)
+                    let pos = if current_duration > 0.0 {
+                        raw_pos % current_duration
+                    } else {
+                        raw_pos
+                    };
                     let _ = event_tx.send(WaveformEvent::Position(pos, current_duration));
                 }
             }
@@ -260,13 +266,15 @@ impl Iterator for WaveformSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        if self.pos < self.samples.len() {
-            let sample = self.samples[self.pos];
-            self.pos += 1;
-            Some(sample)
-        } else {
-            None
+        if self.samples.is_empty() {
+            return None;
         }
+        let sample = self.samples[self.pos];
+        self.pos += 1;
+        if self.pos >= self.samples.len() {
+            self.pos = 0; // oneindig loopen
+        }
+        Some(sample)
     }
 }
 
@@ -284,9 +292,7 @@ impl Source for WaveformSource {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        Some(Duration::from_secs_f32(
-            self.samples.len() as f32 / self.sample_rate as f32,
-        ))
+        None // oneindig (looping)
     }
 }
 
