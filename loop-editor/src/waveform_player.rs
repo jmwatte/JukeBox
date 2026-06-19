@@ -12,9 +12,11 @@ use std::time::Duration;
 pub enum WaveformCommand {
     Play {
         path: String,
-        decode_start_sec: f32, // Start of the region to decode (e.g., Loop A)
-        decode_end_sec: f32,   // End of the region to decode (e.g., Loop B)
-        play_start_sec: f32,   // Exact position to start playback (e.g., clicked position)
+        segment_samples: Vec<f32>, // Pre-decoded PCM samples (mono)
+        segment_sample_rate: u32,
+        decode_start_sec: f32,
+        decode_end_sec: f32,
+        play_start_sec: f32,
         pitch_semitones: f32,
         tempo: f32,
     },
@@ -80,6 +82,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
             match cmd {
                 WaveformCommand::Play {
                     path,
+                    segment_samples,
+                    segment_sample_rate,
                     decode_start_sec,
                     decode_end_sec,
                     play_start_sec,
@@ -98,55 +102,48 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     current_tempo = tempo;
                     is_playing = false;
 
-                    // FIX: Decode the ENTIRE loop region (A to B), not just from the playhead to B
-                    match decode_segment(&path, decode_start_sec, decode_end_sec) {
-                        Ok((samples, sample_rate, segment_duration)) => {
-                            cached_raw = Some((samples.clone(), sample_rate, segment_duration));
-                            current_duration = segment_duration;
+                    let sample_rate = segment_sample_rate;
+                    let segment_duration = segment_samples.len() as f32 / sample_rate as f32;
+                    cached_raw = Some((segment_samples.clone(), sample_rate, segment_duration));
+                    current_duration = segment_duration;
 
-                            // Calculate starting position before processing (om borrow issues te voorkomen)
-                            let raw_offset_samples =
-                                ((play_start_sec - decode_start_sec) * sample_rate as f32) as usize;
-                            let total_raw = samples.len();
+                    // Calculate starting position
+                    let raw_offset_samples =
+                        ((play_start_sec - decode_start_sec) * sample_rate as f32) as usize;
+                    let total_raw = segment_samples.len();
 
-                            // Rubato processing (tempo + pitch)
-                            let processed =
-                                match apply_rubato(&samples, tempo, pitch_semitones, sample_rate) {
-                                    Ok(p) => p,
-                                    Err(e) => {
-                                        let _ = event_tx
-                                            .send(WaveformEvent::Error(format!("Rubato: {}", e)));
-                                        samples.clone()
-                                    }
-                                };
-
-                            let ratio = if total_raw > 0 {
-                                processed.len() as f32 / total_raw as f32
-                            } else {
-                                1.0
-                            };
-                            let initial_pos = (raw_offset_samples as f32 * ratio) as usize;
-                            let initial_pos = initial_pos.min(processed.len().saturating_sub(1));
-
-                            let source = WaveformSource {
-                                samples: processed,
-                                pos: initial_pos, // Start exactly where the user clicked!
-                                sample_rate,
-                            };
-
-                            if let Some(s) = &sink {
-                                s.append(source);
-                                s.play();
-                                is_playing = true;
-                                let _ = event_tx.send(WaveformEvent::Playing);
-                            } else {
-                                let _ = event_tx
-                                    .send(WaveformEvent::Error("Geen audio-apparaat".into()));
+                    // Rubato processing (tempo + pitch)
+                    let processed =
+                        match apply_rubato(&segment_samples, tempo, pitch_semitones, sample_rate) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let _ =
+                                    event_tx.send(WaveformEvent::Error(format!("Rubato: {}", e)));
+                                segment_samples.clone()
                             }
-                        }
-                        Err(e) => {
-                            let _ = event_tx.send(WaveformEvent::Error(e));
-                        }
+                        };
+
+                    let ratio = if total_raw > 0 {
+                        processed.len() as f32 / total_raw as f32
+                    } else {
+                        1.0
+                    };
+                    let initial_pos = (raw_offset_samples as f32 * ratio) as usize;
+                    let initial_pos = initial_pos.min(processed.len().saturating_sub(1));
+
+                    let source = WaveformSource {
+                        samples: processed,
+                        pos: initial_pos,
+                        sample_rate,
+                    };
+
+                    if let Some(s) = &sink {
+                        s.append(source);
+                        s.play();
+                        is_playing = true;
+                        let _ = event_tx.send(WaveformEvent::Playing);
+                    } else {
+                        let _ = event_tx.send(WaveformEvent::Error("Geen audio-apparaat".into()));
                     }
                 }
 
@@ -339,6 +336,7 @@ impl Source for WaveformSource {
 // Segment decoderen met symphonia (alleen A-B)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn decode_segment(
     path: &str,
     start_sec: f32,

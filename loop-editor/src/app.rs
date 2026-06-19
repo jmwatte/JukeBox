@@ -131,6 +131,14 @@ impl eframe::App for LoopEditorApp {
 
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                     path: path.clone(),
+                    segment_samples: {
+                        let sr = self.waveform_state.sample_rate as f32;
+                        let s = (decode_start * sr) as usize;
+                        let e = (decode_end * sr) as usize;
+                        let e = e.min(self.waveform_state.samples.len());
+                        self.waveform_state.samples[s..e].to_vec()
+                    },
+                    segment_sample_rate: self.waveform_state.sample_rate,
                     decode_start_sec: decode_start,
                     decode_end_sec: decode_end,
                     play_start_sec: play_start,
@@ -139,6 +147,51 @@ impl eframe::App for LoopEditorApp {
                 });
 
                 self.waveform_is_playing = true;
+            }
+        }
+
+        // ── ← → Rewind/Forward 2 seconden ──
+        if !is_text_focused && self.waveform_state.path.is_some() {
+            let mut seek_delta: Option<f32> = None;
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                seek_delta = Some(-2.0);
+            }
+            if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                seek_delta = Some(2.0);
+            }
+
+            if let Some(delta) = seek_delta {
+                let new_pos = (self.waveform_play_position + delta)
+                    .clamp(0.0, self.waveform_state.duration_secs);
+                self.waveform_play_position = new_pos;
+
+                if self.waveform_is_playing {
+                    let (decode_start, play_start, decode_end) = match (
+                        self.waveform_state.loop_a_secs,
+                        self.waveform_state.loop_b_secs,
+                    ) {
+                        (Some(a), Some(b)) if b > a => (a, new_pos.clamp(a, b), b),
+                        _ => (new_pos, new_pos, self.waveform_state.duration_secs),
+                    };
+                    if let Some(ref path) = self.waveform_state.path {
+                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
+                            path: path.clone(),
+                            segment_samples: {
+                                let sr = self.waveform_state.sample_rate as f32;
+                                let s = (decode_start * sr) as usize;
+                                let e = (decode_end * sr) as usize;
+                                let e = e.min(self.waveform_state.samples.len());
+                                self.waveform_state.samples[s..e].to_vec()
+                            },
+                            segment_sample_rate: self.waveform_state.sample_rate,
+                            decode_start_sec: decode_start,
+                            decode_end_sec: decode_end,
+                            play_start_sec: play_start,
+                            pitch_semitones: self.waveform_state.pitch_semitones,
+                            tempo: self.waveform_state.tempo,
+                        });
+                    }
+                }
             }
         }
 
@@ -252,6 +305,14 @@ impl eframe::App for LoopEditorApp {
 
                     let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                         path: path.clone(),
+                        segment_samples: {
+                            let sr = self.waveform_state.sample_rate as f32;
+                            let s = (decode_start * sr) as usize;
+                            let e = (decode_end * sr) as usize;
+                            let e = e.min(self.waveform_state.samples.len());
+                            self.waveform_state.samples[s..e].to_vec()
+                        },
+                        segment_sample_rate: self.waveform_state.sample_rate,
                         decode_start_sec: decode_start,
                         decode_end_sec: decode_end,
                         play_start_sec: play_start,
@@ -280,6 +341,14 @@ impl eframe::App for LoopEditorApp {
                     if let Some(ref path) = self.waveform_state.path {
                         let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                             path: path.clone(),
+                            segment_samples: {
+                                let sr = self.waveform_state.sample_rate as f32;
+                                let s = (decode_start * sr) as usize;
+                                let e = (decode_end * sr) as usize;
+                                let e = e.min(self.waveform_state.samples.len());
+                                self.waveform_state.samples[s..e].to_vec()
+                            },
+                            segment_sample_rate: self.waveform_state.sample_rate,
                             decode_start_sec: decode_start,
                             decode_end_sec: decode_end,
                             play_start_sec: play_start,
@@ -391,9 +460,17 @@ impl eframe::App for LoopEditorApp {
                             if let Some(ref path) = self.waveform_state.path {
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                                     path: path.clone(),
+                                    segment_samples: {
+                                        let sr = self.waveform_state.sample_rate as f32;
+                                        let s = (a * sr) as usize;
+                                        let e = (b * sr) as usize;
+                                        let e = e.min(self.waveform_state.samples.len());
+                                        self.waveform_state.samples[s..e].to_vec()
+                                    },
+                                    segment_sample_rate: self.waveform_state.sample_rate,
                                     decode_start_sec: a,
                                     decode_end_sec: b,
-                                    play_start_sec: a, // Start exactly at A
+                                    play_start_sec: a,
                                     pitch_semitones: self.waveform_state.pitch_semitones,
                                     tempo: self.waveform_state.tempo,
                                 });
