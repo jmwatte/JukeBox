@@ -167,6 +167,8 @@ impl MusicPlayerApp {
                                     tempo: 1.0,
                                     error: None,
                                     dragging_loop_region: false,
+                                    dragging_playhead: false,
+                                    playhead_drag_secs: None,
                                 };
                             }
                             Err(e) => {
@@ -183,6 +185,8 @@ impl MusicPlayerApp {
                                     tempo: 1.0,
                                     error: Some(e),
                                     dragging_loop_region: false,
+                                    dragging_playhead: false,
+                                    playhead_drag_secs: None,
                                 };
                             }
                         }

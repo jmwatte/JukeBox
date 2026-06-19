@@ -557,8 +557,8 @@ impl eframe::App for MusicPlayerApp {
                         );
                     }
 
-                    // Waveform — geeft terug of A-B markers zijn gewijzigd
-                    let loop_changed = crate::waveform::render_waveform(
+                    // Waveform — geeft terug of A-B markers zijn gewijzigd + seek positie
+                    let (loop_changed, seek_to) = crate::waveform::render_waveform(
                         ui,
                         &mut self.waveform_state,
                         player_position,
@@ -584,6 +584,11 @@ impl eframe::App for MusicPlayerApp {
                                 let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
                             }
                         }
+                    }
+
+                    // Playhead drag: stuur seek naar player
+                    if let Some(seek_pos) = seek_to {
+                        let _ = self.player_tx.send(PlayerCommand::SeekTo(seek_pos));
                     }
 
                     ui.separator();
@@ -834,6 +839,8 @@ impl eframe::App for MusicPlayerApp {
                                             tempo: saved.tempo,
                                             error: None,
                                             dragging_loop_region: false,
+                                            dragging_playhead: false,
+                                            playhead_drag_secs: None,
                                         };
                                     }
                                     Err(e) => {

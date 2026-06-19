@@ -21,6 +21,8 @@ pub struct WaveformState {
     pub tempo: f32,
     pub error: Option<String>,
     pub dragging_loop_region: bool,
+    pub dragging_playhead: bool,
+    pub playhead_drag_secs: Option<f32>,
 }
 
 impl Default for WaveformState {
@@ -38,6 +40,8 @@ impl Default for WaveformState {
             tempo: 1.0,
             error: None,
             dragging_loop_region: false,
+            dragging_playhead: false,
+            playhead_drag_secs: None,
         }
     }
 }
@@ -147,12 +151,14 @@ pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
 }
 
 /// Teken de waveform in een egui UI.
-/// Geeft `true` terug als de A-B loop markers zijn gewijzigd door de gebruiker.
+/// Geeft `(loop_changed, seek_to)` terug:
+/// - loop_changed: Of de A-B loop markers zijn gewijzigd
+/// - seek_to: Optionele positie (seconden) om naartoe te seeken (playhead drag)
 pub fn render_waveform(
     ui: &mut egui::Ui,
     state: &mut WaveformState,
     now_playing_position: Option<f32>,
-) -> bool {
+) -> (bool, Option<f32>) {
     let width = ui.available_width().max(100.0);
     let height = 200.0;
     let (rect, response) =
@@ -163,6 +169,7 @@ pub fn render_waveform(
     let center_y = rect.center().y;
 
     let mut loop_changed = false;
+    let mut seek_to: Option<f32> = None;
 
     if state.samples.is_empty() {
         painter.text(
@@ -172,7 +179,7 @@ pub fn render_waveform(
             egui::TextStyle::Body.resolve(ui.style()),
             egui::Color32::GRAY,
         );
-        return false;
+        return (false, None);
     }
 
     let total_samples = state.samples.len();
@@ -187,7 +194,7 @@ pub fn render_waveform(
     let visible_samples = end_sample.saturating_sub(start_sample);
 
     if visible_samples == 0 {
-        return false;
+        return (false, None);
     }
 
     let samples_per_pixel = (visible_samples as f32 / width).ceil() as usize;
@@ -379,8 +386,11 @@ pub fn render_waveform(
         }
     }
 
-    // Huidige positie-indicator
-    if let Some(pos) = now_playing_position {
+    // Huidige positie-indicator + interactie (playhead verslepen)
+    // Zolang playhead_drag_secs is gezet, blijft de playhead op de
+    // gezochte positie staan tot de player-thread de nieuwe positie bevestigt.
+    let playhead_render_pos = state.playhead_drag_secs.or(now_playing_position);
+    if let Some(pos) = playhead_render_pos {
         if pos >= start_sec && pos <= end_sec {
             let pos_x = rect.left() + (pos - start_sec) * state.zoom;
             painter.line_segment(
@@ -388,8 +398,52 @@ pub fn render_waveform(
                     egui::pos2(pos_x, rect.top()),
                     egui::pos2(pos_x, rect.bottom()),
                 ],
-                (1.5, egui::Color32::from_rgb(255, 200, 50)),
+                (2.0, egui::Color32::from_rgb(255, 200, 50)),
             );
+
+            // Playhead drag detectie
+            if let Some(actual_pos) = now_playing_position {
+                let hit_half_width = 6.0;
+                if response.drag_started() {
+                    if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                        let dist = (mouse_pos.x - pos_x).abs();
+                        state.dragging_playhead = dist <= hit_half_width;
+                    }
+                }
+                if response.drag_stopped() {
+                    state.dragging_playhead = false;
+                    // NIET playhead_drag_secs wissen — wacht tot player bevestigt
+                }
+
+                // Als de player de nieuwe positie heeft bereikt, wis de override
+                if !state.dragging_playhead {
+                    if let Some(drag_pos) = state.playhead_drag_secs {
+                        if (drag_pos - actual_pos).abs() < 0.3 {
+                            state.playhead_drag_secs = None;
+                        }
+                    }
+                }
+            } else {
+                // Geen actuele positie (ander nummer) — geen playhead interactie
+                state.dragging_playhead = false;
+                state.playhead_drag_secs = None;
+            }
+        } else {
+            state.dragging_playhead = false;
+            state.playhead_drag_secs = None;
+        }
+    } else {
+        state.dragging_playhead = false;
+        state.playhead_drag_secs = None;
+    }
+
+    // Playhead verslepen
+    if state.dragging_playhead && response.dragged_by(egui::PointerButton::Primary) {
+        if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+            let seek_pos = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
+                .clamp(0.0, state.duration_secs);
+            state.playhead_drag_secs = Some(seek_pos);
+            seek_to = Some(seek_pos);
         }
     }
 
@@ -445,23 +499,25 @@ pub fn render_waveform(
     }
 
     // --- Loop-regio slepen: verplaats de hele A-B loop ---
-    if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
-        if b > a {
-            // Detecteer of de drag startte binnen de loop-regio
-            if response.drag_started() {
-                if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                    let mouse_sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
-                    state.dragging_loop_region = mouse_sec >= a && mouse_sec <= b;
+    // (alleen als playhead niet wordt versleept)
+    if !state.dragging_playhead {
+        if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
+            if b > a {
+                if response.drag_started() {
+                    if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                        let mouse_sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
+                        state.dragging_loop_region = mouse_sec >= a && mouse_sec <= b;
+                    }
                 }
-            }
-            if response.drag_stopped() {
+                if response.drag_stopped() {
+                    state.dragging_loop_region = false;
+                }
+            } else {
                 state.dragging_loop_region = false;
             }
         } else {
             state.dragging_loop_region = false;
         }
-    } else {
-        state.dragging_loop_region = false;
     }
 
     // Versleep de hele loop (behoud lengte)
@@ -477,9 +533,10 @@ pub fn render_waveform(
         }
     }
 
-    // Slepen op waveform (scrol) — alleen als we niet op een marker of loop-regio slepen
+    // Slepen op waveform (scrol) — alleen als we niet op marker, playhead of loop-regio slepen
     if response.dragged_by(egui::PointerButton::Primary)
         && !loop_changed
+        && !state.dragging_playhead
         && !state.dragging_loop_region
     {
         let drag_delta = response.drag_delta();
@@ -487,5 +544,5 @@ pub fn render_waveform(
         state.scroll_offset = state.scroll_offset.max(0.0);
     }
 
-    loop_changed
+    (loop_changed, seek_to)
 }
