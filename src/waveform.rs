@@ -171,7 +171,7 @@ pub fn render_waveform(
     let center_y = rect.center().y;
 
     let mut loop_changed = false;
-    let mut seek_to: Option<f32> = None;
+    let mut seek_action: Option<f32> = None;
 
     if state.samples.is_empty() {
         painter.text(
@@ -478,14 +478,27 @@ pub fn render_waveform(
         state.playhead_frames_after_drag = 0;
     }
 
-    // Playhead verslepen (render positie updaten + seek command)
+    // Playhead verslepen (render positie updaten, geen seek command tijdens drag)
     if state.dragging_playhead && response.dragged_by(egui::PointerButton::Primary) {
         if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
             let seek_pos = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
                 .clamp(0.0, state.duration_secs);
             state.playhead_drag_secs = Some(seek_pos);
             state.playhead_frames_after_drag = 3; // reset teller
-            seek_to = Some(seek_pos);
+        }
+    }
+
+    // Enkelklik op waveform: seek naar die positie
+    if response.clicked() {
+        if let Some(sec) = mouse_sec {
+            seek_action = Some(sec.clamp(0.0, state.duration_secs));
+        }
+    }
+
+    // Playhead drag losgelaten: seek naar de versleepte positie
+    if response.drag_stopped() && state.dragging_playhead {
+        if let Some(sec) = state.playhead_drag_secs {
+            seek_action = Some(sec);
         }
     }
 
@@ -586,5 +599,5 @@ pub fn render_waveform(
         state.scroll_offset = state.scroll_offset.max(0.0);
     }
 
-    (loop_changed, seek_to)
+    (loop_changed, seek_action)
 }

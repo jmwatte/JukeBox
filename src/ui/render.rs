@@ -586,9 +586,15 @@ impl eframe::App for MusicPlayerApp {
                         }
                     }
 
-                    // Playhead drag: stuur seek naar player
+                    // Click of drag-release: stuur Play command met loop-aware grenzen
                     if let Some(seek_pos) = seek_to {
-                        let _ = self.player_tx.send(PlayerCommand::SeekTo(seek_pos));
+                        let (start, end) = match (self.waveform_state.loop_a_secs, self.waveform_state.loop_b_secs) {
+                            (Some(a), Some(b)) if b > a => (seek_pos.clamp(a, b), b),
+                            _ => (seek_pos, self.waveform_state.duration_secs),
+                        };
+                        let _ = self.player_tx.send(PlayerCommand::SeekTo(start));
+                        let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(start));
+                        let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(end));
                     }
 
                     ui.separator();

@@ -56,13 +56,14 @@ pub fn start_waveform_thread() -> (Sender<WaveformCommand>, Receiver<WaveformEve
 fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEvent>) {
     let mut _stream: Option<OutputStream> = None;
     let mut sink: Option<Sink> = None;
-    let mut current_path: Option<String> = None;
-    let mut current_start: f32 = 0.0;
-    let mut current_end: f32 = 0.0;
+    let mut _current_path: Option<String> = None;
+    let mut _current_start: f32 = 0.0;
+    let mut _current_end: f32 = 0.0;
     let mut current_pitch: f32 = 0.0;
     let mut current_tempo: f32 = 1.0;
     let mut current_duration: f32 = 0.0;
     let mut is_playing = false;
+    let mut cached_raw: Option<(Vec<f32>, u32, f32)> = None;
 
     // Audio device openen
     if let Ok((stream, handle)) = OutputStream::try_default() {
@@ -87,15 +88,18 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.clear();
                     }
 
-                    current_path = Some(path.clone());
-                    current_start = start_sec;
-                    current_end = end_sec;
+                    _current_path = Some(path.clone());
+                    _current_start = start_sec;
+                    _current_end = end_sec;
                     current_pitch = pitch_semitones;
                     current_tempo = tempo;
                     is_playing = false;
 
                     match decode_segment(&path, start_sec, end_sec) {
                         Ok((samples, sample_rate, segment_duration)) => {
+                            // Cache de ruwe samples zodat SetPitch/SetTempo opnieuw
+                            // rubato kan draaien zonder nogmaals van schijf te lezen.
+                            cached_raw = Some((samples.clone(), sample_rate, segment_duration));
                             current_duration = segment_duration;
 
                             // Rubato processing (tempo + pitch)
@@ -145,9 +149,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     if is_playing {
                         restart_playback(
                             &mut sink,
-                            &current_path,
-                            current_start,
-                            current_end,
+                            &cached_raw,
                             current_pitch,
                             current_tempo,
                             &event_tx,
@@ -162,9 +164,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     if is_playing {
                         restart_playback(
                             &mut sink,
-                            &current_path,
-                            current_start,
-                            current_end,
+                            &cached_raw,
                             current_pitch,
                             current_tempo,
                             &event_tx,
@@ -200,19 +200,18 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 }
 
 /// Herstart playback met nieuwe instellingen (gebruikt bij SetPitch / SetTempo).
+/// Gebruikt `cached_raw` in plaats van opnieuw van schijf te decoderen.
 fn restart_playback(
     sink: &mut Option<Sink>,
-    current_path: &Option<String>,
-    start_sec: f32,
-    end_sec: f32,
+    cached_raw: &Option<(Vec<f32>, u32, f32)>,
     pitch: f32,
     tempo: f32,
     event_tx: &Sender<WaveformEvent>,
     current_duration: &mut f32,
     is_playing: &mut bool,
 ) {
-    let path = match current_path {
-        Some(p) => p.clone(),
+    let (samples, sample_rate, segment_duration) = match cached_raw {
+        Some((s, r, d)) => (s.clone(), *r, *d),
         None => return,
     };
 
@@ -221,33 +220,26 @@ fn restart_playback(
         s.clear();
     }
 
-    match decode_segment(&path, start_sec, end_sec) {
-        Ok((samples, sample_rate, segment_duration)) => {
-            *current_duration = segment_duration;
-            let processed = match apply_rubato(&samples, tempo, pitch, sample_rate) {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = event_tx.send(WaveformEvent::Error(format!("Rubato: {}", e)));
-                    samples
-                }
-            };
-
-            let source = WaveformSource {
-                samples: processed,
-                pos: 0,
-                sample_rate,
-            };
-
-            if let Some(s) = sink {
-                s.append(source);
-                s.play();
-                *is_playing = true;
-                let _ = event_tx.send(WaveformEvent::Playing);
-            }
-        }
+    *current_duration = segment_duration;
+    let processed = match apply_rubato(&samples, tempo, pitch, sample_rate) {
+        Ok(p) => p,
         Err(e) => {
-            let _ = event_tx.send(WaveformEvent::Error(e));
+            let _ = event_tx.send(WaveformEvent::Error(format!("Rubato: {}", e)));
+            samples
         }
+    };
+
+    let source = WaveformSource {
+        samples: processed,
+        pos: 0,
+        sample_rate,
+    };
+
+    if let Some(s) = sink {
+        s.append(source);
+        s.play();
+        *is_playing = true;
+        let _ = event_tx.send(WaveformEvent::Playing);
     }
 }
 

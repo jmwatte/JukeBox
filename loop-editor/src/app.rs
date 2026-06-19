@@ -97,6 +97,33 @@ impl eframe::App for LoopEditorApp {
             }
         }
 
+        // ── Keyboard Shortcuts ──
+        let is_text_focused = ctx.memory(|mem| mem.focused().is_some());
+        if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+            if self.waveform_is_playing {
+                let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+            } else if let Some(ref path) = self.waveform_state.path {
+                // Start playing from current position or loop start
+                let (start, end) = match (
+                    self.waveform_state.loop_a_secs,
+                    self.waveform_state.loop_b_secs,
+                ) {
+                    (Some(a), Some(b)) if b > a => (a, b),
+                    _ => (
+                        self.waveform_play_position,
+                        self.waveform_state.duration_secs,
+                    ),
+                };
+                let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
+                    path: path.clone(),
+                    start_sec: start,
+                    end_sec: end,
+                    pitch_semitones: self.waveform_state.pitch_semitones,
+                    tempo: self.waveform_state.tempo,
+                });
+            }
+        }
+
         // ── Drag & drop bestanden ──
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         if !dropped.is_empty() {
@@ -110,36 +137,62 @@ impl eframe::App for LoopEditorApp {
             }
         }
 
-        // ── Hoofdpaneel ──
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // ── Bestand openen ──
+        // ── Top paneel met bestand openen ──
+        egui::TopBottomPanel::top("file_toolbar").show(ctx, |ui| {
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.label("Bestand:");
-                let resp = ui.text_edit_singleline(&mut self.file_path);
-                if ui.button("📂 Open").clicked()
-                    || resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    let path = self.file_path.trim().to_string();
-                    if !path.is_empty() {
-                        self.load_file(&path);
+                if ui.button("📂 Open bestand").clicked() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Audio", &["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma"])
+                        .pick_file()
+                    {
+                        let path_str = path.to_string_lossy().to_string();
+                        self.file_path = path_str.clone();
+                        self.load_file(&path_str);
                     }
                 }
+
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.file_path)
+                        .hint_text("Pad naar audiobestand...")
+                        .desired_width(500.0),
+                );
+
+                // Ook laden als Enter wordt ingedrukt in het tekstveld
+                if resp.has_focus() {
+                    let enter = ui
+                        .ctx()
+                        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+                    if enter {
+                        let path = self.file_path.trim().to_string();
+                        if !path.is_empty() {
+                            self.load_file(&path);
+                        }
+                    }
+                }
+
                 ui.label(
                     RichText::new("(of sleep een bestand in het venster)")
                         .size(11.0)
                         .color(Color32::GRAY),
                 );
+
+                // Status rechts uitlijnen
+                if !self.status_message.is_empty() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(&self.status_message)
+                                .size(12.0)
+                                .color(Color32::from_rgb(100, 200, 100)),
+                        );
+                    });
+                }
             });
+            ui.add_space(4.0);
+        });
 
-            // Statusbalk
-            if !self.status_message.is_empty() {
-                ui.label(
-                    RichText::new(&self.status_message)
-                        .size(12.0)
-                        .color(Color32::from_rgb(100, 200, 100)),
-                );
-            }
-
+        // ── Hoofdpaneel ──
+        egui::CentralPanel::default().show(ctx, |ui| {
             ui.separator();
 
             // ── Foutmelding ──
@@ -161,25 +214,24 @@ impl eframe::App for LoopEditorApp {
             let (_loop_changed, seek_to) =
                 render_waveform(ui, &mut self.waveform_state, play_position);
 
-            // Playhead drag: herstart waveform player vanaf de nieuwe positie
+            // Click of drag-release: speel vanaf seek positie met loop-aware of volledige track grenzen
             if let Some(seek_pos) = seek_to {
                 if self.waveform_is_playing {
-                    if let (Some(a), Some(b)) = (
+                    let (start, end) = match (
                         self.waveform_state.loop_a_secs,
                         self.waveform_state.loop_b_secs,
                     ) {
-                        if b > a {
-                            let start = seek_pos.clamp(a, b);
-                            if let Some(ref path) = self.waveform_state.path {
-                                let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                                    path: path.clone(),
-                                    start_sec: start,
-                                    end_sec: b,
-                                    pitch_semitones: self.waveform_state.pitch_semitones,
-                                    tempo: self.waveform_state.tempo,
-                                });
-                            }
-                        }
+                        (Some(a), Some(b)) if b > a => (seek_pos.clamp(a, b), b),
+                        _ => (seek_pos, self.waveform_state.duration_secs),
+                    };
+                    if let Some(ref path) = self.waveform_state.path {
+                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
+                            path: path.clone(),
+                            start_sec: start,
+                            end_sec: end,
+                            pitch_semitones: self.waveform_state.pitch_semitones,
+                            tempo: self.waveform_state.tempo,
+                        });
                     }
                 }
             }
