@@ -833,6 +833,7 @@ impl eframe::App for MusicPlayerApp {
                                             pitch_semitones: saved.pitch_semitones,
                                             tempo: saved.tempo,
                                             error: None,
+                                            dragging_loop_region: false,
                                         };
                                     }
                                     Err(e) => {

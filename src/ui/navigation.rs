@@ -166,6 +166,7 @@ impl MusicPlayerApp {
                                     pitch_semitones: 0.0,
                                     tempo: 1.0,
                                     error: None,
+                                    dragging_loop_region: false,
                                 };
                             }
                             Err(e) => {
@@ -181,6 +182,7 @@ impl MusicPlayerApp {
                                     pitch_semitones: 0.0,
                                     tempo: 1.0,
                                     error: Some(e),
+                                    dragging_loop_region: false,
                                 };
                             }
                         }

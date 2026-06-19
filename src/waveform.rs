@@ -20,6 +20,7 @@ pub struct WaveformState {
     pub pitch_semitones: f32,
     pub tempo: f32,
     pub error: Option<String>,
+    pub dragging_loop_region: bool,
 }
 
 impl Default for WaveformState {
@@ -36,6 +37,7 @@ impl Default for WaveformState {
             pitch_semitones: 0.0,
             tempo: 1.0,
             error: None,
+            dragging_loop_region: false,
         }
     }
 }
@@ -442,8 +444,44 @@ pub fn render_waveform(
         });
     }
 
-    // Slepen op waveform (alleen als we niet op een marker slepen)
-    if response.dragged_by(egui::PointerButton::Primary) && !loop_changed {
+    // --- Loop-regio slepen: verplaats de hele A-B loop ---
+    if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
+        if b > a {
+            // Detecteer of de drag startte binnen de loop-regio
+            if response.drag_started() {
+                if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                    let mouse_sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
+                    state.dragging_loop_region = mouse_sec >= a && mouse_sec <= b;
+                }
+            }
+            if response.drag_stopped() {
+                state.dragging_loop_region = false;
+            }
+        } else {
+            state.dragging_loop_region = false;
+        }
+    } else {
+        state.dragging_loop_region = false;
+    }
+
+    // Versleep de hele loop (behoud lengte)
+    if state.dragging_loop_region && response.dragged_by(egui::PointerButton::Primary) {
+        let drag_delta = response.drag_delta();
+        let delta_secs = drag_delta.x / state.zoom;
+        if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
+            let len = b - a;
+            let new_a = (a + delta_secs).clamp(0.0, state.duration_secs - len);
+            state.loop_a_secs = Some(new_a);
+            state.loop_b_secs = Some(new_a + len);
+            loop_changed = true;
+        }
+    }
+
+    // Slepen op waveform (scrol) — alleen als we niet op een marker of loop-regio slepen
+    if response.dragged_by(egui::PointerButton::Primary)
+        && !loop_changed
+        && !state.dragging_loop_region
+    {
         let drag_delta = response.drag_delta();
         state.scroll_offset -= drag_delta.x / state.zoom;
         state.scroll_offset = state.scroll_offset.max(0.0);
