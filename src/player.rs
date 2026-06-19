@@ -74,11 +74,20 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::PlayPause => {
                     if let Some(s) = &sink {
                         if s.is_paused() {
-                            // Bij hervatten: spring naar pending seek (voor playhead drag in pauze)
+                            // Hervat: speel eerst af zodat rodio's interne thread
+                            // wakker wordt, pas daarna seek naar pending positie.
+                            s.play();
                             if let Some(seek) = pending_seek.take() {
                                 let _ = s.try_seek(seek);
+                                // Stuur direct een positie-update met de
+                                // gezochte positie, zodat de UI niet terugspringt
+                                // naar de oude pauzepositie.
+                                let dur = current_track_duration
+                                    .map(|d| d.as_secs_f32())
+                                    .unwrap_or(0.0);
+                                let _ = event_tx
+                                    .send(PlayerEvent::PositionUpdate(seek.as_secs_f32(), dur));
                             }
-                            s.play();
                         } else {
                             s.pause();
                             pending_seek = None; // pauzeren wist pending seek
@@ -96,18 +105,36 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         let pos = s.get_pos();
                         let new_pos = pos.saturating_sub(Duration::from_secs(2));
                         let _ = s.try_seek(new_pos);
+                        // Stuur de GEVRAAGDE positie (s.get_pos() is onbetrouwbaar als gepauzeerd)
+                        let dur = current_track_duration
+                            .map(|d| d.as_secs_f32())
+                            .unwrap_or(0.0);
+                        let _ =
+                            event_tx.send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), dur));
                     }
                 }
                 PlayerCommand::Forward => {
                     if let Some(s) = &sink {
                         let pos = s.get_pos();
                         let new_pos = pos + Duration::from_secs(2);
-                        if let Some(dur) = current_track_duration {
+                        let did_seek = if let Some(dur) = current_track_duration {
                             if new_pos < dur {
                                 let _ = s.try_seek(new_pos);
+                                true
+                            } else {
+                                false
                             }
                         } else {
                             let _ = s.try_seek(new_pos);
+                            true
+                        };
+                        // Stuur de GEVRAAGDE positie
+                        if did_seek {
+                            let dur = current_track_duration
+                                .map(|d| d.as_secs_f32())
+                                .unwrap_or(0.0);
+                            let _ = event_tx
+                                .send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), dur));
                         }
                     }
                 }
@@ -215,6 +242,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                             let _ = s.try_seek(seek_pos);
                         }
                     }
+                    // Stuur de GEVRAAGDE positie (s.get_pos() is onbetrouwbaar als gepauzeerd)
+                    let dur = current_track_duration
+                        .map(|d| d.as_secs_f32())
+                        .unwrap_or(0.0);
+                    let _ = event_tx.send(PlayerEvent::PositionUpdate(pos, dur));
                 }
                 PlayerCommand::ReconnectAudio => {
                     println!("Reconnecting audio device...");
@@ -317,7 +349,13 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
         // 4. Stuur positie-update (als er iets speelt)
         if let Some(s) = &sink {
             if !s.empty() {
-                let pos = s.get_pos().as_secs_f32();
+                // Gebruik pending_seek als die actief is (s.get_pos() is
+                // onbetrouwbaar wanneer de sink gepauzeerd is)
+                let pos = if let Some(seek) = pending_seek {
+                    seek.as_secs_f32()
+                } else {
+                    s.get_pos().as_secs_f32()
+                };
                 let dur = current_track_duration
                     .map(|d| d.as_secs_f32())
                     .unwrap_or(0.0);
