@@ -139,14 +139,16 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         // Tekens zoals "/" of "?" — via Event::Text
         s if s == ";" => ctx.input(|i| {
             i.key_pressed(Key::Semicolon)
+                || i.key_pressed(Key::Comma)
                 || i.events
                     .iter()
-                    .any(|e| matches!(e, egui::Event::Text(t) if t == ";"))
+                    .any(|e| matches!(e, egui::Event::Text(t) if t == ";" || t == ","))
         }),
         s if s == "'" => ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Text(t) if t == "'"))
+            i.key_pressed(Key::Period)
+                || i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Text(t) if t == "'" || t == "."))
         }),
         s if s == "=" => ctx.input(|i| {
             i.key_pressed(Key::Plus)
@@ -196,7 +198,7 @@ fn is_valid_key_value(key: &str) -> bool {
         "Space" | "Enter" | "Escape" | "Tab" | "Backspace" | "Delete" | "ArrowUp" | "ArrowDown"
         | "ArrowLeft" | "ArrowRight" | "F1" | "F2" | "F3" | "F4" | "F5" | "F6" | "F7" | "F8"
         | "F9" | "F10" | "F11" | "F12" | ";" | "'" | "=" | "-" | "/" | "?" | "[" | "]" | "\\"
-        | "0" => true,
+        | "0" | "," | "." => true,
         // Ctrl+Letter combinaties
         s if s.starts_with("Ctrl+") && s.len() == 6 => {
             s.chars().nth(5).map_or(false, |c| c.is_ascii_alphabetic())

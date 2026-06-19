@@ -9,11 +9,51 @@ use super::app::MusicPlayerApp;
 
 impl MusicPlayerApp {
     pub fn handle_keyboard_navigation(&mut self, ctx: &egui::Context) {
+        let cfg = self.config.shortcuts.clone();
+
+        // --- PLAYBACK CONTROLES (altijd actief, ook als widgets focus hebben) ---
+        if shortcuts::check_action(&cfg, ctx, "PlayPause") {
+            let _ = self.player_tx.send(PlayerCommand::PlayPause);
+        }
+        if shortcuts::check_action(&cfg, ctx, "Skip") {
+            let _ = self.player_tx.send(PlayerCommand::Skip);
+        }
+        if shortcuts::check_action(&cfg, ctx, "Rewind") {
+            let _ = self.player_tx.send(PlayerCommand::Rewind);
+        }
+        if shortcuts::check_action(&cfg, ctx, "Forward") {
+            let _ = self.player_tx.send(PlayerCommand::Forward);
+        }
+        if shortcuts::check_action(&cfg, ctx, "RepeatToggle") {
+            let _ = self.player_tx.send(PlayerCommand::ToggleRepeat);
+        }
+        if shortcuts::check_action(&cfg, ctx, "ShuffleToggle") {
+            let _ = self.player_tx.send(PlayerCommand::ToggleShuffle);
+        }
+        if shortcuts::check_action(&cfg, ctx, "VolumeUp") {
+            self.volume = (self.volume + 0.1).min(2.0);
+            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
+        }
+        if shortcuts::check_action(&cfg, ctx, "VolumeDown") {
+            self.volume = (self.volume - 0.1).max(0.0);
+            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
+        }
+
+        // --- A-B LOOP (altijd actief) ---
+        if shortcuts::check_action(&cfg, ctx, "LoopA") {
+            let _ = self.player_tx.send(PlayerCommand::SetLoopA);
+        }
+        if shortcuts::check_action(&cfg, ctx, "LoopB") {
+            let _ = self.player_tx.send(PlayerCommand::SetLoopB);
+        }
+        if shortcuts::check_action(&cfg, ctx, "ClearLoop") {
+            let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+        }
+
+        // --- NAVIGATIE — alleen als geen widget toetsenbordfocus heeft ---
         if ctx.wants_keyboard_input() {
             return;
         }
-
-        let cfg = self.config.shortcuts.clone();
 
         // --- ESCAPE ---
         if shortcuts::check_action(&cfg, ctx, "Escape") {
@@ -169,6 +209,7 @@ impl MusicPlayerApp {
                                     dragging_loop_region: false,
                                     dragging_playhead: false,
                                     playhead_drag_secs: None,
+                                    playhead_frames_after_drag: 0,
                                 };
                             }
                             Err(e) => {
@@ -187,6 +228,7 @@ impl MusicPlayerApp {
                                     dragging_loop_region: false,
                                     dragging_playhead: false,
                                     playhead_drag_secs: None,
+                                    playhead_frames_after_drag: 0,
                                 };
                             }
                         }
@@ -658,49 +700,12 @@ impl MusicPlayerApp {
             };
         }
 
-        // --- PLAYBACK CONTROLES ---
-        if shortcuts::check_action(&cfg, ctx, "PlayPause") {
-            let _ = self.player_tx.send(PlayerCommand::PlayPause);
-        }
+        // --- SELECT / APPEND (navigatie) ---
         if shortcuts::check_action(&cfg, ctx, "Select") {
             self.play_selected_item(&lib, true);
         }
         if shortcuts::check_action(&cfg, ctx, "AppendQueue") {
             self.play_selected_item(&lib, false);
-        }
-        if shortcuts::check_action(&cfg, ctx, "Skip") {
-            let _ = self.player_tx.send(PlayerCommand::Skip);
-        }
-        if shortcuts::check_action(&cfg, ctx, "Rewind") {
-            let _ = self.player_tx.send(PlayerCommand::Rewind);
-        }
-        if shortcuts::check_action(&cfg, ctx, "Forward") {
-            let _ = self.player_tx.send(PlayerCommand::Forward);
-        }
-        if shortcuts::check_action(&cfg, ctx, "RepeatToggle") {
-            let _ = self.player_tx.send(PlayerCommand::ToggleRepeat);
-        }
-        if shortcuts::check_action(&cfg, ctx, "ShuffleToggle") {
-            let _ = self.player_tx.send(PlayerCommand::ToggleShuffle);
-        }
-        if shortcuts::check_action(&cfg, ctx, "VolumeUp") {
-            self.volume = (self.volume + 0.1).min(2.0);
-            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
-        }
-        if shortcuts::check_action(&cfg, ctx, "VolumeDown") {
-            self.volume = (self.volume - 0.1).max(0.0);
-            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
-        }
-
-        // --- A-B LOOP ---
-        if shortcuts::check_action(&cfg, ctx, "LoopA") {
-            let _ = self.player_tx.send(PlayerCommand::SetLoopA);
-        }
-        if shortcuts::check_action(&cfg, ctx, "LoopB") {
-            let _ = self.player_tx.send(PlayerCommand::SetLoopB);
-        }
-        if shortcuts::check_action(&cfg, ctx, "ClearLoop") {
-            let _ = self.player_tx.send(PlayerCommand::ClearLoop);
         }
 
         // --- F2: NOW PLAYING NAVIGATIE ---

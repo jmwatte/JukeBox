@@ -23,6 +23,7 @@ pub struct WaveformState {
     pub dragging_loop_region: bool,
     pub dragging_playhead: bool,
     pub playhead_drag_secs: Option<f32>,
+    pub playhead_frames_after_drag: u32,
 }
 
 impl Default for WaveformState {
@@ -42,6 +43,7 @@ impl Default for WaveformState {
             dragging_loop_region: false,
             dragging_playhead: false,
             playhead_drag_secs: None,
+            playhead_frames_after_drag: 0,
         }
     }
 }
@@ -387,12 +389,27 @@ pub fn render_waveform(
     }
 
     // Huidige positie-indicator + interactie (playhead verslepen)
-    // Zolang playhead_drag_secs is gezet, blijft de playhead op de
-    // gezochte positie staan tot de player-thread de nieuwe positie bevestigt.
-    let playhead_render_pos = state.playhead_drag_secs.or(now_playing_position);
-    if let Some(pos) = playhead_render_pos {
+    // Tijdens drag én tot 3 frames na loslaten: toon versleepte positie.
+    // Zo krijgt de player-thread de tijd om PositionUpdate te sturen.
+    let render_pos = if state.playhead_frames_after_drag > 0 {
+        state.playhead_drag_secs.or(now_playing_position)
+    } else {
+        now_playing_position
+    };
+
+    // Aftellen: na 3 frames wissen we de drag-positie
+    if state.playhead_frames_after_drag > 0 {
+        state.playhead_frames_after_drag -= 1;
+        if state.playhead_frames_after_drag == 0 {
+            state.playhead_drag_secs = None;
+        }
+    }
+
+    if let Some(pos) = render_pos {
         if pos >= start_sec && pos <= end_sec {
             let pos_x = rect.left() + (pos - start_sec) * state.zoom;
+
+            // --- Playhead lijn tekenen ---
             painter.line_segment(
                 [
                     egui::pos2(pos_x, rect.top()),
@@ -401,48 +418,73 @@ pub fn render_waveform(
                 (2.0, egui::Color32::from_rgb(255, 200, 50)),
             );
 
-            // Playhead drag detectie
-            if let Some(actual_pos) = now_playing_position {
-                let hit_half_width = 6.0;
+            // --- Driehoekjes boven en onder voor grip ---
+            let tri_size = 7.0;
+            let tri_height = 10.0;
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(pos_x, rect.top()),
+                    egui::pos2(pos_x - tri_size, rect.top() + tri_height),
+                    egui::pos2(pos_x + tri_size, rect.top() + tri_height),
+                ],
+                egui::Color32::from_rgb(255, 200, 50),
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 150, 20)),
+            ));
+            painter.add(egui::Shape::convex_polygon(
+                vec![
+                    egui::pos2(pos_x, rect.bottom()),
+                    egui::pos2(pos_x - tri_size, rect.bottom() - tri_height),
+                    egui::pos2(pos_x + tri_size, rect.bottom() - tri_height),
+                ],
+                egui::Color32::from_rgb(255, 200, 50),
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 150, 20)),
+            ));
+
+            // --- Playhead drag detectie ---
+            if let Some(_actual_pos) = now_playing_position {
+                let strip_half = 10.0;
                 if response.drag_started() {
                     if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                        let dist = (mouse_pos.x - pos_x).abs();
-                        state.dragging_playhead = dist <= hit_half_width;
+                        let dx = (mouse_pos.x - pos_x).abs();
+                        let dy_top = (mouse_pos.y - rect.top()).abs();
+                        let dy_bot = (mouse_pos.y - rect.bottom()).abs();
+                        let in_strip = dx <= strip_half;
+                        let in_triangles =
+                            dx <= tri_size && (dy_top <= tri_height || dy_bot <= tri_height);
+                        state.dragging_playhead = in_strip || in_triangles;
                     }
                 }
                 if response.drag_stopped() {
                     state.dragging_playhead = false;
-                    // NIET playhead_drag_secs wissen — wacht tot player bevestigt
-                }
-
-                // Als de player de nieuwe positie heeft bereikt, wis de override
-                if !state.dragging_playhead {
-                    if let Some(drag_pos) = state.playhead_drag_secs {
-                        if (drag_pos - actual_pos).abs() < 0.3 {
-                            state.playhead_drag_secs = None;
-                        }
+                    // Blijf nog 3 frames op de versleepte positie
+                    // zodat de PositionUpdate van de player kan arriveren
+                    if state.playhead_drag_secs.is_some() {
+                        state.playhead_frames_after_drag = 3;
                     }
                 }
             } else {
-                // Geen actuele positie (ander nummer) — geen playhead interactie
                 state.dragging_playhead = false;
                 state.playhead_drag_secs = None;
+                state.playhead_frames_after_drag = 0;
             }
         } else {
             state.dragging_playhead = false;
             state.playhead_drag_secs = None;
+            state.playhead_frames_after_drag = 0;
         }
     } else {
         state.dragging_playhead = false;
         state.playhead_drag_secs = None;
+        state.playhead_frames_after_drag = 0;
     }
 
-    // Playhead verslepen
+    // Playhead verslepen (render positie updaten + seek command)
     if state.dragging_playhead && response.dragged_by(egui::PointerButton::Primary) {
         if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
             let seek_pos = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
                 .clamp(0.0, state.duration_secs);
             state.playhead_drag_secs = Some(seek_pos);
+            state.playhead_frames_after_drag = 3; // reset teller
             seek_to = Some(seek_pos);
         }
     }

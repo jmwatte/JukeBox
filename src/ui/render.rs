@@ -841,6 +841,7 @@ impl eframe::App for MusicPlayerApp {
                                             dragging_loop_region: false,
                                             dragging_playhead: false,
                                             playhead_drag_secs: None,
+                                            playhead_frames_after_drag: 0,
                                         };
                                     }
                                     Err(e) => {

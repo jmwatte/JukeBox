@@ -55,6 +55,8 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut loop_b: Option<Duration> = None;
     let mut original_queue: Vec<String> = Vec::new();
     let mut last_track: Option<String> = None;
+    // Houdt de laatste seek positie bij, nodig voor hervatten vanuit pauze
+    let mut pending_seek: Option<Duration> = None;
 
     // Eerste verbinding bij het opstarten (INLINE, geen closure!)
     if let Ok((stream, handle)) = OutputStream::try_default() {
@@ -72,9 +74,14 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::PlayPause => {
                     if let Some(s) = &sink {
                         if s.is_paused() {
+                            // Bij hervatten: spring naar pending seek (voor playhead drag in pauze)
+                            if let Some(seek) = pending_seek.take() {
+                                let _ = s.try_seek(seek);
+                            }
                             s.play();
                         } else {
                             s.pause();
+                            pending_seek = None; // pauzeren wist pending seek
                         }
                     }
                 }
@@ -199,6 +206,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::SeekTo(pos) => {
                     if let Some(s) = &sink {
                         let seek_pos = Duration::from_secs_f32(pos);
+                        pending_seek = Some(seek_pos);
                         if let Some(dur) = current_track_duration {
                             if seek_pos < dur {
                                 let _ = s.try_seek(seek_pos);
