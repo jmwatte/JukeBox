@@ -199,7 +199,7 @@ pub fn render_waveform(
         return (false, None);
     }
 
-    let samples_per_pixel = (visible_samples as f32 / width).ceil() as usize;
+    //let samples_per_pixel = (visible_samples as f32 / width).ceil() as usize;
 
     // Achtergrond
     painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(20, 20, 30));
@@ -241,14 +241,22 @@ pub fn render_waveform(
     }
 
     // Waveform lijnen
-    let mut x = rect.left();
-    let mut pixel_idx = 0usize;
-    while x <= rect.right() && pixel_idx * samples_per_pixel < visible_samples {
-        let sample_start = start_sample + pixel_idx * samples_per_pixel;
-        let sample_end = (sample_start + samples_per_pixel).min(total_samples);
+    //  FIX: Draw waveform based on exact pixel-to-time mapping to prevent drift
+    let width_px = width as usize;
+    for pixel_x in 0..width_px {
+        // Calculate exact time range for this specific pixel
+        let t_start = start_sec + (pixel_x as f32) / state.zoom;
+        let t_end = start_sec + ((pixel_x + 1) as f32) / state.zoom;
 
-        if sample_start >= total_samples {
-            break;
+        let sample_start = (t_start * sample_rate as f32) as usize;
+        let sample_end = (t_end * sample_rate as f32) as usize;
+
+        // Clamp to valid sample range
+        let sample_start = sample_start.min(total_samples);
+        let sample_end = sample_end.min(total_samples);
+
+        if sample_start >= total_samples || sample_start >= sample_end {
+            continue;
         }
 
         let mut min_val = 0.0_f32;
@@ -263,15 +271,12 @@ pub fn render_waveform(
             }
         }
 
+        let x = rect.left() + pixel_x as f32;
         let p1 = egui::pos2(x, center_y + min_val * height * 0.45);
         let p2 = egui::pos2(x, center_y + max_val * height * 0.45);
 
         painter.line_segment([p1, p2], (1.0, egui::Color32::from_gray(160)));
-
-        x += 1.0;
-        pixel_idx += 1;
     }
-
     // ---- Interactieve A-B markers ----
     // Huidige muispositie in seconden (voor click-to-place)
     let mouse_sec = ui.ctx().input(|i| {

@@ -399,7 +399,10 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- NOW PLAYING BALK ---
-        if self.now_playing.is_some() || self.status_error.is_some() {
+        if self.now_playing.is_some()
+            || self.status_error.is_some()
+            || !self._status_message.is_empty()
+        {
             egui::TopBottomPanel::bottom("now_playing_panel").show(ctx, |ui| {
                 ui.add_space(6.0);
 
@@ -412,6 +415,17 @@ impl eframe::App for MusicPlayerApp {
                     );
                     if let Some(track) = &self.now_playing {
                         ui.label(RichText::new(track).size(16.0).strong());
+                    }
+
+                    // Status message (groen, rechts)
+                    if !self._status_message.is_empty() && self._status_message != "Klaar!" {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!("✓ {}", self._status_message))
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(100, 200, 100)),
+                            );
+                        });
                     }
                 });
 
@@ -588,7 +602,10 @@ impl eframe::App for MusicPlayerApp {
 
                     // Click of drag-release: stuur Play command met loop-aware grenzen
                     if let Some(seek_pos) = seek_to {
-                        let (start, end) = match (self.waveform_state.loop_a_secs, self.waveform_state.loop_b_secs) {
+                        let (start, end) = match (
+                            self.waveform_state.loop_a_secs,
+                            self.waveform_state.loop_b_secs,
+                        ) {
                             (Some(a), Some(b)) if b > a => (seek_pos.clamp(a, b), b),
                             _ => (seek_pos, self.waveform_state.duration_secs),
                         };

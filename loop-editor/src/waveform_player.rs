@@ -12,8 +12,9 @@ use std::time::Duration;
 pub enum WaveformCommand {
     Play {
         path: String,
-        start_sec: f32,
-        end_sec: f32,
+        decode_start_sec: f32, // Start of the region to decode (e.g., Loop A)
+        decode_end_sec: f32,   // End of the region to decode (e.g., Loop B)
+        play_start_sec: f32,   // Exact position to start playback (e.g., clicked position)
         pitch_semitones: f32,
         tempo: f32,
     },
@@ -78,8 +79,9 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
             match cmd {
                 WaveformCommand::Play {
                     path,
-                    start_sec,
-                    end_sec,
+                    decode_start_sec,
+                    decode_end_sec,
+                    play_start_sec,
                     pitch_semitones,
                     tempo,
                 } => {
@@ -89,18 +91,22 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     }
 
                     _current_path = Some(path.clone());
-                    _current_start = start_sec;
-                    _current_end = end_sec;
+                    _current_start = decode_start_sec;
+                    _current_end = decode_end_sec;
                     current_pitch = pitch_semitones;
                     current_tempo = tempo;
                     is_playing = false;
 
-                    match decode_segment(&path, start_sec, end_sec) {
+                    // FIX: Decode the ENTIRE loop region (A to B), not just from the playhead to B
+                    match decode_segment(&path, decode_start_sec, decode_end_sec) {
                         Ok((samples, sample_rate, segment_duration)) => {
-                            // Cache de ruwe samples zodat SetPitch/SetTempo opnieuw
-                            // rubato kan draaien zonder nogmaals van schijf te lezen.
                             cached_raw = Some((samples.clone(), sample_rate, segment_duration));
                             current_duration = segment_duration;
+
+                            // Calculate starting position before processing (om borrow issues te voorkomen)
+                            let raw_offset_samples =
+                                ((play_start_sec - decode_start_sec) * sample_rate as f32) as usize;
+                            let total_raw = samples.len();
 
                             // Rubato processing (tempo + pitch)
                             let processed =
@@ -109,13 +115,21 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                                     Err(e) => {
                                         let _ = event_tx
                                             .send(WaveformEvent::Error(format!("Rubato: {}", e)));
-                                        samples
+                                        samples.clone()
                                     }
                                 };
 
+                            let ratio = if total_raw > 0 {
+                                processed.len() as f32 / total_raw as f32
+                            } else {
+                                1.0
+                            };
+                            let initial_pos = (raw_offset_samples as f32 * ratio) as usize;
+                            let initial_pos = initial_pos.min(processed.len().saturating_sub(1));
+
                             let source = WaveformSource {
                                 samples: processed,
-                                pos: 0,
+                                pos: initial_pos, // Start exactly where the user clicked!
                                 sample_rate,
                             };
 
@@ -184,18 +198,22 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 } else {
                     let raw_pos = s.get_pos().as_secs_f32();
-                    // Toon positie binnen de loop (modulo loopduur)
-                    let pos = if current_duration > 0.0 {
+
+                    // Calculate position relative to the segment (handles infinite looping)
+                    let pos_in_segment = if current_duration > 0.0 {
                         raw_pos % current_duration
                     } else {
                         raw_pos
                     };
+
+                    // Convert to absolute position in the file
+                    let pos = _current_start + pos_in_segment;
                     let _ = event_tx.send(WaveformEvent::Position(pos, current_duration));
                 }
             }
         }
 
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(16));
     }
 }
 

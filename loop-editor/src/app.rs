@@ -85,7 +85,7 @@ impl eframe::App for LoopEditorApp {
                 }
                 WaveformEvent::Stopped => {
                     self.waveform_is_playing = false;
-                    self.waveform_play_position = 0.0;
+                    //self.waveform_play_position = 0.0;
                     ctx.request_repaint();
                 }
                 WaveformEvent::Error(msg) => {
@@ -103,35 +103,42 @@ impl eframe::App for LoopEditorApp {
 
         // 🔥 CRITICAL: Force continuous repaints while playing so the playhead moves smoothly
         if self.waveform_is_playing {
-            ctx.request_repaint();
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
         }
 
-        // ── Keyboard Shortcuts ──
         // ── Keyboard Shortcuts ──
         let is_text_focused = ctx.memory(|mem| mem.focused().is_some());
         if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             if self.waveform_is_playing {
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
             } else if let Some(ref path) = self.waveform_state.path {
-                // 🔥 FIX: Always start from the current playhead position
-                let start = self.waveform_play_position;
-
-                // Determine end point: Loop end (if loop exists) or Track end
-                let end = match (
+                // FIX: Determine decode region and play start position
+                let (decode_start, play_start, decode_end) = match (
                     self.waveform_state.loop_a_secs,
                     self.waveform_state.loop_b_secs,
                 ) {
-                    (Some(a), Some(b)) if b > a => b,
-                    _ => self.waveform_state.duration_secs,
+                    (Some(a), Some(b)) if b > a => {
+                        // If looping, decode the whole loop (A to B), but start playing at the current playhead
+                        let start = self.waveform_play_position.clamp(a, b);
+                        (a, start, b)
+                    }
+                    _ => {
+                        // No loop, decode from playhead to end
+                        let start = self.waveform_play_position;
+                        (start, start, self.waveform_state.duration_secs)
+                    }
                 };
 
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                     path: path.clone(),
-                    start_sec: start,
-                    end_sec: end,
+                    decode_start_sec: decode_start,
+                    decode_end_sec: decode_end,
+                    play_start_sec: play_start,
                     pitch_semitones: self.waveform_state.pitch_semitones,
                     tempo: self.waveform_state.tempo,
                 });
+
+                self.waveform_is_playing = true;
             }
         }
 
@@ -222,8 +229,37 @@ impl eframe::App for LoopEditorApp {
                 None
             };
 
-            let (_loop_changed, seek_to) =
+            let (loop_changed, seek_to) =
                 render_waveform(ui, &mut self.waveform_state, play_position);
+
+            // 🔥 FIX: If loop markers changed while playing, restart playback with new boundaries
+            if loop_changed && self.waveform_is_playing {
+                if let Some(ref path) = self.waveform_state.path {
+                    let (decode_start, play_start, decode_end) = match (
+                        self.waveform_state.loop_a_secs,
+                        self.waveform_state.loop_b_secs,
+                    ) {
+                        (Some(a), Some(b)) if b > a => {
+                            // Keep playing within the new loop, starting from current position
+                            let start = self.waveform_play_position.clamp(a, b);
+                            (a, start, b)
+                        }
+                        _ => {
+                            let start = self.waveform_play_position;
+                            (start, start, self.waveform_state.duration_secs)
+                        }
+                    };
+
+                    let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
+                        path: path.clone(),
+                        decode_start_sec: decode_start,
+                        decode_end_sec: decode_end,
+                        play_start_sec: play_start,
+                        pitch_semitones: self.waveform_state.pitch_semitones,
+                        tempo: self.waveform_state.tempo,
+                    });
+                }
+            }
 
             // Click of drag-release: update playhead position and optionally restart playback
             // ✅ THE FIXED CODE
@@ -234,18 +270,19 @@ impl eframe::App for LoopEditorApp {
 
                 // If currently playing, send command to audio thread to restart from new position
                 if self.waveform_is_playing {
-                    let (start, end) = match (
+                    let (decode_start, play_start, decode_end) = match (
                         self.waveform_state.loop_a_secs,
                         self.waveform_state.loop_b_secs,
                     ) {
-                        (Some(a), Some(b)) if b > a => (seek_pos.clamp(a, b), b),
-                        _ => (seek_pos, self.waveform_state.duration_secs),
+                        (Some(a), Some(b)) if b > a => (a, seek_pos.clamp(a, b), b),
+                        _ => (seek_pos, seek_pos, self.waveform_state.duration_secs),
                     };
                     if let Some(ref path) = self.waveform_state.path {
                         let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                             path: path.clone(),
-                            start_sec: start,
-                            end_sec: end,
+                            decode_start_sec: decode_start,
+                            decode_end_sec: decode_end,
+                            play_start_sec: play_start,
                             pitch_semitones: self.waveform_state.pitch_semitones,
                             tempo: self.waveform_state.tempo,
                         });
@@ -354,8 +391,9 @@ impl eframe::App for LoopEditorApp {
                             if let Some(ref path) = self.waveform_state.path {
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
                                     path: path.clone(),
-                                    start_sec: a,
-                                    end_sec: b,
+                                    decode_start_sec: a,
+                                    decode_end_sec: b,
+                                    play_start_sec: a, // Start exactly at A
                                     pitch_semitones: self.waveform_state.pitch_semitones,
                                     tempo: self.waveform_state.tempo,
                                 });
