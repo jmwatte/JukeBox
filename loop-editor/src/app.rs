@@ -110,7 +110,7 @@ impl eframe::App for LoopEditorApp {
         let is_text_focused = ctx.memory(|mem| mem.focused().is_some());
         if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             if self.waveform_is_playing {
-                let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+                let _ = self.waveform_cmd_tx.send(WaveformCommand::TogglePause);
             } else if let Some(ref path) = self.waveform_state.path {
                 // FIX: Determine decode region and play start position
                 let (decode_start, play_start, decode_end) = match (

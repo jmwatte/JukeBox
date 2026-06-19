@@ -19,6 +19,7 @@ pub enum WaveformCommand {
         tempo: f32,
     },
     Stop,
+    TogglePause,
     SetPitch(f32),
     SetTempo(f32),
 }
@@ -158,6 +159,16 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 }
 
+                WaveformCommand::TogglePause => {
+                    if let Some(s) = &sink {
+                        if s.is_paused() {
+                            s.play();
+                        } else {
+                            s.pause();
+                        }
+                    }
+                }
+
                 WaveformCommand::SetPitch(semitones) => {
                     current_pitch = semitones;
                     if is_playing {
@@ -199,14 +210,32 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                 } else {
                     let raw_pos = s.get_pos().as_secs_f32();
 
-                    // Calculate position relative to the segment (handles infinite looping)
-                    let pos_in_segment = if current_duration > 0.0 {
-                        raw_pos % current_duration
+                    // 🔥 CORRECTIE: raw_pos is in verwerkte-tijd (na rubato),
+                    //    maar current_duration is de originele segment-duur.
+                    //    We schalen raw_pos terug naar originele tijd mbv pitch & tempo.
+                    let pitch_factor = f32::powf(2.0, current_pitch / 12.0);
+                    let stretch_factor = if current_tempo > 0.0 {
+                        pitch_factor / current_tempo
                     } else {
-                        raw_pos
+                        1.0
                     };
 
-                    // Convert to absolute position in the file
+                    // Terug naar originele tijdschaal
+                    let effective_pos =
+                        if stretch_factor > 0.0 && (stretch_factor - 1.0).abs() > 0.001 {
+                            raw_pos / stretch_factor
+                        } else {
+                            raw_pos
+                        };
+
+                    // Wrap rond segment-duur voor looping-weergave
+                    let pos_in_segment = if current_duration > 0.0 {
+                        effective_pos % current_duration
+                    } else {
+                        effective_pos
+                    };
+
+                    // Absolute positie in bestand
                     let pos = _current_start + pos_in_segment;
                     let _ = event_tx.send(WaveformEvent::Position(pos, current_duration));
                 }
