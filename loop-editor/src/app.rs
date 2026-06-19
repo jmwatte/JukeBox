@@ -81,20 +81,29 @@ impl eframe::App for LoopEditorApp {
             match event {
                 WaveformEvent::Playing => {
                     self.waveform_is_playing = true;
+                    ctx.request_repaint();
                 }
                 WaveformEvent::Stopped => {
                     self.waveform_is_playing = false;
                     self.waveform_play_position = 0.0;
+                    ctx.request_repaint();
                 }
                 WaveformEvent::Error(msg) => {
                     self.waveform_is_playing = false;
                     self.status_message = format!("Waveform fout: {}", msg);
+                    ctx.request_repaint();
                 }
                 WaveformEvent::Position(pos, dur) => {
                     self.waveform_play_position = pos;
                     self.waveform_play_duration = dur;
+                    ctx.request_repaint();
                 }
             }
+        }
+
+        // 🔥 CRITICAL: Force continuous repaints while playing so the playhead moves smoothly
+        if self.waveform_is_playing {
+            ctx.request_repaint();
         }
 
         // ── Keyboard Shortcuts ──
@@ -217,6 +226,7 @@ impl eframe::App for LoopEditorApp {
             // Click of drag-release: speel vanaf seek positie met loop-aware of volledige track grenzen
             if let Some(seek_pos) = seek_to {
                 if self.waveform_is_playing {
+                    // If playing, send command to audio thread to restart from new position
                     let (start, end) = match (
                         self.waveform_state.loop_a_secs,
                         self.waveform_state.loop_b_secs,
@@ -233,6 +243,9 @@ impl eframe::App for LoopEditorApp {
                             tempo: self.waveform_state.tempo,
                         });
                     }
+                } else {
+                    // 🔥 FIX: If NOT playing, just update the UI playhead position directly
+                    self.waveform_play_position = seek_pos;
                 }
             }
 
