@@ -420,11 +420,12 @@ fn apply_rubato(
     pitch_semitones: f32,
     _sample_rate: u32,
 ) -> Result<Vec<f32>, String> {
-    // Bepaal de resample ratio
-    // tempo > 1.0 = langzamer (meer output samples)
-    // pitch: voor pitch shift combineren we met tempo
+    // Bepaal de resample ratio (output_samples / input_samples)
+    // ratio > 1: meer output -> langzamer -> lagere toon / tragere tempo
+    // ratio < 1: minder output -> sneller -> hogere toon / snellere tempo
+    // tempo > 1.0 = sneller, pitch_semitones > 0 = hogere toon -> beide hebben ratio < 1 nodig
     let pitch_factor = f32::powf(2.0, pitch_semitones / 12.0);
-    let resample_ratio = pitch_factor / tempo;
+    let resample_ratio = 1.0 / (pitch_factor * tempo);
 
     // Geen processing nodig als ratio ≈ 1.0
     if (resample_ratio - 1.0).abs() < 0.001 {
