@@ -223,10 +223,13 @@ impl eframe::App for LoopEditorApp {
             let (_loop_changed, seek_to) =
                 render_waveform(ui, &mut self.waveform_state, play_position);
 
-            // Click of drag-release: speel vanaf seek positie met loop-aware of volledige track grenzen
+            // Click of drag-release: update playhead position and optionally restart playback
             if let Some(seek_pos) = seek_to {
+                // 🔥 FIX: Always update the UI playhead position, even if not playing!
+                self.waveform_play_position = seek_pos;
+
+                // If currently playing, send command to audio thread to restart from new position
                 if self.waveform_is_playing {
-                    // If playing, send command to audio thread to restart from new position
                     let (start, end) = match (
                         self.waveform_state.loop_a_secs,
                         self.waveform_state.loop_b_secs,
@@ -243,9 +246,6 @@ impl eframe::App for LoopEditorApp {
                             tempo: self.waveform_state.tempo,
                         });
                     }
-                } else {
-                    // 🔥 FIX: If NOT playing, just update the UI playhead position directly
-                    self.waveform_play_position = seek_pos;
                 }
             }
 
