@@ -22,6 +22,14 @@ pub enum WaveformCommand {
     },
     Stop,
     TogglePause,
+    /// Nieuwe loop-grenzen, wordt toegepast bij de volgende wrap (B → A).
+    /// Voorkomt stutter door niet direct te herstarten.
+    UpdateLoopBounds {
+        segment_samples: Vec<f32>,
+        segment_sample_rate: u32,
+        new_start_sec: f32,
+        new_end_sec: f32,
+    },
     SetPitch(f32),
     SetTempo(f32),
 }
@@ -34,6 +42,8 @@ pub enum WaveformCommand {
 pub enum WaveformEvent {
     Playing,
     Stopped,
+    Paused,
+    Resumed,
     Error(String),
     Position(f32, f32),
 }
@@ -67,7 +77,12 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let mut current_tempo: f32 = 1.0;
     let mut current_duration: f32 = 0.0;
     let mut is_playing = false;
+    let mut is_paused = false;
     let mut cached_raw: Option<(Vec<f32>, u32, f32)> = None;
+    // Pending restart: wordt uitgevoerd bij de volgende wrap (B → A)
+    let mut pending_restart: Option<(Vec<f32>, u32, f32, f32)> = None;
+    // Houdt bij hoeveel wraps er zijn geweest om wraps te detecteren
+    let mut prev_wrap_count: f32 = 0.0;
 
     // Audio device openen
     if let Ok((stream, handle)) = OutputStream::try_default() {
@@ -101,6 +116,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     current_pitch = pitch_semitones;
                     current_tempo = tempo;
                     is_playing = false;
+                    is_paused = false;
 
                     let sample_rate = segment_sample_rate;
                     let segment_duration = segment_samples.len() as f32 / sample_rate as f32;
@@ -160,10 +176,29 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     if let Some(s) = &sink {
                         if s.is_paused() {
                             s.play();
+                            is_paused = false;
+                            let _ = event_tx.send(WaveformEvent::Resumed);
                         } else {
                             s.pause();
+                            is_paused = true;
+                            let _ = event_tx.send(WaveformEvent::Paused);
                         }
                     }
+                }
+
+                WaveformCommand::UpdateLoopBounds {
+                    segment_samples,
+                    segment_sample_rate,
+                    new_start_sec,
+                    new_end_sec,
+                } => {
+                    // Bewaar voor de volgende wrap
+                    pending_restart = Some((
+                        segment_samples,
+                        segment_sample_rate,
+                        new_start_sec,
+                        new_end_sec,
+                    ));
                 }
 
                 WaveformCommand::SetPitch(semitones) => {
@@ -198,8 +233,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
             }
         }
 
-        // Positie-updates sturen
-        if is_playing {
+        // Positie-updates sturen (niet als gepauzeerd)
+        if is_playing && !is_paused {
             if let Some(s) = &sink {
                 if s.empty() {
                     is_playing = false;
@@ -207,9 +242,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                 } else {
                     let raw_pos = s.get_pos().as_secs_f32();
 
-                    // 🔥 CORRECTIE: raw_pos is in verwerkte-tijd (na rubato),
-                    //    maar current_duration is de originele segment-duur.
-                    //    We schalen raw_pos terug naar originele tijd mbv pitch & tempo.
                     let pitch_factor = f32::powf(2.0, current_pitch / 12.0);
                     let stretch_factor = if current_tempo > 0.0 {
                         pitch_factor / current_tempo
@@ -217,7 +249,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         1.0
                     };
 
-                    // Terug naar originele tijdschaal
                     let effective_pos =
                         if stretch_factor > 0.0 && (stretch_factor - 1.0).abs() > 0.001 {
                             raw_pos / stretch_factor
@@ -225,14 +256,55 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                             raw_pos
                         };
 
-                    // Wrap rond segment-duur voor looping-weergave
+                    // Wrap rond segment-duur voor looping
                     let pos_in_segment = if current_duration > 0.0 {
                         effective_pos % current_duration
                     } else {
                         effective_pos
                     };
 
-                    // Absolute positie in bestand
+                    // 🔥 Wrap-detectie: (effective_pos / current_duration) stijgt
+                    //    met 1 bij elke wrap. Als die stijgt en er is een pending_restart,
+                    //    laden we het nieuwe segment in op het wrap-moment.
+                    if current_duration > 0.0 {
+                        let cur_wrap_count = (effective_pos / current_duration).floor();
+                        if cur_wrap_count > prev_wrap_count {
+                            if let Some((samp, sr, new_start, new_end)) = pending_restart.take() {
+                                _current_start = new_start;
+                                _current_end = new_end;
+                                let new_dur = (new_end - new_start).max(0.001);
+                                current_duration = new_dur;
+                                cached_raw = Some((samp.clone(), sr, new_dur));
+
+                                let processed =
+                                    match apply_rubato(&samp, current_tempo, current_pitch, sr) {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            let _ = event_tx.send(WaveformEvent::Error(format!(
+                                                "Rubato: {}",
+                                                e
+                                            )));
+                                            samp
+                                        }
+                                    };
+
+                                let new_source = WaveformSource {
+                                    samples: processed,
+                                    pos: 0,
+                                    sample_rate: sr,
+                                };
+
+                                if let Some(s) = &sink {
+                                    s.stop();
+                                    s.clear();
+                                    s.append(new_source);
+                                    s.play();
+                                }
+                            }
+                        }
+                        prev_wrap_count = cur_wrap_count;
+                    }
+
                     let pos = _current_start + pos_in_segment;
                     let _ = event_tx.send(WaveformEvent::Position(pos, current_duration));
                 }
@@ -291,6 +363,8 @@ fn restart_playback(
 // rodio Source wrapper rond Vec<f32>
 // ---------------------------------------------------------------------------
 
+/// Eenvoudige Source die Vec<f32> afspeelt via rodio.
+/// Loopt oneindig (wrap-around) voor naadloze loop-playback.
 #[derive(Clone)]
 struct WaveformSource {
     samples: Vec<f32>,
@@ -316,7 +390,11 @@ impl Iterator for WaveformSource {
 
 impl Source for WaveformSource {
     fn current_frame_len(&self) -> Option<usize> {
-        Some(self.samples.len().saturating_sub(self.pos))
+        if self.samples.is_empty() {
+            None
+        } else {
+            Some(self.samples.len().saturating_sub(self.pos))
+        }
     }
 
     fn channels(&self) -> u16 {
@@ -328,7 +406,7 @@ impl Source for WaveformSource {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        None // oneindig (looping)
+        None // infinite door looping
     }
 }
 

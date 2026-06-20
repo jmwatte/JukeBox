@@ -13,6 +13,7 @@ pub struct LoopEditorApp {
     pub waveform_is_playing: bool,
     pub waveform_play_position: f32,
     pub waveform_play_duration: f32,
+    pub waveform_has_content: bool, // audio-thread heeft geladen samples (voor pause/resume)
 
     // Loop library
     pub saved_loops: Vec<SavedLoop>,
@@ -35,6 +36,7 @@ impl LoopEditorApp {
             waveform_is_playing: false,
             waveform_play_position: 0.0,
             waveform_play_duration: 0.0,
+            waveform_has_content: false,
             saved_loops,
             show_loop_library: false,
             file_path: String::new(),
@@ -81,11 +83,20 @@ impl eframe::App for LoopEditorApp {
             match event {
                 WaveformEvent::Playing => {
                     self.waveform_is_playing = true;
+                    self.waveform_has_content = true;
                     ctx.request_repaint();
                 }
                 WaveformEvent::Stopped => {
                     self.waveform_is_playing = false;
-                    //self.waveform_play_position = 0.0;
+                    self.waveform_has_content = false;
+                    ctx.request_repaint();
+                }
+                WaveformEvent::Paused => {
+                    self.waveform_is_playing = false;
+                    ctx.request_repaint();
+                }
+                WaveformEvent::Resumed => {
+                    self.waveform_is_playing = true;
                     ctx.request_repaint();
                 }
                 WaveformEvent::Error(msg) => {
@@ -109,10 +120,11 @@ impl eframe::App for LoopEditorApp {
         // ── Keyboard Shortcuts ──
         let is_text_focused = ctx.memory(|mem| mem.focused().is_some());
         if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            if self.waveform_is_playing {
+            if self.waveform_has_content {
+                // Audio is geladen (speelt of gepauzeerd) → toggle
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::TogglePause);
             } else if let Some(ref path) = self.waveform_state.path {
-                // FIX: Determine decode region and play start position
+                // Nog niks geladen in audio-thread → start nieuwe playback
                 let (decode_start, play_start, decode_end) = match (
                     self.waveform_state.loop_a_secs,
                     self.waveform_state.loop_b_secs,
@@ -166,6 +178,7 @@ impl eframe::App for LoopEditorApp {
                 self.waveform_play_position = new_pos;
 
                 if self.waveform_is_playing {
+                    // Alleen tijdens afspelen: stuur Play naar audio-thread
                     let (decode_start, play_start, decode_end) = match (
                         self.waveform_state.loop_a_secs,
                         self.waveform_state.loop_b_secs,
@@ -285,40 +298,29 @@ impl eframe::App for LoopEditorApp {
             let (loop_changed, seek_to) =
                 render_waveform(ui, &mut self.waveform_state, play_position);
 
-            // 🔥 FIX: If loop markers changed while playing, restart playback with new boundaries
+            // 🔥 Markers versleept tijdens playback: stuur UpdateLoopBounds
+            //    → audio-thread past bij de volgende wrap het nieuwe segment in
             if loop_changed && self.waveform_is_playing {
-                if let Some(ref path) = self.waveform_state.path {
-                    let (decode_start, play_start, decode_end) = match (
-                        self.waveform_state.loop_a_secs,
-                        self.waveform_state.loop_b_secs,
-                    ) {
-                        (Some(a), Some(b)) if b > a => {
-                            // Keep playing within the new loop, starting from current position
-                            let start = self.waveform_play_position.clamp(a, b);
-                            (a, start, b)
+                if let (Some(a), Some(b)) = (
+                    self.waveform_state.loop_a_secs,
+                    self.waveform_state.loop_b_secs,
+                ) {
+                    if b > a {
+                        let sr = self.waveform_state.sample_rate as f32;
+                        let s = (a * sr) as usize;
+                        let e = (b * sr) as usize;
+                        let e = e.min(self.waveform_state.samples.len());
+                        if s < e {
+                            let _ = self
+                                .waveform_cmd_tx
+                                .send(WaveformCommand::UpdateLoopBounds {
+                                    segment_samples: self.waveform_state.samples[s..e].to_vec(),
+                                    segment_sample_rate: self.waveform_state.sample_rate,
+                                    new_start_sec: a,
+                                    new_end_sec: b,
+                                });
                         }
-                        _ => {
-                            let start = self.waveform_play_position;
-                            (start, start, self.waveform_state.duration_secs)
-                        }
-                    };
-
-                    let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                        path: path.clone(),
-                        segment_samples: {
-                            let sr = self.waveform_state.sample_rate as f32;
-                            let s = (decode_start * sr) as usize;
-                            let e = (decode_end * sr) as usize;
-                            let e = e.min(self.waveform_state.samples.len());
-                            self.waveform_state.samples[s..e].to_vec()
-                        },
-                        segment_sample_rate: self.waveform_state.sample_rate,
-                        decode_start_sec: decode_start,
-                        decode_end_sec: decode_end,
-                        play_start_sec: play_start,
-                        pitch_semitones: self.waveform_state.pitch_semitones,
-                        tempo: self.waveform_state.tempo,
-                    });
+                    }
                 }
             }
 
