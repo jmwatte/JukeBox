@@ -12,5 +12,5 @@ crossbeam-channel = "0.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rfd = "0.14"
-
+soundtouch = "0.5.4"
 [workspace]

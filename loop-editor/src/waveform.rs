@@ -6,11 +6,48 @@ use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::Hint;
 
+/// Soort marker: bepaalt kleur en functie
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerKind {
+    Section, // Sectie (bijv. "Intro", "Chorus") — Goud
+    Measure, // Maat — Blauw
+    Beat,    // Beat — Groen
+}
+
+impl MarkerKind {
+    /// Kleur van het driehoekje
+    pub fn color(&self) -> egui::Color32 {
+        match self {
+            MarkerKind::Section => egui::Color32::from_rgb(220, 180, 50), // Goud
+            MarkerKind::Measure => egui::Color32::from_rgb(80, 160, 255), // Blauw
+            MarkerKind::Beat => egui::Color32::from_rgb(80, 220, 120),    // Groen
+        }
+    }
+
+    /// Kleur van de rand (iets donkerder)
+    pub fn stroke_color(&self) -> egui::Color32 {
+        match self {
+            MarkerKind::Section => egui::Color32::from_rgb(180, 140, 30),
+            MarkerKind::Measure => egui::Color32::from_rgb(50, 120, 200),
+            MarkerKind::Beat => egui::Color32::from_rgb(50, 170, 80),
+        }
+    }
+
+    /// Prefix voor automatisch gegenereerde naam
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            MarkerKind::Section => "S",
+            MarkerKind::Measure => "M",
+            MarkerKind::Beat => "B",
+        }
+    }
+}
 /// Een benoemde marker op een positie in de track.
 #[derive(Debug, Clone)]
 pub struct Marker {
     pub name: String,
     pub position_secs: f32,
+    pub kind: MarkerKind,
 }
 
 /// State voor de waveform-editor
@@ -258,7 +295,7 @@ pub fn render_waveform(
             marker_zone_rect.right() - 2.0,
         );
 
-        // Driehoekje
+        // Driehoekje — kleur afhankelijk van marker-type
         let tri_size = 6.0;
         let cx = px_clamped;
         let bot = marker_zone_rect.bottom();
@@ -268,17 +305,26 @@ pub fn render_waveform(
                 egui::pos2(cx - tri_size, bot - tri_size - 4.0),
                 egui::pos2(cx + tri_size, bot - tri_size - 4.0),
             ],
-            egui::Color32::from_rgb(200, 180, 60),
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(160, 140, 40)),
+            marker.kind.color(),
+            egui::Stroke::new(1.0, marker.kind.stroke_color()),
         ));
 
-        // Naam
+        // Naam — toon prefix als de naam nog de default is
+        let display_name = if marker.name.starts_with(marker.kind.prefix()) {
+            format!(
+                "{}: {}",
+                marker.kind.prefix(),
+                &marker.name[marker.kind.prefix().len() + 1..]
+            )
+        } else {
+            marker.name.clone()
+        };
         marker_painter.text(
             egui::pos2(cx, marker_zone_rect.top() + 2.0),
             egui::Align2::CENTER_TOP,
-            &marker.name,
+            &display_name,
             egui::TextStyle::Small.resolve(ui.style()),
-            egui::Color32::from_rgb(200, 200, 200),
+            marker.kind.color(),
         );
 
         // Interactie per marker
@@ -292,6 +338,7 @@ pub fn render_waveform(
         if marker_resp.clicked() {
             // Click op marker → seek naar die positie
             seek_action = Some(marker.position_secs.clamp(0.0, state.duration_secs));
+             state.playhead_frames_after_drag = 15; // ✅ FIX
         }
         if marker_resp.dragged() {
             if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
@@ -329,11 +376,27 @@ pub fn render_waveform(
     }
 
     if let Some(sec) = double_click_marker_pos {
-        // Genereer unieke marker naam
-        let base_name = format!("Marker {}", state.markers.len() + 1);
+        // Standaard: Section marker bij dubbelklik
+        // Shift+dubbelklik: Measure, Ctrl+dubbelklik: Beat
+        let kind = if mz_response.hovered() {
+            let shift = ui.ctx().input(|i| i.modifiers.shift);
+            let ctrl = ui.ctx().input(|i| i.modifiers.ctrl);
+            if shift {
+                MarkerKind::Measure
+            } else if ctrl {
+                MarkerKind::Beat
+            } else {
+                MarkerKind::Section
+            }
+        } else {
+            MarkerKind::Section
+        };
+
+        let count = state.markers.iter().filter(|m| m.kind == kind).count() + 1;
         state.markers.push(Marker {
-            name: base_name,
+            name: format!("{}{}", kind.prefix(), count),
             position_secs: sec,
+            kind,
         });
     }
 
@@ -604,9 +667,8 @@ pub fn render_waveform(
     }
 
     // Huidige positie-indicator + interactie (playhead verslepen)
-    // Tijdens drag én tot 3 frames na loslaten: toon versleepte positie.
-    // Zo krijgt de player-thread de tijd om PositionUpdate te sturen.
-    let render_pos = if state.playhead_frames_after_drag > 0 {
+    // ✅ FIX: Gebruik de muis-positie ZODRA de drag start, niet pas erna
+    let render_pos = if state.dragging_playhead || state.playhead_frames_after_drag > 0 {
         state.playhead_drag_secs.or(now_playing_position)
     } else {
         now_playing_position
@@ -656,23 +718,40 @@ pub fn render_waveform(
             ));
 
             // --- Playhead drag detectie ---
+            // --- Cursor feedback: verander muis in 'resize' als we near de playhead zijn ---
+            if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.hover_pos()) {
+                if (mouse_pos.x - pos_x).abs() < 15.0 && rect.contains(mouse_pos) {
+                    ui.output_mut(|o| o.cursor_icon = egui::CursorIcon::ResizeHorizontal);
+                }
+            }
+
+            // --- Playhead drag detectie (met een VEEL bredere, onzichtbare hitbox) ---
             if let Some(_actual_pos) = now_playing_position {
-                let strip_half = 10.0;
+                let strip_half = 20.0; // ✅ FIX: Maak de hitbox 40px breed (was 10px)!
+
                 if response.drag_started() {
                     if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                         let dx = (mouse_pos.x - pos_x).abs();
                         let dy_top = (mouse_pos.y - rect.top()).abs();
                         let dy_bot = (mouse_pos.y - rect.bottom()).abs();
+
                         let in_strip = dx <= strip_half;
                         let in_triangles =
                             dx <= tri_size && (dy_top <= tri_height || dy_bot <= tri_height);
+
+                        // Alleen starten met slepen als we BINNEN de brede hitbox zijn
                         state.dragging_playhead = in_strip || in_triangles;
+
+                        // Als we op de playhead klikken, consumeer de klik zodat de waveform niet seekt
+                        if state.dragging_playhead {
+                            //   response.consume();
+                        }
                     }
                 }
+
                 if response.drag_stopped() {
                     state.dragging_playhead = false;
                     // Blijf nog 3 frames op de versleepte positie
-                    // zodat de PositionUpdate van de player kan arriveren
                     if state.playhead_drag_secs.is_some() {
                         state.playhead_frames_after_drag = 3;
                     }
@@ -770,6 +849,7 @@ pub fn render_waveform(
         if ctrl_held && response.clicked() && !response.dragged() {
             if let Some(sec) = mouse_sec {
                 seek_action = Some(sec.clamp(0.0, state.duration_secs));
+                state.playhead_frames_after_drag = 15; // ✅ FIX: Negeer oude Position events voor ~250ms
             }
         }
     }
@@ -778,6 +858,7 @@ pub fn render_waveform(
     if response.clicked() && !response.dragged() {
         if let Some(sec) = mouse_sec {
             seek_action = Some(sec.clamp(0.0, state.duration_secs));
+            state.playhead_frames_after_drag = 15; // ✅ FIX
         }
     }
 
@@ -785,6 +866,7 @@ pub fn render_waveform(
     if response.drag_stopped() && state.dragging_playhead {
         if let Some(sec) = state.playhead_drag_secs {
             seek_action = Some(sec);
+            state.playhead_frames_after_drag = 15; // ✅ FIX: Verhoog van 3 naar 15
         }
     }
 

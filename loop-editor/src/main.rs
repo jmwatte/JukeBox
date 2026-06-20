@@ -2,6 +2,7 @@
 
 mod app;
 mod loops;
+mod shortcuts;
 mod waveform;
 mod waveform_player;
 
