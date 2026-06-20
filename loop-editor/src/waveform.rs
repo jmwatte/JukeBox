@@ -75,6 +75,8 @@ pub struct WaveformState {
     /// Tijdelijke opslag voor marker-naam tijdens bewerken
     pub editing_marker_name: String,
     pub select_drag_start: Option<f32>,
+    // ✅ NIEUW: Houdt bij of we wachten op de audio-thread na een seek
+    pub seek_pending: Option<f32>,
 }
 
 impl Default for WaveformState {
@@ -99,6 +101,7 @@ impl Default for WaveformState {
             editing_marker: None,
             editing_marker_name: String::new(),
             select_drag_start: None,
+            seek_pending: None,
         }
     }
 }
@@ -338,7 +341,7 @@ pub fn render_waveform(
         if marker_resp.clicked() {
             // Click op marker → seek naar die positie
             seek_action = Some(marker.position_secs.clamp(0.0, state.duration_secs));
-             state.playhead_frames_after_drag = 15; // ✅ FIX
+            state.playhead_frames_after_drag = 15; // ✅ FIX
         }
         if marker_resp.dragged() {
             if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
@@ -750,7 +753,7 @@ pub fn render_waveform(
                 }
 
                 if response.drag_stopped() {
-                    state.dragging_playhead = false;
+                    // state.dragging_playhead = false;
                     // Blijf nog 3 frames op de versleepte positie
                     if state.playhead_drag_secs.is_some() {
                         state.playhead_frames_after_drag = 3;
@@ -868,6 +871,7 @@ pub fn render_waveform(
             seek_action = Some(sec);
             state.playhead_frames_after_drag = 15; // ✅ FIX: Verhoog van 3 naar 15
         }
+        state.dragging_playhead = false; // ✅ FIX: Pas hier op false zetten, zodat de seek_action wel vuurt
     }
 
     // Rechterklik op waveform: wis selectie of marker

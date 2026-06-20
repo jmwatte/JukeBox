@@ -201,15 +201,25 @@ impl eframe::App for LoopEditorApp {
                 }
                 WaveformEvent::Position(pos, dur) => {
                     self.waveform_play_duration = dur;
-                    // Accepteer de positie alleen als we NIET aan het slepen zijn,
-                    // EN als de 'na-sleep' teller op 0 staat.
-                    // Zolang playhead_frames_after_drag > 0 is, negeren we de audio-thread
-                    // zodat hij onze nieuwe seek-positie niet kan overschrijven met oude data.
-                    if !self.waveform_state.dragging_playhead
-                        && self.waveform_state.playhead_frames_after_drag == 0
+
+                    // ✅ Check of de audio-thread de seek heeft voltooid
+                    if let Some(target) = self.waveform_state.seek_pending {
+                        // Als de audio-thread binnen 50ms (0.05s) van de target positie is,
+                        // beschouwen we de seek als geslaagd.
+                        if (pos - target).abs() < 0.05 {
+                            self.waveform_state.seek_pending = None;
+                        }
+                    }
+
+                    // ✅ Accepteer de positie ALLEEN als:
+                    // 1. Er geen seek pending is (de audio is gearriveerd)
+                    // 2. We niet aan het slepen zijn
+                    if self.waveform_state.seek_pending.is_none()
+                        && !self.waveform_state.dragging_playhead
                     {
                         self.waveform_play_position = pos;
                     }
+
                     ctx.request_repaint();
                 }
                 WaveformEvent::LoopLimitReached => {
@@ -467,6 +477,7 @@ impl eframe::App for LoopEditorApp {
                     let new_pos = (self.waveform_play_position + delta)
                         .clamp(0.0, self.waveform_state.duration_secs);
                     self.waveform_play_position = new_pos;
+                    self.waveform_state.seek_pending = Some(new_pos); // ✅ NIEUW: Markeer als pending
 
                     if self.waveform_has_content {
                         let _ = self
@@ -641,7 +652,7 @@ impl eframe::App for LoopEditorApp {
             // Click of drag-release: update playhead position, seek audio-thread if playing
             if let Some(seek_pos) = seek_to {
                 self.waveform_play_position = seek_pos;
-
+                self.waveform_state.seek_pending = Some(seek_pos); // ✅ NIEUW: Markeer als pending
                 if self.waveform_has_content {
                     let _ = self
                         .waveform_cmd_tx
