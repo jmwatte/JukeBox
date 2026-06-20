@@ -93,6 +93,23 @@ pub fn start_waveform_thread() -> (Sender<WaveformCommand>, Receiver<WaveformEve
     (cmd_tx, event_rx)
 }
 
+/// Gecombineerde pitch-resample en tempo-resample stap.
+/// `step` is hoeveel samples er in de bron worden opgeschoven per
+/// pitch-shifted sample. Alleen `pitch_factor` bepaalt dit.
+/// De tempo-correctie gebeurt in een tweede resample-stap.
+fn lerp(raw: &[f32], pos: f64) -> f32 {
+    let len = raw.len();
+    if len == 0 {
+        return 0.0;
+    }
+    let floor = (pos.floor() as usize).min(len.saturating_sub(1));
+    let next = (floor + 1).min(len.saturating_sub(1));
+    let frac = pos - pos.floor();
+    let s0 = raw[floor] as f64;
+    let s1 = raw[next] as f64;
+    (s0 + (s1 - s0) * frac) as f32
+}
+
 // ---------------------------------------------------------------------------
 // Interne audio-loop — lock-free shared state via atomics
 // ---------------------------------------------------------------------------
@@ -325,23 +342,34 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 }
 
 // ---------------------------------------------------------------------------
-// RealTimePitchTempoSource — lock-free via AtomicU32/AtomicU64 voor pitch/tempo/pos
+// RealTimePitchTempoSource — two-stage DSP: pitch resample → tempo resample
 // ---------------------------------------------------------------------------
 
-/// Aantal samples per interne chunk.
+/// Aantal samples per output chunk.
 const CHUNK_SIZE: usize = 512;
 
+/// Verwerkt audio in twee onafhankelijke fasen:
+/// 1. **Pitch-shift** (resample): leest uit `samples` met stap `pitch_factor`.
+///    Alleen `pitch_factor` bepaalt de leessnelheid → de toonhoogte verandert.
+/// 2. **Tempo** (resample): leest uit de pitch-buffer met stap `1/(tempo*pitch_factor)`.
+///    Hierdoor wordt de duur gecorrigeerd zonder de toonhoogte opnieuw te beïnvloeden.
+///
+/// Resultaat: `pitch` en `tempo` zijn volledig onafhankelijk.
 struct RealTimePitchTempoSource {
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
-    /// Lock-free: f32 gecodeerd als AtomicU32.
     pitch_semitones: Arc<AtomicU32>,
-    /// Lock-free: f32 gecodeerd als AtomicU32.
     tempo: Arc<AtomicU32>,
     loop_bounds: Arc<Mutex<LoopBounds>>,
-    /// Lock-free: f64 gecodeerd als AtomicU64.
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
+
+    // Fase 1 — pitch-shift
+    src_pos: f64,          // leespositie in ruwe samples (alleen pitch-factor)
+    pitch_buf: Vec<f32>,   // tussenbuffer pitch-verschoven audio
+    pitch_consumed: usize, // aantal al-verbruikte pitch samples
+
+    // Fase 2 — output
     buf: Vec<f32>,
     buf_idx: usize,
 }
@@ -356,6 +384,7 @@ impl RealTimePitchTempoSource {
         source_pos: Arc<AtomicU64>,
         wrap_count: Arc<AtomicU32>,
     ) -> Self {
+        let start = f64::from_bits(source_pos.load(Ordering::Relaxed));
         Self {
             samples,
             sample_rate,
@@ -364,44 +393,53 @@ impl RealTimePitchTempoSource {
             loop_bounds,
             source_pos,
             wrap_count,
+            src_pos: start,
+            pitch_buf: Vec::new(),
+            pitch_consumed: 0,
             buf: Vec::new(),
             buf_idx: 0,
         }
     }
 
-    /// Vult de interne buffer met `CHUNK_SIZE` verwerkte samples.
-    /// Pitch, tempo en source_pos worden lock-free uitgelezen (`Ordering::Relaxed`).
     fn refill_buffer(&mut self) {
         let guard = self.samples.lock().unwrap();
         let raw = &*guard;
-
         if raw.is_empty() {
             self.buf.clear();
             return;
         }
 
         let total_len = raw.len();
-
-        // Lock-free reads (atomic, Ordering::Relaxed — exactheid is niet kritisch)
         let pitch_bits = self.pitch_semitones.load(Ordering::Relaxed);
         let tempo_bits = self.tempo.load(Ordering::Relaxed);
         let pitch = f32::from_bits(pitch_bits);
         let t = f32::from_bits(tempo_bits);
-        let pitch_factor = f32::powf(2.0, pitch / 12.0);
-        let step = (pitch_factor * t) as f64;
+        let pitch_factor = f32::powf(2.0, pitch / 12.0) as f64;
+        let tempo = t as f64;
 
         let bounds = *self.loop_bounds.lock().unwrap();
         let looping = bounds.enabled();
 
         self.buf.clear();
-        let mut pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
 
-        for _ in 0..CHUNK_SIZE {
+        // ── Opruimen verbruikte pitch samples ──
+        if self.pitch_consumed > 0 {
+            self.pitch_buf.drain(0..self.pitch_consumed);
+            self.pitch_consumed = 0;
+        }
+
+        // ── Fase 1: Pitch-shift (resample uit `raw` met stap pitch_factor) ──
+        // We hebben pitch_samples nodig voor CHUNK_SIZE output samples.
+        // Per output sample verbruiken we 1/(tempo*pitch_factor) pitch samples.
+        let needed = (CHUNK_SIZE as f64 / (tempo * pitch_factor)).ceil() as usize + 8;
+        while self.pitch_buf.len() < needed {
+            let mut pos = self.src_pos;
+
+            // Looping
             if looping && pos as usize >= bounds.b {
                 pos = bounds.a as f64;
                 self.wrap_count.fetch_add(1, Ordering::Relaxed);
             }
-
             if pos as usize >= total_len {
                 if looping {
                     pos = bounds.a as f64;
@@ -411,20 +449,37 @@ impl RealTimePitchTempoSource {
                 }
             }
 
-            let floor = pos.floor() as usize;
-            let frac = pos - floor as f64;
-            let next_idx = (floor + 1).min(total_len - 1);
+            // Her-initialiseer src_pos als deze gewrapt heeft
+            self.src_pos = pos;
 
-            let s0 = raw[floor] as f64;
-            let s1 = raw[next_idx] as f64;
-            let sample = s0 + (s1 - s0) * frac;
-
-            self.buf.push(sample as f32);
-            pos += step;
+            let sample = lerp(raw, self.src_pos);
+            self.pitch_buf.push(sample);
+            self.src_pos += pitch_factor;
         }
 
-        // Lock-free write
-        self.source_pos.store(f64::to_bits(pos), Ordering::Relaxed);
+        // ── Fase 2: Tempo-correctie (resample uit pitch_buf) ──
+        // tempo_step = 1 / (tempo * pitch_factor)
+        // Dit compenseert de tempo-verandering uit de pitch-shift EN past gewenste tempo toe.
+        let tempo_step = 1.0 / (tempo * pitch_factor);
+        let mut tpos = 0.0_f64;
+        for _ in 0..CHUNK_SIZE {
+            let idx = tpos as usize;
+            if idx >= self.pitch_buf.len() {
+                break;
+            }
+            let frac = tpos - idx as f64;
+            let next = (idx + 1).min(self.pitch_buf.len() - 1);
+            let s0 = self.pitch_buf[idx] as f64;
+            let s1 = self.pitch_buf[next] as f64;
+            self.buf.push((s0 + (s1 - s0) * frac) as f32);
+            tpos += tempo_step;
+        }
+
+        self.pitch_consumed = (tpos.ceil() as usize).min(self.pitch_buf.len());
+
+        // Lock-free write: de UI-thread leest `source_pos` voor de playhead
+        self.source_pos
+            .store(f64::to_bits(self.src_pos), Ordering::Relaxed);
         self.buf_idx = 0;
     }
 }
