@@ -1,0 +1,26 @@
+[
+  {
+    "track_path": "E:\\music\\Sonny Boy Williamson I\\2005 - Sonny Boy Williamson Vol. 2 (1938-1939)\\1.06 - You've Been Foolin' Round Town.flac",
+    "label": "1.06 - You've Been Foolin' Round Town - Loop 1",
+    "loop_a_secs": 2.8800013,
+    "loop_b_secs": 5.440001,
+    "pitch_semitones": 0.0,
+    "tempo": 1.0
+  },
+  {
+    "track_path": "E:\\music\\Sonny Boy Williamson I\\2005 - Sonny Boy Williamson Vol. 2 (1938-1939)\\1.06 - You've Been Foolin' Round Town.flac",
+    "label": "1.06 - You've Been Foolin' Round Town - Loop 3",
+    "loop_a_secs": 6.9,
+    "loop_b_secs": 9.460003,
+    "pitch_semitones": 0.0,
+    "tempo": 1.0
+  },
+  {
+    "track_path": "E:\\music\\Sonny Boy Williamson I\\2005 - Sonny Boy Williamson Vol. 2 (1938-1939)\\1.06 - You've Been Foolin' Round Town.flac",
+    "label": "1.06 - You've Been Foolin' Round Town - Loop 3",
+    "loop_a_secs": 6.9,
+    "loop_b_secs": 13.0,
+    "pitch_semitones": 0.0,
+    "tempo": 1.0
+  }
+]

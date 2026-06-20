@@ -1,0 +1,106 @@
+{
+  "bindings": {
+    "stop": {
+      "key": "escape",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "seek_forward": {
+      "key": "arrow_right",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "set_loop_a": {
+      "key": "open_bracket",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "set_loop_b": {
+      "key": "close_bracket",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "open_file": {
+      "key": "o",
+      "ctrl": true,
+      "shift": false,
+      "alt": false
+    },
+    "add_beat_marker": {
+      "key": "b",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "play_pause": {
+      "key": "space",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "add_section_marker": {
+      "key": "s",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "clear_loop": {
+      "key": "backspace",
+      "ctrl": true,
+      "shift": false,
+      "alt": false
+    },
+    "delete_nearest_marker": {
+      "key": "backspace",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "toggle_loop_bypass": {
+      "key": "b",
+      "ctrl": true,
+      "shift": false,
+      "alt": false
+    },
+    "zoom_out": {
+      "key": "num0",
+      "ctrl": true,
+      "shift": true,
+      "alt": false
+    },
+    "add_measure_marker": {
+      "key": "m",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "show_shortcuts": {
+      "key": "f1",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    },
+    "reset_zoom": {
+      "key": "r",
+      "ctrl": true,
+      "shift": false,
+      "alt": false
+    },
+    "zoom_in": {
+      "key": "num0",
+      "ctrl": true,
+      "shift": false,
+      "alt": false
+    },
+    "seek_backward": {
+      "key": "arrow_left",
+      "ctrl": false,
+      "shift": false,
+      "alt": false
+    }
+  }
+}
