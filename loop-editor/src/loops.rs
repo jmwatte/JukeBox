@@ -8,8 +8,16 @@ pub struct SavedLoop {
     pub label: String,
     pub loop_a_secs: f32,
     pub loop_b_secs: f32,
+    /// Aantal halve tonen pitch-shift. Mist in oudere JSON → default 0.0.
+    #[serde(default)]
     pub pitch_semitones: f32,
+    /// Tempo-factor. Mist in oudere JSON → default 1.0.
+    #[serde(default = "default_tempo")]
     pub tempo: f32,
+}
+
+fn default_tempo() -> f32 {
+    1.0
 }
 
 const LOOPS_FILE: &str = "loops.json";

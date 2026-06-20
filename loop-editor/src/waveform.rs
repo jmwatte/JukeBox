@@ -68,8 +68,22 @@ impl Default for WaveformState {
 
 /// Decodeer een audiobestand naar mono PCM samples (f32).
 /// Geeft (samples, sample_rate, duration_secs) terug.
+///
+/// ## Geheugenbescherming
+/// Bestanden groter dan 100 MB worden beperkt tot de eerste 5 minuten audio.
 pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
     let path_obj = Path::new(path);
+
+    // 0. Controleer bestandsgrootte vóór decoderen
+    let file_len = std::fs::metadata(&path_obj).map(|m| m.len()).unwrap_or(0);
+    let _large_file_warning = if file_len > 100_000_000 {
+        Some(format!(
+            "⚠ Bestand is {:.1} MB > 100 MB. Alleen eerste 5 min. gedecodeerd.",
+            file_len as f64 / 1_000_000.0
+        ))
+    } else {
+        None
+    };
 
     // 1. Open bestand
     let file = File::open(&path_obj).map_err(|e| format!("Kan bestand niet openen: {}", e))?;
@@ -111,7 +125,26 @@ pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
 
     let sample_rate = codec_params.sample_rate.unwrap_or(44100);
 
-    // 7. Decodeer packets naar samples
+    // 7. Bepaal maximum aantal samples (5 minuten limiet voor grote bestanden)
+    let max_samples = if file_len > 100_000_000 {
+        let five_min_samples = 5 * 60 * sample_rate as usize;
+        // Alleen limiteren als het bestand echt groot is
+        let estimated_total = (file_len / 2) as usize; // ruwe schatting: ~2 bytes per sample
+        if estimated_total > five_min_samples {
+            eprintln!(
+                "[waveform] {} > 100MB, decodeert max {} samples (5 min)",
+                path_obj.display(),
+                five_min_samples
+            );
+            five_min_samples
+        } else {
+            usize::MAX
+        }
+    } else {
+        usize::MAX
+    };
+
+    // 8. Decodeer packets naar samples
     let mut samples: Vec<f32> = Vec::new();
 
     loop {
@@ -148,6 +181,9 @@ pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
 
                 // Mix naar mono: gemiddelde van kanalen
                 for frame in 0..num_frames {
+                    if samples.len() >= max_samples {
+                        break;
+                    }
                     let mut frame_sum = 0.0_f32;
                     for ch in 0..num_channels {
                         let idx = frame * num_channels + ch;
@@ -156,6 +192,9 @@ pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
                         }
                     }
                     samples.push(frame_sum / num_channels as f32);
+                }
+                if samples.len() >= max_samples {
+                    break;
                 }
             }
             Err(symphonia::core::errors::Error::DecodeError(_)) => {
@@ -181,7 +220,7 @@ pub fn render_waveform(
 ) -> (bool, Option<f32>) {
     // ── Marker zone (30px boven de waveform) ──
     let marker_zone_height = 30.0;
-    let (marker_zone_rect, _) = ui.allocate_exact_size(
+    let (marker_zone_rect, mz_response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width().max(100.0), marker_zone_height),
         egui::Sense::click(),
     );
@@ -279,23 +318,13 @@ pub fn render_waveform(
     }
 
     // Dubbelklik in lege marker zone → nieuwe marker
-    let marker_zone_clicked = marker_zone_rect.contains(
-        ui.ctx()
-            .input(|i| i.pointer.interact_pos())
-            .unwrap_or(egui::pos2(-1.0, -1.0)),
-    );
-    if marker_zone_clicked {
-        let mz_resp = ui.interact(
-            marker_zone_rect,
-            ui.id().with("marker_zone_bg"),
-            egui::Sense::click(),
-        );
-        if mz_resp.double_clicked() {
-            if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                let sec = ((pos.x - marker_zone_rect.left()) / state.zoom + marker_start_sec)
-                    .clamp(0.0, state.duration_secs);
-                double_click_marker_pos = Some(sec);
-            }
+    // Gebruik de response van `allocate_exact_size` zodat de interactie correct is afgestemd
+    // op de exacte rect waarin de marker zone is getekend.
+    if mz_response.double_clicked() {
+        if let Some(pos) = mz_response.interact_pointer_pos() {
+            let sec = ((pos.x - marker_zone_rect.left()) / state.zoom + marker_start_sec)
+                .clamp(0.0, state.duration_secs);
+            double_click_marker_pos = Some(sec);
         }
     }
 
@@ -674,17 +703,19 @@ pub fn render_waveform(
         }
     }
 
-    // ── Klik+versleep op waveform: selectie (A-B) maken ──
-    // Alleen als we niet op de playhead of loop-regio slepen
+    // ── Ctrl+klik+versleep op waveform: selectie (A-B) maken ──
+    // Alleen als Ctrl ingedrukt is en we niet op de playhead of loop-regio slepen
     if !state.dragging_playhead && !state.dragging_loop_region {
-        if response.drag_started() {
+        let ctrl_held = ui.ctx().input(|i| i.modifiers.ctrl);
+
+        if ctrl_held && response.drag_started() {
             if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                 let sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
                 state.select_drag_start = Some(sec.clamp(0.0, state.duration_secs));
             }
         }
 
-        if response.dragged() && state.select_drag_start.is_some() {
+        if ctrl_held && response.dragged() && state.select_drag_start.is_some() {
             if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                 let current_sec = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
                     .clamp(0.0, state.duration_secs);
@@ -711,7 +742,7 @@ pub fn render_waveform(
             }
         }
 
-        if response.drag_stopped() {
+        if ctrl_held && response.drag_stopped() {
             if let Some(start) = state.select_drag_start.take() {
                 if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                     let end = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
@@ -728,10 +759,17 @@ pub fn render_waveform(
                         loop_changed = true;
                         seek_action = Some(a); // spring naar begin selectie
                     } else {
-                        // Minimale drag → telt als klik → seek
+                        // Minimale Ctrl+drag → telt als klik → seek
                         seek_action = Some(end.clamp(0.0, state.duration_secs));
                     }
                 }
+            }
+        }
+
+        // Ctrl+klik (zonder drag) op lege ruimte → seek alleen
+        if ctrl_held && response.clicked() && !response.dragged() {
+            if let Some(sec) = mouse_sec {
+                seek_action = Some(sec.clamp(0.0, state.duration_secs));
             }
         }
     }

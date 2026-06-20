@@ -4,6 +4,7 @@ use crate::waveform_player::{start_waveform_thread, WaveformCommand, WaveformEve
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, RichText};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 pub struct LoopEditorApp {
     // Waveform state
@@ -22,6 +23,10 @@ pub struct LoopEditorApp {
     // File path input
     pub file_path: String,
     pub status_message: String,
+    pub status_message_timer: u32,
+
+    // Help / shortcuts
+    pub show_shortcuts: bool,
 }
 
 impl LoopEditorApp {
@@ -41,10 +46,21 @@ impl LoopEditorApp {
             show_loop_library: false,
             file_path: String::new(),
             status_message: String::new(),
+            status_message_timer: 0,
+            show_shortcuts: false,
         }
     }
 
     pub fn load_file(&mut self, path: &str) {
+        // Stop huidige playback als er een ander bestand wordt geladen
+        if self.waveform_state.path.as_deref() != Some(path) {
+            if self.waveform_is_playing {
+                let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+                self.waveform_is_playing = false;
+            }
+            self.waveform_has_content = false;
+        }
+
         match crate::waveform::decode_audio(path) {
             Ok((samples, sample_rate, duration_secs)) => {
                 self.waveform_state.path = Some(path.to_string());
@@ -67,10 +83,12 @@ impl LoopEditorApp {
                     duration_secs,
                     sample_rate,
                 );
+                self.status_message_timer = 5 * 60; // ~5 sec
             }
             Err(e) => {
                 self.waveform_state.error = Some(e.clone());
                 self.status_message = format!("Fout bij laden: {}", e);
+                self.status_message_timer = 10 * 60; // ~10 sec
             }
         }
     }
@@ -112,6 +130,14 @@ impl eframe::App for LoopEditorApp {
             }
         }
 
+        // Verval statusmelding na 5 seconden
+        if self.status_message_timer > 0 {
+            self.status_message_timer -= 1;
+            if self.status_message_timer == 0 {
+                self.status_message.clear();
+            }
+        }
+
         // 🔥 CRITICAL: Force continuous repaints while playing so the playhead moves smoothly
         if self.waveform_is_playing {
             ctx.request_repaint_after(std::time::Duration::from_millis(16));
@@ -119,11 +145,14 @@ impl eframe::App for LoopEditorApp {
 
         // ── Keyboard Shortcuts ──
         let is_text_focused = ctx.memory(|mem| mem.focused().is_some());
+        if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+            self.show_shortcuts = !self.show_shortcuts;
+        }
         if !is_text_focused && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             if self.waveform_has_content {
                 // Audio is geladen (speelt of gepauzeerd) → toggle
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::TogglePause);
-            } else if let Some(ref path) = self.waveform_state.path {
+            } else if let Some(ref _path) = self.waveform_state.path {
                 // Nog niks geladen in audio-thread → start nieuwe playback
                 let (decode_start, play_start, decode_end) = match (
                     self.waveform_state.loop_a_secs,
@@ -141,21 +170,21 @@ impl eframe::App for LoopEditorApp {
                     }
                 };
 
+                let sr = self.waveform_state.sample_rate as f32;
+                let s = (decode_start * sr) as usize;
+                let e = (decode_end * sr) as usize;
+                let e = e.min(self.waveform_state.samples.len());
+                let seg = self.waveform_state.samples[s..e].to_vec();
+                let start_sample = ((play_start - decode_start) * sr) as usize;
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                    path: path.clone(),
-                    segment_samples: {
-                        let sr = self.waveform_state.sample_rate as f32;
-                        let s = (decode_start * sr) as usize;
-                        let e = (decode_end * sr) as usize;
-                        let e = e.min(self.waveform_state.samples.len());
-                        self.waveform_state.samples[s..e].to_vec()
-                    },
-                    segment_sample_rate: self.waveform_state.sample_rate,
-                    decode_start_sec: decode_start,
-                    decode_end_sec: decode_end,
-                    play_start_sec: play_start,
-                    pitch_semitones: self.waveform_state.pitch_semitones,
-                    tempo: self.waveform_state.tempo,
+                    samples: Arc::new(Mutex::new(seg)),
+                    sample_rate: self.waveform_state.sample_rate,
+                    start_sample,
+                    segment_start_sec: decode_start,
+                    a_sample: 0,
+                    b_sample: (e - s),
+                    pitch_semitones: Arc::new(Mutex::new(self.waveform_state.pitch_semitones)),
+                    tempo: Arc::new(Mutex::new(self.waveform_state.tempo)),
                 });
 
                 self.waveform_is_playing = true;
@@ -178,32 +207,9 @@ impl eframe::App for LoopEditorApp {
                 self.waveform_play_position = new_pos;
 
                 if self.waveform_is_playing {
-                    // Alleen tijdens afspelen: stuur Play naar audio-thread
-                    let (decode_start, play_start, decode_end) = match (
-                        self.waveform_state.loop_a_secs,
-                        self.waveform_state.loop_b_secs,
-                    ) {
-                        (Some(a), Some(b)) if b > a => (a, new_pos.clamp(a, b), b),
-                        _ => (new_pos, new_pos, self.waveform_state.duration_secs),
-                    };
-                    if let Some(ref path) = self.waveform_state.path {
-                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                            path: path.clone(),
-                            segment_samples: {
-                                let sr = self.waveform_state.sample_rate as f32;
-                                let s = (decode_start * sr) as usize;
-                                let e = (decode_end * sr) as usize;
-                                let e = e.min(self.waveform_state.samples.len());
-                                self.waveform_state.samples[s..e].to_vec()
-                            },
-                            segment_sample_rate: self.waveform_state.sample_rate,
-                            decode_start_sec: decode_start,
-                            decode_end_sec: decode_end,
-                            play_start_sec: play_start,
-                            pitch_semitones: self.waveform_state.pitch_semitones,
-                            tempo: self.waveform_state.tempo,
-                        });
-                    }
+                    let _ = self
+                        .waveform_cmd_tx
+                        .send(WaveformCommand::Seek { pos_secs: new_pos });
                 }
             }
         }
@@ -275,6 +281,34 @@ impl eframe::App for LoopEditorApp {
             ui.add_space(4.0);
         });
 
+        // ── Shortcuts help overlay ──
+        if self.show_shortcuts {
+            egui::Window::new("⌨ Toetsenbord Shortcuts")
+                .id(egui::Id::new("shortcuts_window"))
+                .resizable(false)
+                .default_pos([200.0, 150.0])
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        shortcut_row(ui, "F1", "Toon/verberg deze help");
+                        ui.separator();
+                        shortcut_row(ui, "Space", "Play / Pauze");
+                        shortcut_row(ui, "← / →", "2 sec terug / vooruit");
+                        shortcut_row(ui, "Ctrl+Sleep", "A-B selectie maken");
+                        shortcut_row(ui, "Dubbelklik", "Zet A-marker");
+                        shortcut_row(ui, "Shift+Dubbelklik", "Zet B-marker");
+                        shortcut_row(ui, "Rechterklik", "Wis A-B selectie");
+                        shortcut_row(ui, "Scroll", "Zoom in/uit");
+                        shortcut_row(ui, "Sleep (geen Ctrl)", "Horizontaal scrollen");
+                        ui.separator();
+                        ui.label(
+                            RichText::new("Druk op F1 om te sluiten")
+                                .size(11.0)
+                                .color(Color32::GRAY),
+                        );
+                    });
+                });
+        }
+
         // ── Hoofdpaneel ──
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.separator();
@@ -298,66 +332,30 @@ impl eframe::App for LoopEditorApp {
             let (loop_changed, seek_to) =
                 render_waveform(ui, &mut self.waveform_state, play_position);
 
-            // 🔥 Markers versleept tijdens playback: stuur UpdateLoopBounds
-            //    → audio-thread past bij de volgende wrap het nieuwe segment in
+            // 🔥 Loop-grenzen tijdens playback: stuur SetLoopBounds
+            //    → audio-thread past ze direct toe zonder de source te herstarten
             if loop_changed && self.waveform_is_playing {
                 if let (Some(a), Some(b)) = (
                     self.waveform_state.loop_a_secs,
                     self.waveform_state.loop_b_secs,
                 ) {
                     if b > a {
-                        let sr = self.waveform_state.sample_rate as f32;
-                        let s = (a * sr) as usize;
-                        let e = (b * sr) as usize;
-                        let e = e.min(self.waveform_state.samples.len());
-                        if s < e {
-                            let _ = self
-                                .waveform_cmd_tx
-                                .send(WaveformCommand::UpdateLoopBounds {
-                                    segment_samples: self.waveform_state.samples[s..e].to_vec(),
-                                    segment_sample_rate: self.waveform_state.sample_rate,
-                                    new_start_sec: a,
-                                    new_end_sec: b,
-                                });
-                        }
+                        let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                            a_secs: a,
+                            b_secs: b,
+                        });
                     }
                 }
             }
 
-            // Click of drag-release: update playhead position and optionally restart playback
-            // ✅ THE FIXED CODE
-            // Click of drag-release: update playhead position and optionally restart playback
+            // Click of drag-release: update playhead position, seek audio-thread if playing
             if let Some(seek_pos) = seek_to {
-                // 🔥 CRITICAL FIX: Always update the UI playhead position, even if not playing!
                 self.waveform_play_position = seek_pos;
 
-                // If currently playing, send command to audio thread to restart from new position
                 if self.waveform_is_playing {
-                    let (decode_start, play_start, decode_end) = match (
-                        self.waveform_state.loop_a_secs,
-                        self.waveform_state.loop_b_secs,
-                    ) {
-                        (Some(a), Some(b)) if b > a => (a, seek_pos.clamp(a, b), b),
-                        _ => (seek_pos, seek_pos, self.waveform_state.duration_secs),
-                    };
-                    if let Some(ref path) = self.waveform_state.path {
-                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                            path: path.clone(),
-                            segment_samples: {
-                                let sr = self.waveform_state.sample_rate as f32;
-                                let s = (decode_start * sr) as usize;
-                                let e = (decode_end * sr) as usize;
-                                let e = e.min(self.waveform_state.samples.len());
-                                self.waveform_state.samples[s..e].to_vec()
-                            },
-                            segment_sample_rate: self.waveform_state.sample_rate,
-                            decode_start_sec: decode_start,
-                            decode_end_sec: decode_end,
-                            play_start_sec: play_start,
-                            pitch_semitones: self.waveform_state.pitch_semitones,
-                            tempo: self.waveform_state.tempo,
-                        });
-                    }
+                    let _ = self
+                        .waveform_cmd_tx
+                        .send(WaveformCommand::Seek { pos_secs: seek_pos });
                 }
             }
 
@@ -458,23 +456,24 @@ impl eframe::App for LoopEditorApp {
                             if ui.button("⏹ Stop").clicked() {
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
                             }
-                        } else if ui.button("▶ Play Loop (rubato)").clicked() {
-                            if let Some(ref path) = self.waveform_state.path {
+                        } else if ui.button("▶ Play Loop").clicked() {
+                            if let Some(ref _path) = self.waveform_state.path {
+                                let sr = self.waveform_state.sample_rate as f32;
+                                let s = (a * sr) as usize;
+                                let e = (b * sr) as usize;
+                                let e = e.min(self.waveform_state.samples.len());
+                                let seg = self.waveform_state.samples[s..e].to_vec();
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                                    path: path.clone(),
-                                    segment_samples: {
-                                        let sr = self.waveform_state.sample_rate as f32;
-                                        let s = (a * sr) as usize;
-                                        let e = (b * sr) as usize;
-                                        let e = e.min(self.waveform_state.samples.len());
-                                        self.waveform_state.samples[s..e].to_vec()
-                                    },
-                                    segment_sample_rate: self.waveform_state.sample_rate,
-                                    decode_start_sec: a,
-                                    decode_end_sec: b,
-                                    play_start_sec: a,
-                                    pitch_semitones: self.waveform_state.pitch_semitones,
-                                    tempo: self.waveform_state.tempo,
+                                    samples: Arc::new(Mutex::new(seg)),
+                                    sample_rate: self.waveform_state.sample_rate,
+                                    start_sample: 0,
+                                    segment_start_sec: a,
+                                    a_sample: 0,
+                                    b_sample: (e - s),
+                                    pitch_semitones: Arc::new(Mutex::new(
+                                        self.waveform_state.pitch_semitones,
+                                    )),
+                                    tempo: Arc::new(Mutex::new(self.waveform_state.tempo)),
                                 });
                             }
                         }
@@ -587,18 +586,68 @@ impl eframe::App for LoopEditorApp {
 
                         if let Some(idx) = load_loop {
                             let saved = self.saved_loops[idx].clone();
-                            // Laad de track als deze nog niet geladen is
-                            if self.waveform_state.path.as_deref() != Some(&saved.track_path) {
+                            let track_changed = self.waveform_state.path.as_deref()
+                                != Some(&saved.track_path);
+
+                            if track_changed {
+                                // Track wijzigt → stop huidige playback en laad nieuwe track
+                                if self.waveform_is_playing {
+                                    let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+                                    self.waveform_is_playing = false;
+                                }
                                 self.load_file(&saved.track_path);
+                                self.waveform_has_content = false;
                             }
+
+                            // Update de UI-state
                             self.waveform_state.loop_a_secs = Some(saved.loop_a_secs);
                             self.waveform_state.loop_b_secs = Some(saved.loop_b_secs);
                             self.waveform_state.pitch_semitones = saved.pitch_semitones;
                             self.waveform_state.tempo = saved.tempo;
+                            self.waveform_play_position = saved.loop_a_secs;
+
+                            // Als er al wordt afgespeeld: stuur real-time updates naar audio-thread
+                            if self.waveform_is_playing {
+                                let _ = self
+                                    .waveform_cmd_tx
+                                    .send(WaveformCommand::SetPitch(saved.pitch_semitones));
+                                let _ = self
+                                    .waveform_cmd_tx
+                                    .send(WaveformCommand::SetTempo(saved.tempo));
+                                let _ = self
+                                    .waveform_cmd_tx
+                                    .send(WaveformCommand::SetLoopBounds {
+                                        a_secs: saved.loop_a_secs,
+                                        b_secs: saved.loop_b_secs,
+                                    });
+                                let _ = self
+                                    .waveform_cmd_tx
+                                    .send(WaveformCommand::Seek {
+                                        pos_secs: saved.loop_a_secs,
+                                    });
+                            }
+
                             self.status_message = format!("Loop '{}' geladen", saved.label);
                         }
                     }
                 });
         }
     }
+}
+
+/// Helper om een shortcut-key/uitleg regel te tekenen.
+fn shortcut_row(ui: &mut egui::Ui, key: &str, description: &str) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(key)
+                .size(14.0)
+                .strong()
+                .color(Color32::from_rgb(200, 200, 60)),
+        );
+        ui.label(
+            RichText::new(description)
+                .size(13.0)
+                .color(Color32::LIGHT_GRAY),
+        );
+    });
 }

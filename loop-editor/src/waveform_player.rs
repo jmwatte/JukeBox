@@ -1,8 +1,5 @@
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
-};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -12,23 +9,33 @@ use std::time::Duration;
 
 pub enum WaveformCommand {
     Play {
-        path: String,
-        segment_samples: Vec<f32>, // Pre-decoded PCM samples (mono)
-        segment_sample_rate: u32,
-        decode_start_sec: f32,
-        decode_end_sec: f32,
-        play_start_sec: f32,
-        pitch_semitones: f32,
-        tempo: f32,
+        samples: Arc<Mutex<Vec<f32>>>,
+        sample_rate: u32,
+        start_sample: usize,
+        segment_start_sec: f32,
+        a_sample: usize,
+        b_sample: usize,
+        pitch_semitones: Arc<Mutex<f32>>,
+        tempo: Arc<Mutex<f32>>,
     },
     Stop,
+    /// Pauzeer de sink (rodio::Sink::pause). De source `next()` wordt niet aangeroepen,
+    /// dus de interne `pos` blijft staan.
+    #[allow(dead_code)]
+    Pause,
+    /// Hervat na pauze.
+    #[allow(dead_code)]
+    Resume,
     TogglePause,
-    /// Nieuwe loop-grenzen + samples. Wordt toegepast bij de volgende B→A wrap.
-    UpdateLoopBounds {
-        segment_samples: Vec<f32>,
-        segment_sample_rate: u32,
-        new_start_sec: f32,
-        new_end_sec: f32,
+    /// Update de loop-grenzen zonder de source te herstarten.
+    /// a_secs en b_secs zijn absolute posities in de track.
+    SetLoopBounds {
+        a_secs: f32,
+        b_secs: f32,
+    },
+    /// Verplaats de playhead naar een absolute positie in de track.
+    Seek {
+        pos_secs: f32,
     },
     SetPitch(f32),
     SetTempo(f32),
@@ -49,6 +56,22 @@ pub enum WaveformEvent {
 }
 
 // ---------------------------------------------------------------------------
+// Gedeelde loop-grenzen
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy)]
+pub struct LoopBounds {
+    pub a: usize,
+    pub b: usize,
+}
+
+impl LoopBounds {
+    pub fn enabled(&self) -> bool {
+        self.b > self.a
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Start de thread. Geeft (cmd_tx, event_rx).
 // ---------------------------------------------------------------------------
 
@@ -64,25 +87,24 @@ pub fn start_waveform_thread() -> (Sender<WaveformCommand>, Receiver<WaveformEve
 }
 
 // ---------------------------------------------------------------------------
-// Interne audio-loop
+// Interne audio-loop — geen apply_rubato, geen restart_playback
 // ---------------------------------------------------------------------------
 
 fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEvent>) {
     let mut _stream: Option<OutputStream> = None;
     let mut sink: Option<Sink> = None;
-    let mut _current_path: Option<String> = None;
-    let mut _current_start: f32 = 0.0;
-    let mut _current_end: f32 = 0.0;
-    let mut current_pitch: f32 = 0.0;
-    let mut current_tempo: f32 = 1.0;
-    let mut current_duration: f32 = 0.0;
     let mut is_playing = false;
     let mut is_paused = false;
-    let mut cached_raw: Option<(Vec<f32>, u32, f32)> = None;
-    // Pending restart: wordt uitgevoerd bij de volgende wrap (B → A)
-    let mut pending_restart: Option<(Vec<f32>, u32, f32, f32)> = None;
-    // Houdt bij hoeveel wraps er zijn geweest om wraps te detecteren
-    let mut prev_wrap_count: f32 = 0.0;
+
+    // Gedeelde state — wordt via Arc<Mutex<>> door de RealTimePitchTempoSource gebruikt
+    let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let pitch_semitones: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
+    let tempo: Arc<Mutex<f32>> = Arc::new(Mutex::new(1.0));
+    let loop_bounds: Arc<Mutex<LoopBounds>> = Arc::new(Mutex::new(LoopBounds { a: 0, b: 0 }));
+    let source_pos: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
+    let segment_start_sec: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
+    let segment_dur: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
+    let current_sample_rate: Arc<Mutex<u32>> = Arc::new(Mutex::new(44100));
 
     // Audio device openen
     if let Ok((stream, handle)) = OutputStream::try_default() {
@@ -96,67 +118,52 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
         while let Ok(cmd) = rx.try_recv() {
             match cmd {
                 WaveformCommand::Play {
-                    path,
-                    segment_samples,
-                    segment_sample_rate,
-                    decode_start_sec,
-                    decode_end_sec,
-                    play_start_sec,
-                    pitch_semitones,
-                    tempo,
+                    samples: new_samples,
+                    sample_rate: sr,
+                    start_sample,
+                    segment_start_sec: seg_start,
+                    a_sample,
+                    b_sample,
+                    pitch_semitones: ps,
+                    tempo: t,
                 } => {
+                    // Kopieer de samples en parameters naar gedeelde state
+                    *samples.lock().unwrap() = new_samples.lock().unwrap().clone();
+                    *pitch_semitones.lock().unwrap() = *ps.lock().unwrap();
+                    *tempo.lock().unwrap() = *t.lock().unwrap();
+                    *current_sample_rate.lock().unwrap() = sr;
+                    *source_pos.lock().unwrap() = start_sample as f64;
+                    *segment_start_sec.lock().unwrap() = seg_start;
+
+                    let len = samples.lock().unwrap().len();
+                    *segment_dur.lock().unwrap() = len as f32 / sr as f32;
+
+                    if b_sample > a_sample && b_sample <= len {
+                        *loop_bounds.lock().unwrap() = LoopBounds {
+                            a: a_sample,
+                            b: b_sample,
+                        };
+                    } else {
+                        *loop_bounds.lock().unwrap() = LoopBounds { a: 0, b: 0 };
+                    }
+
+                    // Nieuwe real-time source aanmaken
+                    let source = RealTimePitchTempoSource::new(
+                        samples.clone(),
+                        sr,
+                        pitch_semitones.clone(),
+                        tempo.clone(),
+                        loop_bounds.clone(),
+                        source_pos.clone(),
+                    );
+
                     if let Some(s) = &sink {
                         s.stop();
                         s.clear();
-                    }
-
-                    _current_path = Some(path.clone());
-                    _current_start = decode_start_sec;
-                    _current_end = decode_end_sec;
-                    current_pitch = pitch_semitones;
-                    current_tempo = tempo;
-                    is_playing = false;
-                    is_paused = false;
-
-                    let sample_rate = segment_sample_rate;
-                    let segment_duration = segment_samples.len() as f32 / sample_rate as f32;
-                    cached_raw = Some((segment_samples.clone(), sample_rate, segment_duration));
-                    current_duration = segment_duration;
-
-                    // Calculate starting position
-                    let raw_offset_samples =
-                        ((play_start_sec - decode_start_sec) * sample_rate as f32) as usize;
-                    let total_raw = segment_samples.len();
-
-                    // Rubato processing (tempo + pitch)
-                    let processed =
-                        match apply_rubato(&segment_samples, tempo, pitch_semitones, sample_rate) {
-                            Ok(p) => p,
-                            Err(e) => {
-                                let _ =
-                                    event_tx.send(WaveformEvent::Error(format!("Rubato: {}", e)));
-                                segment_samples.clone()
-                            }
-                        };
-
-                    let ratio = if total_raw > 0 {
-                        processed.len() as f32 / total_raw as f32
-                    } else {
-                        1.0
-                    };
-                    let initial_pos = (raw_offset_samples as f32 * ratio) as usize;
-                    let initial_pos = initial_pos.min(processed.len().saturating_sub(1));
-
-                    let source = WaveformSource {
-                        samples: processed,
-                        pos: initial_pos,
-                        sample_rate,
-                    };
-
-                    if let Some(s) = &sink {
                         s.append(source);
                         s.play();
                         is_playing = true;
+                        is_paused = false;
                         let _ = event_tx.send(WaveformEvent::Playing);
                     } else {
                         let _ = event_tx.send(WaveformEvent::Error("Geen audio-apparaat".into()));
@@ -170,6 +177,26 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     }
                     is_playing = false;
                     let _ = event_tx.send(WaveformEvent::Stopped);
+                }
+
+                WaveformCommand::Pause => {
+                    if let Some(s) = &sink {
+                        if !s.is_paused() {
+                            s.pause();
+                            is_paused = true;
+                            let _ = event_tx.send(WaveformEvent::Paused);
+                        }
+                    }
+                }
+
+                WaveformCommand::Resume => {
+                    if let Some(s) = &sink {
+                        if s.is_paused() {
+                            s.play();
+                            is_paused = false;
+                            let _ = event_tx.send(WaveformEvent::Resumed);
+                        }
+                    }
                 }
 
                 WaveformCommand::TogglePause => {
@@ -186,127 +213,65 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     }
                 }
 
-                WaveformCommand::UpdateLoopBounds {
-                    segment_samples,
-                    segment_sample_rate,
-                    new_start_sec,
-                    new_end_sec,
-                } => {
-                    // Bewaar voor de volgende wrap
-                    pending_restart = Some((
-                        segment_samples,
-                        segment_sample_rate,
-                        new_start_sec,
-                        new_end_sec,
-                    ));
+                WaveformCommand::SetLoopBounds { a_secs, b_secs } => {
+                    let sr = *current_sample_rate.lock().unwrap();
+                    let a_sample = (a_secs.max(0.0) * sr as f32) as usize;
+                    let b_sample = (b_secs.max(0.0) * sr as f32) as usize;
+
+                    // Update loop bounds — de source pikt dit direct op
+                    if b_sample > a_sample {
+                        *loop_bounds.lock().unwrap() = LoopBounds {
+                            a: a_sample,
+                            b: b_sample,
+                        };
+                        *segment_start_sec.lock().unwrap() = a_secs;
+                        *segment_dur.lock().unwrap() = (b_secs - a_secs).max(0.001);
+                    } else {
+                        *loop_bounds.lock().unwrap() = LoopBounds { a: 0, b: 0 };
+                    }
+                }
+
+                WaveformCommand::Seek { pos_secs } => {
+                    let sr = *current_sample_rate.lock().unwrap();
+                    let start_sec = *segment_start_sec.lock().unwrap();
+                    // Relatieve sample-offset binnen het segment
+                    let rel_secs = (pos_secs - start_sec).max(0.0);
+                    let sample = (rel_secs * sr as f32) as f64;
+                    *source_pos.lock().unwrap() = sample;
                 }
 
                 WaveformCommand::SetPitch(semitones) => {
-                    current_pitch = semitones;
-                    if is_playing {
-                        restart_playback(
-                            &mut sink,
-                            &cached_raw,
-                            current_pitch,
-                            current_tempo,
-                            &event_tx,
-                            &mut current_duration,
-                            &mut is_playing,
-                        );
-                    }
+                    *pitch_semitones.lock().unwrap() = semitones;
                 }
 
                 WaveformCommand::SetTempo(new_tempo) => {
-                    current_tempo = new_tempo;
-                    if is_playing {
-                        restart_playback(
-                            &mut sink,
-                            &cached_raw,
-                            current_pitch,
-                            current_tempo,
-                            &event_tx,
-                            &mut current_duration,
-                            &mut is_playing,
-                        );
-                    }
+                    *tempo.lock().unwrap() = new_tempo;
                 }
             }
         }
 
-        // Positie-updates sturen (niet als gepauzeerd)
+        // Positie-updates sturen naar UI (~60 fps)
         if is_playing && !is_paused {
             if let Some(s) = &sink {
                 if s.empty() {
                     is_playing = false;
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 } else {
-                    let raw_pos = s.get_pos().as_secs_f32();
+                    let pos_samples = *source_pos.lock().unwrap();
+                    let sr = *current_sample_rate.lock().unwrap();
+                    let start_sec = *segment_start_sec.lock().unwrap();
+                    let dur = *segment_dur.lock().unwrap();
+                    let bounds = *loop_bounds.lock().unwrap();
 
-                    let pitch_factor = f32::powf(2.0, current_pitch / 12.0);
-                    let stretch_factor = if current_tempo > 0.0 {
-                        pitch_factor / current_tempo
+                    // Absolute positie in de track
+                    let pos_secs = pos_samples as f32 / sr as f32;
+                    let effective_pos = if bounds.enabled() {
+                        let loop_dur = (bounds.b - bounds.a) as f32 / sr as f32;
+                        start_sec + (pos_secs % loop_dur)
                     } else {
-                        1.0
+                        start_sec + pos_secs
                     };
-
-                    let effective_pos =
-                        if stretch_factor > 0.0 && (stretch_factor - 1.0).abs() > 0.001 {
-                            raw_pos / stretch_factor
-                        } else {
-                            raw_pos
-                        };
-
-                    // Wrap rond segment-duur voor looping
-                    let pos_in_segment = if current_duration > 0.0 {
-                        effective_pos % current_duration
-                    } else {
-                        effective_pos
-                    };
-
-                    // 🔥 Wrap-detectie: (effective_pos / current_duration) stijgt
-                    //    met 1 bij elke wrap. Als die stijgt en er is een pending_restart,
-                    //    laden we het nieuwe segment in op het wrap-moment.
-                    if current_duration > 0.0 {
-                        let cur_wrap_count = (effective_pos / current_duration).floor();
-                        if cur_wrap_count > prev_wrap_count {
-                            if let Some((samp, sr, new_start, new_end)) = pending_restart.take() {
-                                _current_start = new_start;
-                                _current_end = new_end;
-                                let new_dur = (new_end - new_start).max(0.001);
-                                current_duration = new_dur;
-                                cached_raw = Some((samp.clone(), sr, new_dur));
-
-                                let processed =
-                                    match apply_rubato(&samp, current_tempo, current_pitch, sr) {
-                                        Ok(p) => p,
-                                        Err(e) => {
-                                            let _ = event_tx.send(WaveformEvent::Error(format!(
-                                                "Rubato: {}",
-                                                e
-                                            )));
-                                            samp
-                                        }
-                                    };
-
-                                let new_source = WaveformSource {
-                                    samples: processed,
-                                    pos: 0,
-                                    sample_rate: sr,
-                                };
-
-                                if let Some(s) = &sink {
-                                    s.stop();
-                                    s.clear();
-                                    s.append(new_source);
-                                    s.play();
-                                }
-                            }
-                        }
-                        prev_wrap_count = cur_wrap_count;
-                    }
-
-                    let pos = _current_start + pos_in_segment;
-                    let _ = event_tx.send(WaveformEvent::Position(pos, current_duration));
+                    let _ = event_tx.send(WaveformEvent::Position(effective_pos, dur));
                 }
             }
         }
@@ -315,95 +280,131 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     }
 }
 
-/// Herstart playback met nieuwe instellingen (gebruikt bij SetPitch / SetTempo).
-/// Gebruikt `cached_raw` in plaats van opnieuw van schijf te decoderen.
-fn restart_playback(
-    sink: &mut Option<Sink>,
-    cached_raw: &Option<(Vec<f32>, u32, f32)>,
-    pitch: f32,
-    tempo: f32,
-    event_tx: &Sender<WaveformEvent>,
-    current_duration: &mut f32,
-    is_playing: &mut bool,
-) {
-    let (samples, sample_rate, segment_duration) = match cached_raw {
-        Some((s, r, d)) => (s.clone(), *r, *d),
-        None => return,
-    };
-
-    if let Some(s) = sink {
-        s.stop();
-        s.clear();
-    }
-
-    *current_duration = segment_duration;
-    let processed = match apply_rubato(&samples, tempo, pitch, sample_rate) {
-        Ok(p) => p,
-        Err(e) => {
-            let _ = event_tx.send(WaveformEvent::Error(format!("Rubato: {}", e)));
-            samples
-        }
-    };
-
-    let source = WaveformSource {
-        samples: processed,
-        pos: 0,
-        sample_rate,
-    };
-
-    if let Some(s) = sink {
-        s.append(source);
-        s.play();
-        *is_playing = true;
-        let _ = event_tx.send(WaveformEvent::Playing);
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Gedeelde loop-grenzen voor naadloze updates tijdens afspelen
+// RealTimePitchTempoSource — rodio::Source die real-time pitch/tempo toepast
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-struct LoopBounds {
-    a_sample: usize,
-    b_sample: usize,
-}
+/// Aantal samples per interne chunk.
+/// Mutex-locking gebeurt één keer per chunk, niet per sample.
+const CHUNK_SIZE: usize = 512;
 
-/// Source die door een Vec<f32> loopt en bij B terugspringt naar A.
-/// A en B worden via `Arc<Mutex<LoopBounds>>` dynamisch geüpdatet.
-/// Geen rubato — speelt ruwe samples.
-#[allow(dead_code)]
-struct LoopingSource {
-    samples: Vec<f32>,
-    pos: usize,
-    bounds: Arc<Mutex<LoopBounds>>,
+/// Rodio Source die ruwe PCM-samples afspeelt met real-time pitch shifting
+/// en tempo-aanpassing via lineaire interpolatie.
+///
+/// Pitch en tempo worden via `Arc<Mutex<>>` gedeeld met de UI-thread,
+/// zodat wijzigingen direct worden doorgevoerd zonder de source te herstarten.
+struct RealTimePitchTempoSource {
+    samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
+    pitch_semitones: Arc<Mutex<f32>>,
+    tempo: Arc<Mutex<f32>>,
+    loop_bounds: Arc<Mutex<LoopBounds>>,
+    /// Huidige (fractionele) sample-positie in de ruwe buffer.
+    /// Wordt gedeeld met de audio-thread voor positie-rapportage.
+    source_pos: Arc<Mutex<f64>>,
+    /// Interne buffer met verwerkte samples (gevuld in chunks).
+    buf: Vec<f32>,
+    buf_idx: usize,
 }
 
-impl Iterator for LoopingSource {
+impl RealTimePitchTempoSource {
+    fn new(
+        samples: Arc<Mutex<Vec<f32>>>,
+        sample_rate: u32,
+        pitch_semitones: Arc<Mutex<f32>>,
+        tempo: Arc<Mutex<f32>>,
+        loop_bounds: Arc<Mutex<LoopBounds>>,
+        source_pos: Arc<Mutex<f64>>,
+    ) -> Self {
+        Self {
+            samples,
+            sample_rate,
+            pitch_semitones,
+            tempo,
+            loop_bounds,
+            source_pos,
+            buf: Vec::new(),
+            buf_idx: 0,
+        }
+    }
+
+    /// Vult de interne buffer met `CHUNK_SIZE` verwerkte samples.
+    /// Leest de huidige pitch/tempo uit de gedeelde `Arc<Mutex<>>`,
+    /// past lineaire interpolatie toe en handelt looping af.
+    fn refill_buffer(&mut self) {
+        let guard = self.samples.lock().unwrap();
+        let raw = &*guard;
+
+        if raw.is_empty() {
+            self.buf.clear();
+            return;
+        }
+
+        let total_len = raw.len();
+        let pitch = *self.pitch_semitones.lock().unwrap();
+        let t = *self.tempo.lock().unwrap();
+        let pitch_factor = f32::powf(2.0, pitch / 12.0);
+        let step = (pitch_factor * t) as f64;
+
+        let bounds = *self.loop_bounds.lock().unwrap();
+        let looping = bounds.enabled();
+
+        self.buf.clear();
+        let mut pos = *self.source_pos.lock().unwrap();
+
+        for _ in 0..CHUNK_SIZE {
+            // Looping: spring naar A zodra we bij of voorbij B zijn
+            if looping && pos as usize >= bounds.b {
+                pos = bounds.a as f64;
+            }
+
+            // Als de positie buiten de buffer valt en er is een loop, reset naar A
+            if pos as usize >= total_len {
+                if looping {
+                    pos = bounds.a as f64;
+                } else {
+                    break; // Geen loop-mogelijkheid → einde
+                }
+            }
+
+            // Lineaire interpolatie tussen twee omliggende samples
+            let floor = pos.floor() as usize;
+            let frac = pos - floor as f64;
+            let next_idx = (floor + 1).min(total_len - 1);
+
+            let s0 = raw[floor] as f64;
+            let s1 = raw[next_idx] as f64;
+            let sample = s0 + (s1 - s0) * frac;
+
+            self.buf.push(sample as f32);
+            pos += step;
+        }
+
+        *self.source_pos.lock().unwrap() = pos;
+        self.buf_idx = 0;
+    }
+}
+
+impl Iterator for RealTimePitchTempoSource {
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        if self.samples.is_empty() {
-            return None;
+        if self.buf_idx >= self.buf.len() {
+            self.refill_buffer();
         }
-        let sample = self.samples[self.pos];
-        self.pos += 1;
-        let bounds = self.bounds.lock().unwrap();
-        if self.pos >= bounds.b_sample {
-            self.pos = bounds.a_sample;
+        if self.buf_idx < self.buf.len() {
+            let sample = self.buf[self.buf_idx];
+            self.buf_idx += 1;
+            Some(sample)
+        } else {
+            None
         }
-        Some(sample)
     }
 }
 
-impl Source for LoopingSource {
+impl Source for RealTimePitchTempoSource {
     fn current_frame_len(&self) -> Option<usize> {
-        if self.samples.is_empty() {
-            None
-        } else {
-            Some(self.samples.len().saturating_sub(self.pos))
-        }
+        Some(std::usize::MAX)
     }
 
     fn channels(&self) -> u16 {
@@ -415,267 +416,6 @@ impl Source for LoopingSource {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        None // infinite (looping)
+        None // Loopt oneindig (looping)
     }
-}
-
-/// Eenvoudige Source die Vec<f32> afspeelt via rodio.
-/// Loopt oneindig (wrap-around) voor naadloze loop-playback.
-/// Gebruikt voor rubato-verwerkte segmenten (vaste grenzen).
-#[derive(Clone)]
-struct WaveformSource {
-    samples: Vec<f32>,
-    pos: usize,
-    sample_rate: u32,
-}
-
-impl Iterator for WaveformSource {
-    type Item = f32;
-
-    fn next(&mut self) -> Option<f32> {
-        if self.samples.is_empty() {
-            return None;
-        }
-        let sample = self.samples[self.pos];
-        self.pos += 1;
-        if self.pos >= self.samples.len() {
-            self.pos = 0;
-        }
-        Some(sample)
-    }
-}
-
-impl Source for WaveformSource {
-    fn current_frame_len(&self) -> Option<usize> {
-        if self.samples.is_empty() {
-            None
-        } else {
-            Some(self.samples.len().saturating_sub(self.pos))
-        }
-    }
-
-    fn channels(&self) -> u16 {
-        1
-    }
-
-    fn sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    fn total_duration(&self) -> Option<Duration> {
-        None // infinite door looping
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Segment decoderen met symphonia (alleen A-B)
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-fn decode_segment(
-    path: &str,
-    start_sec: f32,
-    end_sec: f32,
-) -> Result<(Vec<f32>, u32, f32), String> {
-    use std::fs::File;
-    use std::path::Path;
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::codecs::DecoderOptions;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::probe::Hint;
-
-    let path_obj = Path::new(path);
-    let file = File::open(&path_obj).map_err(|e| format!("Kan bestand niet openen: {}", e))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
-
-    let ext = path_obj
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let mut hint = Hint::new();
-    hint.with_extension(&ext);
-
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &Default::default(), &Default::default())
-        .map_err(|e| format!("Kan formaat niet detecteren: {}", e))?;
-
-    let mut format = probed.format;
-
-    let track = format
-        .tracks()
-        .iter()
-        .find(|t| t.codec_params.sample_rate.is_some())
-        .ok_or_else(|| "Geen audio track".to_string())?;
-
-    let codec_params = track.codec_params.clone();
-    let track_id = track.id;
-    let sample_rate = codec_params.sample_rate.unwrap_or(44100);
-
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &DecoderOptions::default())
-        .map_err(|e| format!("Kan decoder niet maken: {}", e))?;
-
-    let start_sample = (start_sec * sample_rate as f32) as usize;
-    let end_sample = (end_sec * sample_rate as f32) as usize;
-
-    let mut all_samples: Vec<f32> = Vec::new();
-    let mut total_decoded: usize = 0;
-
-    loop {
-        let packet = match format.next_packet() {
-            Ok(pkt) => pkt,
-            Err(symphonia::core::errors::Error::IoError(ref err))
-                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                break;
-            }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        };
-
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        match decoder.decode(&packet) {
-            Ok(decoded) => {
-                let num_frames = decoded.frames();
-                let num_channels = decoded.spec().channels.count();
-
-                let mut sample_buf =
-                    SampleBuffer::<f32>::new(decoded.capacity() as u64, *decoded.spec());
-                sample_buf.copy_interleaved_ref(decoded);
-                let buf = sample_buf.samples();
-
-                for frame in 0..num_frames {
-                    let abs_idx = total_decoded + frame;
-                    if abs_idx >= end_sample {
-                        break;
-                    }
-                    if abs_idx >= start_sample {
-                        let mut frame_sum = 0.0_f32;
-                        for ch in 0..num_channels {
-                            let idx = frame * num_channels + ch;
-                            if idx < buf.len() {
-                                frame_sum += buf[idx];
-                            }
-                        }
-                        all_samples.push(frame_sum / num_channels as f32);
-                    }
-                }
-                total_decoded += num_frames;
-                if total_decoded >= end_sample {
-                    break;
-                }
-            }
-            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
-            Err(_) => break,
-        }
-    }
-
-    if all_samples.is_empty() {
-        return Err("Geen samples gedecodeerd".to_string());
-    }
-
-    let duration = all_samples.len() as f32 / sample_rate as f32;
-    Ok((all_samples, sample_rate, duration))
-}
-
-// ---------------------------------------------------------------------------
-// Rubato: tempo + pitch processing
-// ---------------------------------------------------------------------------
-
-fn apply_rubato(
-    samples: &[f32],
-    tempo: f32,
-    pitch_semitones: f32,
-    _sample_rate: u32,
-) -> Result<Vec<f32>, String> {
-    // Bepaal de resample ratio (output_samples / input_samples)
-    // ratio > 1: meer output -> langzamer -> lagere toon / tragere tempo
-    // ratio < 1: minder output -> sneller -> hogere toon / snellere tempo
-    // tempo > 1.0 = sneller, pitch_semitones > 0 = hogere toon -> beide hebben ratio < 1 nodig
-    let pitch_factor = f32::powf(2.0, pitch_semitones / 12.0);
-    let resample_ratio = 1.0 / (pitch_factor * tempo);
-
-    // Geen processing nodig als ratio ≈ 1.0
-    if (resample_ratio - 1.0).abs() < 0.001 {
-        return Ok(samples.to_vec());
-    }
-
-    let params = SincInterpolationParameters {
-        sinc_len: 256,
-        f_cutoff: 0.95,
-        oversampling_factor: 128,
-        interpolation: SincInterpolationType::Linear,
-        window: WindowFunction::BlackmanHarris2,
-    };
-
-    let chunk_size = 1024.min(samples.len()).max(64);
-
-    let mut resampler = SincFixedIn::<f32>::new(
-        resample_ratio as f64,
-        10.0, // max_relative_ratio
-        params,
-        chunk_size,
-        1, // mono
-    )
-    .map_err(|e| format!("Resampler constructie: {:?}", e))?;
-
-    let mut output: Vec<f32> = Vec::new();
-    let mut input_pos = 0;
-
-    while input_pos < samples.len() {
-        let remaining = samples.len() - input_pos;
-
-        if remaining >= chunk_size {
-            // Volledige chunk
-            let end = input_pos + chunk_size;
-            let input_chunk = vec![samples[input_pos..end].to_vec()];
-            let result = resampler
-                .process(&input_chunk, None)
-                .map_err(|e| format!("Rubato process: {:?}", e))?;
-            if let Some(ch) = result.first() {
-                output.extend_from_slice(ch);
-            }
-            input_pos += chunk_size;
-        } else {
-            // Laatste partial chunk: zero-pad naar chunk_size
-            let mut padded = samples[input_pos..].to_vec();
-            padded.resize(chunk_size, 0.0_f32);
-            let input_chunk = vec![padded];
-            let result = resampler
-                .process(&input_chunk, None)
-                .map_err(|e| format!("Rubato partial: {:?}", e))?;
-            if let Some(ch) = result.first() {
-                output.extend_from_slice(ch);
-            }
-            break;
-        }
-    }
-
-    // Flush internal resampler buffers
-    if resampler.input_frames_next() > 0 {
-        let pad = vec![vec![0.0_f32; resampler.input_frames_next()]];
-        let result = resampler.process(&pad, None).ok();
-        if let Some(out) = result {
-            if let Some(ch) = out.first() {
-                output.extend_from_slice(ch);
-            }
-        }
-    }
-
-    // Laatste flush: nog een keer met een lege input om resterende delay uit te krijgen
-    if resampler.input_frames_next() > 0 {
-        let pad2 = vec![vec![0.0_f32; resampler.input_frames_next()]];
-        let result = resampler.process(&pad2, None).ok();
-        if let Some(out) = result {
-            if let Some(ch) = out.first() {
-                output.extend_from_slice(ch);
-            }
-        }
-    }
-
-    Ok(output)
 }
