@@ -1,5 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,12 +16,13 @@ pub enum WaveformCommand {
         segment_start_sec: f32,
         a_sample: usize,
         b_sample: usize,
-        pitch_semitones: Arc<Mutex<f32>>,
-        tempo: Arc<Mutex<f32>>,
+        /// Lock-free: f32 gecodeerd als AtomicU32 via `to_bits`/`from_bits`.
+        pitch_semitones: Arc<AtomicU32>,
+        /// Lock-free: f32 gecodeerd als AtomicU32 via `to_bits`/`from_bits`.
+        tempo: Arc<AtomicU32>,
     },
     Stop,
-    /// Pauzeer de sink (rodio::Sink::pause). De source `next()` wordt niet aangeroepen,
-    /// dus de interne `pos` blijft staan.
+    /// Pauzeer de sink. De `pos` blijft staan.
     #[allow(dead_code)]
     Pause,
     /// Hervat na pauze.
@@ -28,17 +30,18 @@ pub enum WaveformCommand {
     Resume,
     TogglePause,
     /// Update de loop-grenzen zonder de source te herstarten.
-    /// a_secs en b_secs zijn absolute posities in de track.
     SetLoopBounds {
         a_secs: f32,
         b_secs: f32,
     },
-    /// Verplaats de playhead naar een absolute positie in de track.
+    /// Lock-free seek: schrijft de nieuwe sample-positie als `f64` via `AtomicU64`.
     Seek {
         pos_secs: f32,
     },
     SetPitch(f32),
     SetTempo(f32),
+    /// Schakel looping aan/uit zonder de A-B markers te wissen.
+    SetLoopEnabled(bool),
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +56,9 @@ pub enum WaveformEvent {
     Resumed,
     Error(String),
     Position(f32, f32),
+    /// Wordt gestuurd wanneer de source 4× van B→A heeft gewrapt.
+    /// De UI kan hierop reageren door naar `loop_b + 1s` te seeken.
+    LoopLimitReached,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,11 +69,12 @@ pub enum WaveformEvent {
 pub struct LoopBounds {
     pub a: usize,
     pub b: usize,
+    pub enabled: bool,
 }
 
 impl LoopBounds {
     pub fn enabled(&self) -> bool {
-        self.b > self.a
+        self.enabled && self.b > self.a
     }
 }
 
@@ -87,7 +94,7 @@ pub fn start_waveform_thread() -> (Sender<WaveformCommand>, Receiver<WaveformEve
 }
 
 // ---------------------------------------------------------------------------
-// Interne audio-loop — geen apply_rubato, geen restart_playback
+// Interne audio-loop — lock-free shared state via atomics
 // ---------------------------------------------------------------------------
 
 fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEvent>) {
@@ -96,12 +103,19 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let mut is_playing = false;
     let mut is_paused = false;
 
-    // Gedeelde state — wordt via Arc<Mutex<>> door de RealTimePitchTempoSource gebruikt
+    // ── Lock-free shared state ──
     let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-    let pitch_semitones: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
-    let tempo: Arc<Mutex<f32>> = Arc::new(Mutex::new(1.0));
-    let loop_bounds: Arc<Mutex<LoopBounds>> = Arc::new(Mutex::new(LoopBounds { a: 0, b: 0 }));
-    let source_pos: Arc<Mutex<f64>> = Arc::new(Mutex::new(0.0));
+    let pitch_semitones: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(0.0)));
+    let tempo: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
+    let loop_bounds: Arc<Mutex<LoopBounds>> = Arc::new(Mutex::new(LoopBounds {
+        a: 0,
+        b: 0,
+        enabled: false,
+    }));
+    let source_pos: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
+    let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    let mut prev_wrap: u32 = 0;
+    let mut wrap_limit_sent = false;
     let segment_start_sec: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let segment_dur: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let current_sample_rate: Arc<Mutex<u32>> = Arc::new(Mutex::new(44100));
@@ -127,12 +141,12 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     pitch_semitones: ps,
                     tempo: t,
                 } => {
-                    // Kopieer de samples en parameters naar gedeelde state
+                    // Lock-free: atomic load van de meegegeven Arcs, daarna atomic store
                     *samples.lock().unwrap() = new_samples.lock().unwrap().clone();
-                    *pitch_semitones.lock().unwrap() = *ps.lock().unwrap();
-                    *tempo.lock().unwrap() = *t.lock().unwrap();
+                    pitch_semitones.store(ps.load(Ordering::Relaxed), Ordering::Relaxed);
+                    tempo.store(t.load(Ordering::Relaxed), Ordering::Relaxed);
                     *current_sample_rate.lock().unwrap() = sr;
-                    *source_pos.lock().unwrap() = start_sample as f64;
+                    source_pos.store(f64::to_bits(start_sample as f64), Ordering::Relaxed);
                     *segment_start_sec.lock().unwrap() = seg_start;
 
                     let len = samples.lock().unwrap().len();
@@ -142,10 +156,20 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         *loop_bounds.lock().unwrap() = LoopBounds {
                             a: a_sample,
                             b: b_sample,
+                            enabled: true,
                         };
                     } else {
-                        *loop_bounds.lock().unwrap() = LoopBounds { a: 0, b: 0 };
+                        *loop_bounds.lock().unwrap() = LoopBounds {
+                            a: 0,
+                            b: 0,
+                            enabled: false,
+                        };
                     }
+
+                    // Wrap-counter resetten bij nieuwe Play
+                    wrap_count.store(0, Ordering::Relaxed);
+                    prev_wrap = 0;
+                    wrap_limit_sent = false;
 
                     // Nieuwe real-time source aanmaken
                     let source = RealTimePitchTempoSource::new(
@@ -155,6 +179,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         tempo.clone(),
                         loop_bounds.clone(),
                         source_pos.clone(),
+                        wrap_count.clone(),
                     );
 
                     if let Some(s) = &sink {
@@ -218,34 +243,45 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let a_sample = (a_secs.max(0.0) * sr as f32) as usize;
                     let b_sample = (b_secs.max(0.0) * sr as f32) as usize;
 
-                    // Update loop bounds — de source pikt dit direct op
                     if b_sample > a_sample {
                         *loop_bounds.lock().unwrap() = LoopBounds {
                             a: a_sample,
                             b: b_sample,
+                            enabled: true,
                         };
                         *segment_start_sec.lock().unwrap() = a_secs;
                         *segment_dur.lock().unwrap() = (b_secs - a_secs).max(0.001);
                     } else {
-                        *loop_bounds.lock().unwrap() = LoopBounds { a: 0, b: 0 };
+                        *loop_bounds.lock().unwrap() = LoopBounds {
+                            a: 0,
+                            b: 0,
+                            enabled: false,
+                        };
                     }
                 }
 
                 WaveformCommand::Seek { pos_secs } => {
                     let sr = *current_sample_rate.lock().unwrap();
                     let start_sec = *segment_start_sec.lock().unwrap();
-                    // Relatieve sample-offset binnen het segment
                     let rel_secs = (pos_secs - start_sec).max(0.0);
                     let sample = (rel_secs * sr as f32) as f64;
-                    *source_pos.lock().unwrap() = sample;
+                    // Lock-free: atomic write
+                    source_pos.store(f64::to_bits(sample), Ordering::Relaxed);
                 }
 
                 WaveformCommand::SetPitch(semitones) => {
-                    *pitch_semitones.lock().unwrap() = semitones;
+                    // Lock-free: atomic write
+                    pitch_semitones.store(f32::to_bits(semitones), Ordering::Relaxed);
                 }
 
                 WaveformCommand::SetTempo(new_tempo) => {
-                    *tempo.lock().unwrap() = new_tempo;
+                    // Lock-free: atomic write
+                    tempo.store(f32::to_bits(new_tempo), Ordering::Relaxed);
+                }
+
+                WaveformCommand::SetLoopEnabled(enabled) => {
+                    let mut bounds = loop_bounds.lock().unwrap();
+                    bounds.enabled = enabled;
                 }
             }
         }
@@ -257,13 +293,13 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     is_playing = false;
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 } else {
-                    let pos_samples = *source_pos.lock().unwrap();
+                    // Lock-free: atomic read
+                    let pos_samples = f64::from_bits(source_pos.load(Ordering::Relaxed));
                     let sr = *current_sample_rate.lock().unwrap();
                     let start_sec = *segment_start_sec.lock().unwrap();
                     let dur = *segment_dur.lock().unwrap();
                     let bounds = *loop_bounds.lock().unwrap();
 
-                    // Absolute positie in de track
                     let pos_secs = pos_samples as f32 / sr as f32;
                     let effective_pos = if bounds.enabled() {
                         let loop_dur = (bounds.b - bounds.a) as f32 / sr as f32;
@@ -272,6 +308,14 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         start_sec + pos_secs
                     };
                     let _ = event_tx.send(WaveformEvent::Position(effective_pos, dur));
+
+                    // Wrap-detectie: als de source 4× heeft gewrapt, stuur LoopLimitReached
+                    let cur_wrap = wrap_count.load(Ordering::Relaxed);
+                    if cur_wrap >= prev_wrap + 4 && !wrap_limit_sent {
+                        let _ = event_tx.send(WaveformEvent::LoopLimitReached);
+                        wrap_limit_sent = true;
+                    }
+                    prev_wrap = cur_wrap;
                 }
             }
         }
@@ -281,28 +325,23 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 }
 
 // ---------------------------------------------------------------------------
-// RealTimePitchTempoSource — rodio::Source die real-time pitch/tempo toepast
+// RealTimePitchTempoSource — lock-free via AtomicU32/AtomicU64 voor pitch/tempo/pos
 // ---------------------------------------------------------------------------
 
 /// Aantal samples per interne chunk.
-/// Mutex-locking gebeurt één keer per chunk, niet per sample.
 const CHUNK_SIZE: usize = 512;
 
-/// Rodio Source die ruwe PCM-samples afspeelt met real-time pitch shifting
-/// en tempo-aanpassing via lineaire interpolatie.
-///
-/// Pitch en tempo worden via `Arc<Mutex<>>` gedeeld met de UI-thread,
-/// zodat wijzigingen direct worden doorgevoerd zonder de source te herstarten.
 struct RealTimePitchTempoSource {
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
-    pitch_semitones: Arc<Mutex<f32>>,
-    tempo: Arc<Mutex<f32>>,
+    /// Lock-free: f32 gecodeerd als AtomicU32.
+    pitch_semitones: Arc<AtomicU32>,
+    /// Lock-free: f32 gecodeerd als AtomicU32.
+    tempo: Arc<AtomicU32>,
     loop_bounds: Arc<Mutex<LoopBounds>>,
-    /// Huidige (fractionele) sample-positie in de ruwe buffer.
-    /// Wordt gedeeld met de audio-thread voor positie-rapportage.
-    source_pos: Arc<Mutex<f64>>,
-    /// Interne buffer met verwerkte samples (gevuld in chunks).
+    /// Lock-free: f64 gecodeerd als AtomicU64.
+    source_pos: Arc<AtomicU64>,
+    wrap_count: Arc<AtomicU32>,
     buf: Vec<f32>,
     buf_idx: usize,
 }
@@ -311,10 +350,11 @@ impl RealTimePitchTempoSource {
     fn new(
         samples: Arc<Mutex<Vec<f32>>>,
         sample_rate: u32,
-        pitch_semitones: Arc<Mutex<f32>>,
-        tempo: Arc<Mutex<f32>>,
+        pitch_semitones: Arc<AtomicU32>,
+        tempo: Arc<AtomicU32>,
         loop_bounds: Arc<Mutex<LoopBounds>>,
-        source_pos: Arc<Mutex<f64>>,
+        source_pos: Arc<AtomicU64>,
+        wrap_count: Arc<AtomicU32>,
     ) -> Self {
         Self {
             samples,
@@ -323,14 +363,14 @@ impl RealTimePitchTempoSource {
             tempo,
             loop_bounds,
             source_pos,
+            wrap_count,
             buf: Vec::new(),
             buf_idx: 0,
         }
     }
 
     /// Vult de interne buffer met `CHUNK_SIZE` verwerkte samples.
-    /// Leest de huidige pitch/tempo uit de gedeelde `Arc<Mutex<>>`,
-    /// past lineaire interpolatie toe en handelt looping af.
+    /// Pitch, tempo en source_pos worden lock-free uitgelezen (`Ordering::Relaxed`).
     fn refill_buffer(&mut self) {
         let guard = self.samples.lock().unwrap();
         let raw = &*guard;
@@ -341,8 +381,12 @@ impl RealTimePitchTempoSource {
         }
 
         let total_len = raw.len();
-        let pitch = *self.pitch_semitones.lock().unwrap();
-        let t = *self.tempo.lock().unwrap();
+
+        // Lock-free reads (atomic, Ordering::Relaxed — exactheid is niet kritisch)
+        let pitch_bits = self.pitch_semitones.load(Ordering::Relaxed);
+        let tempo_bits = self.tempo.load(Ordering::Relaxed);
+        let pitch = f32::from_bits(pitch_bits);
+        let t = f32::from_bits(tempo_bits);
         let pitch_factor = f32::powf(2.0, pitch / 12.0);
         let step = (pitch_factor * t) as f64;
 
@@ -350,24 +394,23 @@ impl RealTimePitchTempoSource {
         let looping = bounds.enabled();
 
         self.buf.clear();
-        let mut pos = *self.source_pos.lock().unwrap();
+        let mut pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
 
         for _ in 0..CHUNK_SIZE {
-            // Looping: spring naar A zodra we bij of voorbij B zijn
             if looping && pos as usize >= bounds.b {
                 pos = bounds.a as f64;
+                self.wrap_count.fetch_add(1, Ordering::Relaxed);
             }
 
-            // Als de positie buiten de buffer valt en er is een loop, reset naar A
             if pos as usize >= total_len {
                 if looping {
                     pos = bounds.a as f64;
+                    self.wrap_count.fetch_add(1, Ordering::Relaxed);
                 } else {
-                    break; // Geen loop-mogelijkheid → einde
+                    break;
                 }
             }
 
-            // Lineaire interpolatie tussen twee omliggende samples
             let floor = pos.floor() as usize;
             let frac = pos - floor as f64;
             let next_idx = (floor + 1).min(total_len - 1);
@@ -380,7 +423,8 @@ impl RealTimePitchTempoSource {
             pos += step;
         }
 
-        *self.source_pos.lock().unwrap() = pos;
+        // Lock-free write
+        self.source_pos.store(f64::to_bits(pos), Ordering::Relaxed);
         self.buf_idx = 0;
     }
 }
@@ -416,6 +460,6 @@ impl Source for RealTimePitchTempoSource {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        None // Loopt oneindig (looping)
+        None
     }
 }

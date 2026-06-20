@@ -4,6 +4,7 @@ use crate::waveform_player::{start_waveform_thread, WaveformCommand, WaveformEve
 use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, RichText};
 use std::path::Path;
+use std::sync::atomic::AtomicU32;
 use std::sync::{Arc, Mutex};
 
 pub struct LoopEditorApp {
@@ -27,6 +28,9 @@ pub struct LoopEditorApp {
 
     // Help / shortcuts
     pub show_shortcuts: bool,
+
+    // Looping bypass
+    pub loop_bypassed: bool,
 }
 
 impl LoopEditorApp {
@@ -48,6 +52,7 @@ impl LoopEditorApp {
             status_message: String::new(),
             status_message_timer: 0,
             show_shortcuts: false,
+            loop_bypassed: false,
         }
     }
 
@@ -127,6 +132,22 @@ impl eframe::App for LoopEditorApp {
                     self.waveform_play_duration = dur;
                     ctx.request_repaint();
                 }
+                WaveformEvent::LoopLimitReached => {
+                    // Na 4× wrappen: seek naar loop_b + 1 seconde om de loop te "breken"
+                    if let Some(b) = self.waveform_state.loop_b_secs {
+                        let target = (b + 1.0).min(self.waveform_state.duration_secs);
+                        self.waveform_play_position = target;
+                        if self.waveform_has_content {
+                            let _ = self
+                                .waveform_cmd_tx
+                                .send(WaveformCommand::Seek { pos_secs: target });
+                        }
+                        self.status_message =
+                            format!("Loop limiet bereikt → seek naar {:.1}s", target);
+                        self.status_message_timer = 5 * 60;
+                    }
+                    ctx.request_repaint();
+                }
             }
         }
 
@@ -183,11 +204,85 @@ impl eframe::App for LoopEditorApp {
                     segment_start_sec: decode_start,
                     a_sample: 0,
                     b_sample: (e - s),
-                    pitch_semitones: Arc::new(Mutex::new(self.waveform_state.pitch_semitones)),
-                    tempo: Arc::new(Mutex::new(self.waveform_state.tempo)),
+                    pitch_semitones: Arc::new(AtomicU32::new(f32::to_bits(
+                        self.waveform_state.pitch_semitones,
+                    ))),
+                    tempo: Arc::new(AtomicU32::new(f32::to_bits(self.waveform_state.tempo))),
                 });
 
                 self.waveform_is_playing = true;
+            }
+        }
+
+        // ── Marker shortcuts (1-9), Backspace (verwijder dichtstbijzijnde), [ ] (A-B) ──
+        if !is_text_focused && self.waveform_state.path.is_some() {
+            for digit in 1..=9 {
+                let key = match digit {
+                    1 => egui::Key::Num1,
+                    2 => egui::Key::Num2,
+                    3 => egui::Key::Num3,
+                    4 => egui::Key::Num4,
+                    5 => egui::Key::Num5,
+                    6 => egui::Key::Num6,
+                    7 => egui::Key::Num7,
+                    8 => egui::Key::Num8,
+                    9 => egui::Key::Num9,
+                    _ => unreachable!(),
+                };
+                if ctx.input(|i| i.key_pressed(key)) {
+                    self.waveform_state.markers.push(crate::waveform::Marker {
+                        name: format!("Marker {}", digit),
+                        position_secs: self.waveform_play_position,
+                    });
+                    self.status_message = format!(
+                        "Marker {} toegevoegd op {:.1}s",
+                        digit, self.waveform_play_position
+                    );
+                    self.status_message_timer = 3 * 60;
+                }
+            }
+
+            if ctx.input(|i| i.key_pressed(egui::Key::Backspace)) {
+                let pos = self.waveform_play_position;
+                let mut best_idx: Option<usize> = None;
+                let mut best_dist = 2.0_f32;
+                for (i, m) in self.waveform_state.markers.iter().enumerate() {
+                    let dist = (m.position_secs - pos).abs();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_idx = Some(i);
+                    }
+                }
+                if let Some(idx) = best_idx {
+                    let removed = self.waveform_state.markers.remove(idx);
+                    self.status_message = format!("Marker '{}' verwijderd", removed.name);
+                    self.status_message_timer = 3 * 60;
+                }
+            }
+
+            if ctx.input(|i| i.key_pressed(egui::Key::OpenBracket)) {
+                self.waveform_state.loop_a_secs = Some(self.waveform_play_position);
+                let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                    a_secs: self.waveform_play_position,
+                    b_secs: self
+                        .waveform_state
+                        .loop_b_secs
+                        .unwrap_or(self.waveform_state.duration_secs),
+                });
+                self.status_message =
+                    format!("Loop A gezet op {:.1}s", self.waveform_play_position);
+                self.status_message_timer = 3 * 60;
+            }
+
+            if ctx.input(|i| i.key_pressed(egui::Key::CloseBracket)) {
+                self.waveform_state.loop_b_secs = Some(self.waveform_play_position);
+                let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                    a_secs: self.waveform_state.loop_a_secs.unwrap_or(0.0),
+                    b_secs: self.waveform_play_position,
+                });
+                self.status_message =
+                    format!("Loop B gezet op {:.1}s", self.waveform_play_position);
+                self.status_message_timer = 3 * 60;
             }
         }
 
@@ -206,7 +301,7 @@ impl eframe::App for LoopEditorApp {
                     .clamp(0.0, self.waveform_state.duration_secs);
                 self.waveform_play_position = new_pos;
 
-                if self.waveform_is_playing {
+                if self.waveform_has_content {
                     let _ = self
                         .waveform_cmd_tx
                         .send(WaveformCommand::Seek { pos_secs: new_pos });
@@ -293,6 +388,10 @@ impl eframe::App for LoopEditorApp {
                         ui.separator();
                         shortcut_row(ui, "Space", "Play / Pauze");
                         shortcut_row(ui, "← / →", "2 sec terug / vooruit");
+                        shortcut_row(ui, "1-9", "Marker toevoegen op playhead");
+                        shortcut_row(ui, "Backspace", "Marker verwijderen (dichtstbij)");
+                        shortcut_row(ui, "[", "Zet loop A op playhead");
+                        shortcut_row(ui, "]", "Zet loop B op playhead");
                         shortcut_row(ui, "Ctrl+Sleep", "A-B selectie maken");
                         shortcut_row(ui, "Dubbelklik", "Zet A-marker");
                         shortcut_row(ui, "Shift+Dubbelklik", "Zet B-marker");
@@ -344,6 +443,15 @@ impl eframe::App for LoopEditorApp {
                             a_secs: a,
                             b_secs: b,
                         });
+                        // Als de loop was bypassed, heractiveer haar bij A/B-wijziging
+                        if self.loop_bypassed {
+                            self.loop_bypassed = false;
+                            let _ = self
+                                .waveform_cmd_tx
+                                .send(WaveformCommand::SetLoopEnabled(true));
+                            self.status_message = "Loop geüpdatet en geactiveerd".to_string();
+                            self.status_message_timer = 3 * 60;
+                        }
                     }
                 }
             }
@@ -352,7 +460,7 @@ impl eframe::App for LoopEditorApp {
             if let Some(seek_pos) = seek_to {
                 self.waveform_play_position = seek_pos;
 
-                if self.waveform_is_playing {
+                if self.waveform_has_content {
                     let _ = self
                         .waveform_cmd_tx
                         .send(WaveformCommand::Seek { pos_secs: seek_pos });
@@ -456,6 +564,28 @@ impl eframe::App for LoopEditorApp {
                             if ui.button("⏹ Stop").clicked() {
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
                             }
+
+                            // Bypass loop toggle
+                            let (btn_label, btn_color) = if self.loop_bypassed {
+                                ("🔁 Loop: OFF", Color32::from_rgb(200, 100, 100))
+                            } else {
+                                ("🔁 Loop: ON", Color32::from_rgb(80, 200, 80))
+                            };
+                            if ui
+                                .button(RichText::new(btn_label).color(btn_color))
+                                .clicked()
+                            {
+                                self.loop_bypassed = !self.loop_bypassed;
+                                let _ = self
+                                    .waveform_cmd_tx
+                                    .send(WaveformCommand::SetLoopEnabled(!self.loop_bypassed));
+                                self.status_message = if self.loop_bypassed {
+                                    "Loop bypassed — speelt door naar einde".to_string()
+                                } else {
+                                    "Loop hervat".to_string()
+                                };
+                                self.status_message_timer = 3 * 60;
+                            }
                         } else if ui.button("▶ Play Loop").clicked() {
                             if let Some(ref _path) = self.waveform_state.path {
                                 let sr = self.waveform_state.sample_rate as f32;
@@ -470,10 +600,12 @@ impl eframe::App for LoopEditorApp {
                                     segment_start_sec: a,
                                     a_sample: 0,
                                     b_sample: (e - s),
-                                    pitch_semitones: Arc::new(Mutex::new(
+                                    pitch_semitones: Arc::new(AtomicU32::new(f32::to_bits(
                                         self.waveform_state.pitch_semitones,
-                                    )),
-                                    tempo: Arc::new(Mutex::new(self.waveform_state.tempo)),
+                                    ))),
+                                    tempo: Arc::new(AtomicU32::new(f32::to_bits(
+                                        self.waveform_state.tempo,
+                                    ))),
                                 });
                             }
                         }
