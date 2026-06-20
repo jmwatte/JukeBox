@@ -204,9 +204,9 @@ pub fn render_waveform(
     let _marker_end_sec = (marker_start_sec + visible_secs).min(state.duration_secs);
 
     // Teken markers
-    let _marker_click_pos: Option<f32> = None;
+    let mut seek_action: Option<f32> = None;
     let mut marker_drag_target: Option<(usize, f32)> = None;
-    let mut marker_right_click: Option<(usize, f32)> = None;
+    let mut marker_to_delete: Option<usize> = None;
     let mut double_click_marker_pos: Option<f32> = None;
 
     for (i, marker) in state.markers.iter().enumerate() {
@@ -251,8 +251,8 @@ pub fn render_waveform(
         let marker_resp = ui.interact(hit_rect, marker_id, egui::Sense::click_and_drag());
 
         if marker_resp.clicked() {
-            // Click op marker → seek
-            // wordt later via seek_action afgehandeld
+            // Click op marker → seek naar die positie
+            seek_action = Some(marker.position_secs.clamp(0.0, state.duration_secs));
         }
         if marker_resp.dragged() {
             if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
@@ -262,7 +262,7 @@ pub fn render_waveform(
             }
         }
         if marker_resp.secondary_clicked() {
-            marker_right_click = Some((i, marker.position_secs));
+            marker_to_delete = Some(i);
         }
         if marker_resp.double_clicked() {
             // Bewerk marker naam
@@ -308,46 +308,9 @@ pub fn render_waveform(
         });
     }
 
-    // ── Rechterklik popup (context menu) ──
-    let mut context_menu_action: Option<String> = None;
-    if let Some((idx, sec)) = marker_right_click {
-        egui::Area::new(ui.id().with("marker_menu"))
-            .fixed_pos(
-                ui.ctx()
-                    .input(|i| i.pointer.interact_pos().unwrap_or(egui::pos2(0.0, 0.0))),
-            )
-            .show(ui.ctx(), |ui| {
-                ui.label(format!("Marker: {}", state.markers[idx].name));
-                ui.separator();
-                if ui.button("✏️ Naam bewerken").clicked() {
-                    state.editing_marker = Some(idx);
-                    state.editing_marker_name = state.markers[idx].name.clone();
-                    context_menu_action = Some("edit".to_string());
-                }
-                if ui.button("❌ Verwijderen").clicked() {
-                    state.markers.remove(idx);
-                    context_menu_action = Some("delete".to_string());
-                }
-                if ui.button("➕ Nieuwe marker hier").clicked() {
-                    let base_name = format!("Marker {}", state.markers.len() + 1);
-                    state.markers.push(Marker {
-                        name: base_name,
-                        position_secs: sec,
-                    });
-                    context_menu_action = Some("new".to_string());
-                }
-                if ui.button("Set A (loop start)").clicked() {
-                    state.loop_a_secs = Some(sec);
-                    context_menu_action = Some("set_a".to_string());
-                }
-                if ui.button("Set B (loop end)").clicked() {
-                    state.loop_b_secs = Some(sec);
-                    if state.loop_a_secs.is_none() {
-                        state.loop_a_secs = Some(0.0);
-                    }
-                    context_menu_action = Some("set_b".to_string());
-                }
-            });
+    // Verwijder marker bij rechterklik
+    if let Some(idx) = marker_to_delete {
+        state.markers.remove(idx);
     }
 
     // ── Marker naam bewerken (in-place text edit) ──
@@ -390,7 +353,6 @@ pub fn render_waveform(
     let center_y = rect.center().y;
 
     let mut loop_changed = false;
-    let mut seek_action: Option<f32> = None;
 
     if state.samples.is_empty() {
         painter.text(
@@ -713,28 +675,16 @@ pub fn render_waveform(
     }
 
     // ── Klik+versleep op waveform: selectie (A-B) maken ──
-    if !state.dragging_playhead {
+    // Alleen als we niet op de playhead of loop-regio slepen
+    if !state.dragging_playhead && !state.dragging_loop_region {
         if response.drag_started() {
-            // Alleen als we niet op de loop-regio slepen
-            let on_loop = if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
-                if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                    let ms = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
-                    ms >= a && ms <= b
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-            if !on_loop {
-                if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                    let sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
-                    state.select_drag_start = Some(sec.clamp(0.0, state.duration_secs));
-                }
+            if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
+                let sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
+                state.select_drag_start = Some(sec.clamp(0.0, state.duration_secs));
             }
         }
 
-        if state.select_drag_start.is_some() && response.dragged_by(egui::PointerButton::Primary) {
+        if response.dragged() && state.select_drag_start.is_some() {
             if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
                 let current_sec = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
                     .clamp(0.0, state.duration_secs);
@@ -744,7 +694,7 @@ pub fn render_waveform(
                     } else {
                         (current_sec, start)
                     };
-                    // Toon selectie highlight tijdens drag
+                    // Toon groene highlight tijdens drag
                     let a_x = rect.left() + (a - start_sec) * state.zoom;
                     let b_x = rect.left() + (b - start_sec) * state.zoom;
                     if b_x > a_x {
@@ -768,7 +718,6 @@ pub fn render_waveform(
                         .clamp(0.0, state.duration_secs);
                     let distance = (end - start).abs();
                     if distance > 0.3 {
-                        // Echte drag → selectie maken
                         let (a, b) = if end > start {
                             (start, end)
                         } else {
@@ -777,8 +726,9 @@ pub fn render_waveform(
                         state.loop_a_secs = Some(a);
                         state.loop_b_secs = Some(b);
                         loop_changed = true;
+                        seek_action = Some(a); // spring naar begin selectie
                     } else {
-                        // Kleine drag → klik → seek
+                        // Minimale drag → telt als klik → seek
                         seek_action = Some(end.clamp(0.0, state.duration_secs));
                     }
                 }
@@ -787,7 +737,7 @@ pub fn render_waveform(
     }
 
     // Enkelklik op waveform (geen drag): seek naar die positie
-    if response.clicked() && state.select_drag_start.is_none() {
+    if response.clicked() && !response.dragged() {
         if let Some(sec) = mouse_sec {
             seek_action = Some(sec.clamp(0.0, state.duration_secs));
         }
@@ -800,59 +750,26 @@ pub fn render_waveform(
         }
     }
 
-    // Rechterklik op waveform: wis selectie + markers menu
+    // Rechterklik op waveform: wis selectie of marker
     if response.secondary_clicked() {
-        let mut has_menu = false;
-        if let Some(sec) = mouse_sec {
-            // Toon context menu op waveform
-            egui::Area::new(ui.id().with("waveform_context_menu"))
-                .fixed_pos(
-                    ui.ctx()
-                        .input(|i| i.pointer.interact_pos().unwrap_or(egui::pos2(0.0, 0.0))),
-                )
-                .show(ui.ctx(), |ui| {
-                    if state.loop_a_secs.is_some() || state.loop_b_secs.is_some() {
-                        if ui.button("Wis selectie").clicked() {
-                            state.loop_a_secs = None;
-                            state.loop_b_secs = None;
-                            loop_changed = true;
-                            has_menu = true;
-                        }
-                    }
-                    if ui.button("➕ Nieuwe marker").clicked() {
-                        let base_name = format!("Marker {}", state.markers.len() + 1);
-                        state.markers.push(Marker {
-                            name: base_name,
-                            position_secs: sec.clamp(0.0, state.duration_secs),
-                        });
-                        has_menu = true;
-                    }
-                    if state.loop_a_secs.is_some() || state.loop_b_secs.is_some() {
-                        if ui.button("Set A (hier)").clicked() {
-                            state.loop_a_secs = Some(sec.clamp(0.0, state.duration_secs));
-                            loop_changed = true;
-                            has_menu = true;
-                        }
-                        if ui.button("Set B (hier)").clicked() {
-                            state.loop_b_secs = Some(sec.clamp(0.0, state.duration_secs));
-                            loop_changed = true;
-                            has_menu = true;
-                        }
-                    }
-                });
-        }
+        state.loop_a_secs = None;
+        state.loop_b_secs = None;
+        loop_changed = true;
     }
 
-    // Dubbelklik: creëer marker op die positie
+    // Dubbelklik op waveform: zet A (of B met Shift)
     if response.double_clicked() {
         if let Some(sec) = mouse_sec {
             let sec = sec.clamp(0.0, state.duration_secs);
-            // Voeg marker toe
-            let base_name = format!("Marker {}", state.markers.len() + 1);
-            state.markers.push(Marker {
-                name: base_name,
-                position_secs: sec,
-            });
+            if ui.ctx().input(|i| i.modifiers.shift) {
+                state.loop_b_secs = Some(sec);
+                if state.loop_a_secs.is_none() {
+                    state.loop_a_secs = Some(0.0);
+                }
+            } else {
+                state.loop_a_secs = Some(sec);
+            }
+            loop_changed = true;
         }
     }
 
