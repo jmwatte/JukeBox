@@ -1,4 +1,5 @@
 use eframe::egui;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
 use symphonia::core::audio::SampleBuffer;
@@ -7,7 +8,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::Hint;
 
 /// Soort marker: bepaalt kleur en functie
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkerKind {
     Section, // Sectie (bijv. "Intro", "Chorus") — Goud
     Measure, // Maat — Blauw
@@ -43,7 +44,7 @@ impl MarkerKind {
     }
 }
 /// Een benoemde marker op een positie in de track.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Marker {
     pub name: String,
     pub position_secs: f32,

@@ -1,4 +1,4 @@
-use crate::loops::SavedLoop;
+use crate::loops::{Library, SavedLoop};
 use crate::shortcuts::{KeyBinding, SerializableKey, ShortcutAction, ShortcutsConfig};
 use crate::waveform::{render_waveform, WaveformState};
 use crate::waveform_player::{start_waveform_thread, WaveformCommand, WaveformEvent};
@@ -16,11 +16,12 @@ pub struct LoopEditorApp {
     pub waveform_is_playing: bool,
     pub waveform_play_position: f32,
     pub waveform_play_duration: f32,
-    pub waveform_has_content: bool, // audio-thread heeft geladen samples (voor pause/resume)
+    pub waveform_has_content: bool,
 
-    // Loop library
-    pub saved_loops: Vec<SavedLoop>,
+    // Library (tracks, loops, markers, notes)
+    pub library: Library,
     pub show_loop_library: bool,
+    pub show_notes_popup: bool,
 
     // File path input
     pub file_path: String,
@@ -36,13 +37,13 @@ pub struct LoopEditorApp {
     // Shortcuts
     pub shortcuts: ShortcutsConfig,
     pub show_shortcut_editor: bool,
-    pub listening_for_action: Option<ShortcutAction>, // Voor "druk een nieuwe toets" modus
+    pub listening_for_action: Option<ShortcutAction>,
 }
 
 impl LoopEditorApp {
     pub fn new() -> Self {
         let (waveform_cmd_tx, waveform_event_rx) = start_waveform_thread();
-        let saved_loops = crate::loops::load_loops();
+        let library = crate::loops::load_library();
 
         Self {
             waveform_state: WaveformState::default(),
@@ -52,8 +53,9 @@ impl LoopEditorApp {
             waveform_play_position: 0.0,
             waveform_play_duration: 0.0,
             waveform_has_content: false,
-            saved_loops,
+            library,
             show_loop_library: false,
+            show_notes_popup: false,
             file_path: String::new(),
             status_message: String::new(),
             status_message_timer: 0,
@@ -151,6 +153,11 @@ impl LoopEditorApp {
                 self.waveform_state.error = None;
                 self.waveform_play_position = 0.0;
                 self.waveform_play_duration = duration_secs;
+
+                // Herstel markers en notities uit de bibliotheek
+                let track = self.library.track_for_path(path);
+                self.waveform_state.markers = track.markers.clone();
+
                 self.status_message = format!(
                     "Geladen: {} ({:.1}s, {} Hz)",
                     Path::new(path)
@@ -160,13 +167,22 @@ impl LoopEditorApp {
                     duration_secs,
                     sample_rate,
                 );
-                self.status_message_timer = 5 * 60; // ~5 sec
+                self.status_message_timer = 5 * 60;
             }
             Err(e) => {
                 self.waveform_state.error = Some(e.clone());
                 self.status_message = format!("Fout bij laden: {}", e);
-                self.status_message_timer = 10 * 60; // ~10 sec
+                self.status_message_timer = 10 * 60;
             }
+        }
+    }
+
+    /// Synchroniseer markers van waveform_state naar library en sla op.
+    fn sync_markers_to_library(&mut self) {
+        if let Some(ref path) = self.waveform_state.path.clone() {
+            let track = self.library.track_for_path(path);
+            track.markers = self.waveform_state.markers.clone();
+            crate::loops::save_library(&self.library);
         }
     }
 }
@@ -357,6 +373,7 @@ impl eframe::App for LoopEditorApp {
                         position_secs: self.waveform_play_position,
                         kind: crate::waveform::MarkerKind::Section,
                     });
+                    self.sync_markers_to_library();
                     self.status_message =
                         format!("Section marker op {:.1}s", self.waveform_play_position);
                     self.status_message_timer = 3 * 60;
@@ -378,6 +395,7 @@ impl eframe::App for LoopEditorApp {
                         position_secs: self.waveform_play_position,
                         kind: crate::waveform::MarkerKind::Measure,
                     });
+                    self.sync_markers_to_library();
                     self.status_message =
                         format!("Measure marker op {:.1}s", self.waveform_play_position);
                     self.status_message_timer = 3 * 60;
@@ -399,6 +417,7 @@ impl eframe::App for LoopEditorApp {
                         position_secs: self.waveform_play_position,
                         kind: crate::waveform::MarkerKind::Beat,
                     });
+                    self.sync_markers_to_library();
                     self.status_message =
                         format!("Beat marker op {:.1}s", self.waveform_play_position);
                     self.status_message_timer = 3 * 60;
@@ -420,6 +439,7 @@ impl eframe::App for LoopEditorApp {
                     }
                     if let Some(idx) = best_idx {
                         let removed = self.waveform_state.markers.remove(idx);
+                        self.sync_markers_to_library();
                         self.status_message = format!("Marker '{}' verwijderd", removed.name);
                         self.status_message_timer = 3 * 60;
                     }
@@ -892,21 +912,21 @@ impl eframe::App for LoopEditorApp {
                         ) {
                             if b > a {
                                 if let Some(ref path) = self.waveform_state.path {
-                                    let label =
-                                        crate::loops::generate_label(path, &self.saved_loops);
+                                    let label = self.library.generate_label(path);
                                     let saved = SavedLoop {
-                                        track_path: path.clone(),
                                         label,
                                         loop_a_secs: a,
                                         loop_b_secs: b,
                                         pitch_semitones: self.waveform_state.pitch_semitones,
                                         tempo: self.waveform_state.tempo,
                                     };
-                                    crate::loops::add_loop(&mut self.saved_loops, saved);
-                                    self.status_message = format!(
-                                        "Loop opgeslagen! ({} totaal)",
-                                        self.saved_loops.len()
-                                    );
+                                    let track = self.library.track_for_path(path);
+                                    track.loops.push(saved);
+                                    let total = track.loops.len();
+                                    crate::loops::save_library(&self.library);
+                                    self.status_message =
+                                        format!("Loop opgeslagen! ({} totaal)", total);
+                                    self.status_message_timer = 3 * 60;
                                 }
                             }
                         }
@@ -916,7 +936,7 @@ impl eframe::App for LoopEditorApp {
                 ui.separator();
 
                 // Loop bibliotheek toggle
-                if ui.button("📚 Loops").clicked() {
+                if ui.button("📚 Alle Tracks").clicked() {
                     self.show_loop_library = !self.show_loop_library;
                 }
 
@@ -934,101 +954,299 @@ impl eframe::App for LoopEditorApp {
                     self.waveform_state.scroll_offset = 0.0;
                 }
             });
+
+            // ── Track Paneel (onder de knoppen) ──
+            if let Some(ref path) = self.waveform_state.path.clone() {
+                let track_path = path.clone();
+                ui.separator();
+
+                // ── Collapsible: Opgeslagen Loops ──
+                ui.collapsing("Opgeslagen Loops", |ui| {
+                        let track = self.library.track_for_path(&track_path);
+                        if track.loops.is_empty() {
+                            ui.label("Nog geen loops opgeslagen. Maak een A-B selectie en klik 'Save Loop'.");
+                        } else {
+                            let mut delete_idx: Option<usize> = None;
+                            let mut load_idx: Option<usize> = None;
+
+                            for (i, saved) in track.loops.iter().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(&saved.label).size(13.0).strong());
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "  {:02}:{:02} → {:02}:{:02}  |  Pitch: {:+.1}  Tempo: {:.2}x",
+                                            (saved.loop_a_secs / 60.0) as u32,
+                                            saved.loop_a_secs as u32 % 60,
+                                            (saved.loop_b_secs / 60.0) as u32,
+                                            saved.loop_b_secs as u32 % 60,
+                                            saved.pitch_semitones,
+                                            saved.tempo,
+                                        ))
+                                        .size(11.0)
+                                        .color(Color32::GRAY),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("❌").clicked() {
+                                                delete_idx = Some(i);
+                                            }
+                                            if ui.small_button("▶").clicked() {
+                                                load_idx = Some(i);
+                                            }
+                                        },
+                                    );
+                                });
+                            }
+
+                            if let Some(idx) = delete_idx {
+                                let track = self.library.track_for_path(&track_path);
+                                if idx < track.loops.len() {
+                                    track.loops.remove(idx);
+                                    crate::loops::save_library(&self.library);
+                                }
+                            }
+
+                            if let Some(idx) = load_idx {
+                                let saved = {
+                                    let track = self.library.track_for_path(&track_path);
+                                    track.loops.get(idx).cloned()
+                                };
+                                if let Some(saved) = saved {
+                                    self.waveform_state.loop_a_secs = Some(saved.loop_a_secs);
+                                    self.waveform_state.loop_b_secs = Some(saved.loop_b_secs);
+                                    self.waveform_state.pitch_semitones = saved.pitch_semitones;
+                                    self.waveform_state.tempo = saved.tempo;
+                                    self.waveform_play_position = saved.loop_a_secs;
+                                    self.waveform_state.seek_pending = Some(saved.loop_a_secs);
+                                    self.waveform_state.playhead_frames_after_drag = 15;
+
+                                    let _ = self
+                                        .waveform_cmd_tx
+                                        .send(WaveformCommand::SetLoopBounds {
+                                            a_secs: saved.loop_a_secs,
+                                            b_secs: saved.loop_b_secs,
+                                        });
+                                    if self.waveform_has_content {
+                                        let _ = self
+                                            .waveform_cmd_tx
+                                            .send(WaveformCommand::Seek {
+                                                pos_secs: saved.loop_a_secs,
+                                            });
+                                    }
+                                    self.status_message =
+                                        format!("Loop '{}' geladen", saved.label);
+                                    self.status_message_timer = 3 * 60;
+                                }
+                            }
+                        }
+                    });
+
+                    ui.separator();
+
+                    // ── Collapsible: Notities ──
+                    ui.collapsing("Notities", |ui| {
+                        // Textarea
+                        let track_path_for_notes = track_path.clone();
+                        let notes = self
+                            .library
+                            .track_for_path(&track_path_for_notes)
+                            .notes
+                            .clone();
+                        let mut current_notes = notes.clone();
+                        let resp = ui.add_sized(
+                            egui::vec2(ui.available_width(), 120.0),
+                            egui::TextEdit::multiline(&mut current_notes)
+                                .hint_text("Notities, akkoorden, transcripties..."),
+                        );
+                        if resp.lost_focus() || resp.changed() {
+                            self.library
+                                .track_for_path(&track_path_for_notes)
+                                .notes = current_notes;
+                            crate::loops::save_library(&self.library);
+                        }
+
+                        ui.horizontal(|ui| {
+                            if ui.button("↗ Open in venster")
+                                .on_hover_text("Open een groter venster voor notities")
+                                .clicked()
+                            {
+                                self.show_notes_popup = !self.show_notes_popup;
+                            }
+                        });
+                    });
+                }
         });
 
-        // ── Loop bibliotheek venster ──
+        // ── Notities Popup ──
+        if self.show_notes_popup {
+            if let Some(ref path) = self.waveform_state.path.clone() {
+                let label = Path::new(path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Onbekend".to_string());
+                egui::Window::new(format!("📝 Notities: {}", label))
+                    .id(egui::Id::new("notes_popup_window"))
+                    .resizable(true)
+                    .default_size([600.0, 400.0])
+                    .show(ctx, |ui| {
+                        let track_path = path.clone();
+                        let notes = self.library.track_for_path(&track_path).notes.clone();
+                        let mut current_notes = notes;
+                        let resp = ui.add_sized(
+                            egui::vec2(ui.available_width(), ui.available_height() - 10.0),
+                            egui::TextEdit::multiline(&mut current_notes)
+                                .hint_text("Typ hier je notities..."),
+                        );
+                        if resp.lost_focus() || resp.changed() {
+                            self.library.track_for_path(&track_path).notes = current_notes;
+                            crate::loops::save_library(&self.library);
+                        }
+                    });
+            }
+        }
+
+        // ── Alle Tracks bibliotheek (popup) ──
         if self.show_loop_library {
-            egui::Window::new("📚 Loop Bibliotheek")
+            egui::Window::new("📚 Alle Tracks")
                 .id(egui::Id::new("loop_library_window"))
                 .resizable(true)
                 .default_size([500.0, 400.0])
                 .show(ctx, |ui| {
-                    if self.saved_loops.is_empty() {
-                        ui.label("Geen opgeslagen loops. Maak een A-B loop en klik 'Save Loop'.");
+                    if self.library.tracks.is_empty() {
+                        ui.label("Nog geen tracks. Laad een audiobestand en maak loops.");
                     } else {
-                        let mut delete_idx: Option<usize> = None;
-                        let mut load_loop: Option<usize> = None;
+                        let mut delete_loop_op: Option<(usize, usize)> = None;
+                        let mut load_loop_op: Option<(usize, usize)> = None;
 
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            for (i, saved) in self.saved_loops.iter().enumerate() {
+                            for (ti, track) in self.library.tracks.iter().enumerate() {
+                                let has_notes = !track.notes.is_empty();
                                 ui.horizontal(|ui| {
-                                    ui.label(RichText::new(&saved.label).size(14.0).strong());
-
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        if ui.button("❌").clicked() {
-                                            delete_idx = Some(i);
-                                        }
-                                        if ui.button("▶ Laden").clicked() {
-                                            load_loop = Some(i);
-                                        }
-                                    });
+                                    ui.label(
+                                        RichText::new(format!("🎵 {}", track.label))
+                                            .size(14.0)
+                                            .strong(),
+                                    );
+                                    if has_notes {
+                                        ui.label(
+                                            RichText::new("📝").size(14.0).color(Color32::GRAY),
+                                        );
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("▶").clicked() {
+                                                load_loop_op = Some((ti, 0)); // load track, eerste loop
+                                            }
+                                        },
+                                    );
                                 });
 
-                                ui.label(
-                                    RichText::new(format!(
-                                        "  {:02}:{:02} → {:02}:{:02}  |  Pitch: {:+.1}  Tempo: {:.2}x",
-                                        (saved.loop_a_secs / 60.0) as u32,
-                                        saved.loop_a_secs as u32 % 60,
-                                        (saved.loop_b_secs / 60.0) as u32,
-                                        saved.loop_b_secs as u32 % 60,
-                                        saved.pitch_semitones,
-                                        saved.tempo,
-                                    ))
-                                    .size(11.0)
-                                    .color(Color32::GRAY),
-                                );
+                                // Sub-lijst loops
+                                if !track.loops.is_empty() {
+                                    for (li, saved) in track.loops.iter().enumerate() {
+                                        ui.indent("loops", |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.label(RichText::new(&saved.label).size(12.0));
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{:02}:{:02} → {:02}:{:02}",
+                                                        (saved.loop_a_secs / 60.0) as u32,
+                                                        saved.loop_a_secs as u32 % 60,
+                                                        (saved.loop_b_secs / 60.0) as u32,
+                                                        saved.loop_b_secs as u32 % 60,
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(Color32::GRAY),
+                                                );
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(
+                                                        egui::Align::Center,
+                                                    ),
+                                                    |ui| {
+                                                        if ui.small_button("❌").clicked() {
+                                                            delete_loop_op = Some((ti, li));
+                                                        }
+                                                        if ui.small_button("▶").clicked() {
+                                                            load_loop_op = Some((ti, li));
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+                                    }
+                                } else {
+                                    ui.indent("loops", |ui| {
+                                        ui.label(
+                                            RichText::new("  (geen loops)")
+                                                .size(11.0)
+                                                .color(Color32::GRAY),
+                                        );
+                                    });
+                                }
                                 ui.separator();
                             }
                         });
 
-                        if let Some(idx) = delete_idx {
-                            crate::loops::remove_loop(&mut self.saved_loops, idx);
+                        // ── Verwerk operaties buiten de iterator ──
+                        if let Some((ti, li)) = delete_loop_op {
+                            if ti < self.library.tracks.len() {
+                                self.library.tracks[ti].loops.remove(li);
+                                crate::loops::save_library(&self.library);
+                            }
                         }
 
-                        if let Some(idx) = load_loop {
-                            let saved = self.saved_loops[idx].clone();
-                            let track_changed = self.waveform_state.path.as_deref()
-                                != Some(&saved.track_path);
+                        if let Some((ti, li)) = load_loop_op {
+                            // Clone eerst alle data die we nodig hebben
+                            let (track_path, saved) = {
+                                let track = &self.library.tracks[ti];
+                                let path = track.track_path.clone();
+                                let saved = track.loops.get(li).cloned();
+                                (path, saved)
+                            };
 
-                            if track_changed {
-                                // Track wijzigt → stop huidige playback en laad nieuwe track
-                                if self.waveform_is_playing {
-                                    let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
-                                    self.waveform_is_playing = false;
+                            if let Some(saved) = saved {
+                                let track_changed =
+                                    self.waveform_state.path.as_deref() != Some(&track_path);
+
+                                if track_changed {
+                                    if self.waveform_is_playing {
+                                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+                                        self.waveform_is_playing = false;
+                                    }
+                                    self.load_file(&track_path);
+                                    self.waveform_has_content = false;
                                 }
-                                self.load_file(&saved.track_path);
-                                self.waveform_has_content = false;
-                            }
 
-                            // Update de UI-state
-                            self.waveform_state.loop_a_secs = Some(saved.loop_a_secs);
-                            self.waveform_state.loop_b_secs = Some(saved.loop_b_secs);
-                            self.waveform_state.pitch_semitones = saved.pitch_semitones;
-                            self.waveform_state.tempo = saved.tempo;
-                            self.waveform_play_position = saved.loop_a_secs;
+                                self.waveform_state.loop_a_secs = Some(saved.loop_a_secs);
+                                self.waveform_state.loop_b_secs = Some(saved.loop_b_secs);
+                                self.waveform_state.pitch_semitones = saved.pitch_semitones;
+                                self.waveform_state.tempo = saved.tempo;
+                                self.waveform_play_position = saved.loop_a_secs;
+                                self.waveform_state.seek_pending = Some(saved.loop_a_secs);
+                                self.waveform_state.playhead_frames_after_drag = 15;
 
-                            // Als er al wordt afgespeeld: stuur real-time updates naar audio-thread
-                            if self.waveform_is_playing {
-                                let _ = self
-                                    .waveform_cmd_tx
-                                    .send(WaveformCommand::SetPitch(saved.pitch_semitones));
-                                let _ = self
-                                    .waveform_cmd_tx
-                                    .send(WaveformCommand::SetTempo(saved.tempo));
-                                let _ = self
-                                    .waveform_cmd_tx
-                                    .send(WaveformCommand::SetLoopBounds {
-                                        a_secs: saved.loop_a_secs,
-                                        b_secs: saved.loop_b_secs,
-                                    });
-                                let _ = self
-                                    .waveform_cmd_tx
-                                    .send(WaveformCommand::Seek {
+                                if self.waveform_is_playing {
+                                    let _ = self
+                                        .waveform_cmd_tx
+                                        .send(WaveformCommand::SetPitch(saved.pitch_semitones));
+                                    let _ = self
+                                        .waveform_cmd_tx
+                                        .send(WaveformCommand::SetTempo(saved.tempo));
+                                    let _ =
+                                        self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                                            a_secs: saved.loop_a_secs,
+                                            b_secs: saved.loop_b_secs,
+                                        });
+                                    let _ = self.waveform_cmd_tx.send(WaveformCommand::Seek {
                                         pos_secs: saved.loop_a_secs,
                                     });
-                            }
+                                }
 
-                            self.status_message = format!("Loop '{}' geladen", saved.label);
+                                self.status_message = format!("Loop '{}' geladen", saved.label);
+                                self.status_message_timer = 3 * 60;
+                            }
                         }
                     }
                 });
