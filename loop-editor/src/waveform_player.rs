@@ -226,7 +226,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                             b: b_sample,
                             enabled: true,
                         };
-                        *segment_start_sec.lock().unwrap() = a_secs;
+                        // *segment_start_sec.lock().unwrap() = a_secs;
                         *segment_dur.lock().unwrap() = (b_secs - a_secs).max(0.001);
                     } else {
                         *loop_bounds.lock().unwrap() = LoopBounds {

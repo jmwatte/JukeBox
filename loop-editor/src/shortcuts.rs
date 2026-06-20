@@ -23,6 +23,8 @@ pub enum ShortcutAction {
     SetLoopB,
     ClearLoop,
     ToggleLoopBypass,
+    NudgeLoopLeft,
+    NudgeLoopRight,
 
     // Markers
     AddSectionMarker,
@@ -52,6 +54,8 @@ impl ShortcutAction {
             Self::SetLoopB => "Set loop B at playhead",
             Self::ClearLoop => "Clear A-B loop",
             Self::ToggleLoopBypass => "Toggle loop bypass",
+            Self::NudgeLoopLeft => "Nudge loop left",
+            Self::NudgeLoopRight => "Nudge loop right",
             Self::AddSectionMarker => "Add section marker",
             Self::AddMeasureMarker => "Add measure marker",
             Self::AddBeatMarker => "Add beat marker",
@@ -68,7 +72,12 @@ impl ShortcutAction {
     pub fn category(&self) -> &'static str {
         match self {
             Self::PlayPause | Self::Stop | Self::SeekForward | Self::SeekBackward => "Playback",
-            Self::SetLoopA | Self::SetLoopB | Self::ClearLoop | Self::ToggleLoopBypass => "Loop",
+            Self::SetLoopA
+            | Self::SetLoopB
+            | Self::ClearLoop
+            | Self::ToggleLoopBypass
+            | Self::NudgeLoopLeft
+            | Self::NudgeLoopRight => "Loop",
             Self::AddSectionMarker
             | Self::AddMeasureMarker
             | Self::AddBeatMarker
@@ -89,6 +98,8 @@ impl ShortcutAction {
             Self::SetLoopB,
             Self::ClearLoop,
             Self::ToggleLoopBypass,
+            Self::NudgeLoopLeft,
+            Self::NudgeLoopRight,
             Self::AddSectionMarker,
             Self::AddMeasureMarker,
             Self::AddBeatMarker,
@@ -409,6 +420,14 @@ impl Default for ShortcutsConfig {
         bindings.insert(
             ShortcutAction::ToggleLoopBypass,
             KeyBinding::new(SerializableKey::B).with_ctrl(),
+        );
+        bindings.insert(
+            ShortcutAction::NudgeLoopLeft,
+            KeyBinding::new(SerializableKey::ArrowLeft).with_shift(),
+        );
+        bindings.insert(
+            ShortcutAction::NudgeLoopRight,
+            KeyBinding::new(SerializableKey::ArrowRight).with_shift(),
         );
 
         // Markers

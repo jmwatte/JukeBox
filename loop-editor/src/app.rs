@@ -455,6 +455,79 @@ impl eframe::App for LoopEditorApp {
                         format!("Loop B gezet op {:.1}s", self.waveform_play_position);
                     self.status_message_timer = 3 * 60;
                 }
+
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgeLoopLeft, &ctx.input(|i| i.clone()))
+                {
+                    if let (Some(a), Some(b)) = (
+                        self.waveform_state.loop_a_secs,
+                        self.waveform_state.loop_b_secs,
+                    ) {
+                        let len = b - a;
+                        let new_a = (a - len).max(0.0);
+                        let new_b = new_a + len;
+                        self.waveform_state.loop_a_secs = Some(new_a);
+                        self.waveform_state.loop_b_secs = Some(new_b);
+
+                        self.waveform_play_position = new_a;
+                        self.waveform_state.seek_pending = Some(new_a);
+                        self.waveform_state.playhead_frames_after_drag = 15;
+
+                        let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                            a_secs: new_a,
+                            b_secs: new_b,
+                        });
+                        if self.waveform_has_content {
+                            let _ = self
+                                .waveform_cmd_tx
+                                .send(WaveformCommand::Seek { pos_secs: new_a });
+                        }
+                        self.status_message =
+                            format!("Loop genudget ← naar {:.1}s–{:.1}s", new_a, new_b);
+                        self.status_message_timer = 3 * 60;
+                    } else {
+                        self.status_message = "Geen A-B loop ingesteld om te nudgen".to_string();
+                        self.status_message_timer = 2 * 60;
+                    }
+                }
+
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgeLoopRight, &ctx.input(|i| i.clone()))
+                {
+                    if let (Some(a), Some(b)) = (
+                        self.waveform_state.loop_a_secs,
+                        self.waveform_state.loop_b_secs,
+                    ) {
+                        let len = b - a;
+                        let dur = self.waveform_state.duration_secs;
+                        let new_b = (b + len).min(dur);
+                        let new_a = new_b - len;
+                        self.waveform_state.loop_a_secs = Some(new_a);
+                        self.waveform_state.loop_b_secs = Some(new_b);
+
+                        self.waveform_play_position = new_a;
+                        self.waveform_state.seek_pending = Some(new_a);
+                        self.waveform_state.playhead_frames_after_drag = 15;
+
+                        let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                            a_secs: new_a,
+                            b_secs: new_b,
+                        });
+                        if self.waveform_has_content {
+                            let _ = self
+                                .waveform_cmd_tx
+                                .send(WaveformCommand::Seek { pos_secs: new_a });
+                        }
+                        self.status_message =
+                            format!("Loop genudget → naar {:.1}s–{:.1}s", new_a, new_b);
+                        self.status_message_timer = 3 * 60;
+                    } else {
+                        self.status_message = "Geen A-B loop ingesteld om te nudgen".to_string();
+                        self.status_message_timer = 2 * 60;
+                    }
+                }
             }
 
             // ── ← → Rewind/Forward 2 seconden ──
@@ -582,6 +655,8 @@ impl eframe::App for LoopEditorApp {
                         shortcut_row(ui, "Backspace", "Marker verwijderen (dichtstbij)");
                         shortcut_row(ui, "[", "Zet loop A op playhead");
                         shortcut_row(ui, "]", "Zet loop B op playhead");
+                        shortcut_row(ui, "Shift+←", "Loop naar links nudgen");
+                        shortcut_row(ui, "Shift+→", "Loop naar rechts nudgen");
                         shortcut_row(ui, "Ctrl+Sleep", "A-B selectie maken");
                         shortcut_row(ui, "Dubbelklik", "Zet A-marker");
                         shortcut_row(ui, "Shift+Dubbelklik", "Zet B-marker");
