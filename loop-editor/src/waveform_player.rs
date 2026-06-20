@@ -3,6 +3,7 @@ use rodio::{OutputStream, Sink, Source};
 use rubato::{
     Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction,
 };
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -22,8 +23,7 @@ pub enum WaveformCommand {
     },
     Stop,
     TogglePause,
-    /// Nieuwe loop-grenzen, wordt toegepast bij de volgende wrap (B → A).
-    /// Voorkomt stutter door niet direct te herstarten.
+    /// Nieuwe loop-grenzen + samples. Wordt toegepast bij de volgende B→A wrap.
     UpdateLoopBounds {
         segment_samples: Vec<f32>,
         segment_sample_rate: u32,
@@ -360,11 +360,68 @@ fn restart_playback(
 }
 
 // ---------------------------------------------------------------------------
-// rodio Source wrapper rond Vec<f32>
+// Gedeelde loop-grenzen voor naadloze updates tijdens afspelen
 // ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+struct LoopBounds {
+    a_sample: usize,
+    b_sample: usize,
+}
+
+/// Source die door een Vec<f32> loopt en bij B terugspringt naar A.
+/// A en B worden via `Arc<Mutex<LoopBounds>>` dynamisch geüpdatet.
+/// Geen rubato — speelt ruwe samples.
+#[allow(dead_code)]
+struct LoopingSource {
+    samples: Vec<f32>,
+    pos: usize,
+    bounds: Arc<Mutex<LoopBounds>>,
+    sample_rate: u32,
+}
+
+impl Iterator for LoopingSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let sample = self.samples[self.pos];
+        self.pos += 1;
+        let bounds = self.bounds.lock().unwrap();
+        if self.pos >= bounds.b_sample {
+            self.pos = bounds.a_sample;
+        }
+        Some(sample)
+    }
+}
+
+impl Source for LoopingSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        if self.samples.is_empty() {
+            None
+        } else {
+            Some(self.samples.len().saturating_sub(self.pos))
+        }
+    }
+
+    fn channels(&self) -> u16 {
+        1
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None // infinite (looping)
+    }
+}
 
 /// Eenvoudige Source die Vec<f32> afspeelt via rodio.
 /// Loopt oneindig (wrap-around) voor naadloze loop-playback.
+/// Gebruikt voor rubato-verwerkte segmenten (vaste grenzen).
 #[derive(Clone)]
 struct WaveformSource {
     samples: Vec<f32>,
@@ -382,7 +439,7 @@ impl Iterator for WaveformSource {
         let sample = self.samples[self.pos];
         self.pos += 1;
         if self.pos >= self.samples.len() {
-            self.pos = 0; // oneindig loopen
+            self.pos = 0;
         }
         Some(sample)
     }
