@@ -323,6 +323,9 @@ struct SoundTouchSource {
 
     current_pitch: f32,
     current_tempo: f32,
+    // ✅ NIEUW: Voor vloeiende playhead interpolatie
+    base_read_pos: usize,
+    consumed_out_samples: usize,
 }
 
 impl SoundTouchSource {
@@ -365,6 +368,8 @@ impl SoundTouchSource {
             out_idx: 0,
             current_pitch: initial_pitch,
             current_tempo: initial_tempo,
+            base_read_pos: start_pos, // ✅ NIEUW
+            consumed_out_samples: 0,  // ✅ NIEUW
         }
     }
 
@@ -379,7 +384,9 @@ impl SoundTouchSource {
             self.read_pos = atomic_pos as usize;
             self.st.clear();
         }
-
+        // ✅ NIEUW: Reset interpolatie tellers voor deze nieuwe buffer-vulling
+        self.base_read_pos = self.read_pos;
+        self.consumed_out_samples = 0;
         self.out_buf.clear();
         self.out_idx = 0;
 
@@ -467,8 +474,8 @@ impl SoundTouchSource {
         }
 
         // Update UI playhead positie
-        self.source_pos
-            .store(f64::to_bits(self.read_pos as f64), Ordering::Relaxed);
+        //   self.source_pos
+        //     .store(f64::to_bits(self.read_pos as f64), Ordering::Relaxed);
     }
 }
 
@@ -481,6 +488,17 @@ impl Iterator for SoundTouchSource {
         if self.out_idx < self.out_buf.len() {
             let val = self.out_buf[self.out_idx];
             self.out_idx += 1;
+            self.consumed_out_samples += 1;
+
+            // ✅ FIX: Update source_pos continu terwijl Rodio samples consumeert.
+            // Dit maakt de playhead perfect vloeiend, ongeacht het tempo.
+            let tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
+            let current_raw_pos =
+                self.base_read_pos as f64 + (self.consumed_out_samples as f64 * tempo as f64);
+
+            self.source_pos
+                .store(f64::to_bits(current_raw_pos), Ordering::Relaxed);
+
             Some(val)
         } else {
             None
