@@ -32,7 +32,6 @@ impl Library {
                 track_path: track_path.to_string(),
                 label,
                 markers: Vec::new(),
-                notes: String::new(),
                 loops: Vec::new(),
             });
             self.tracks.last_mut().unwrap()
@@ -68,7 +67,6 @@ pub struct TrackData {
     pub track_path: String,
     pub label: String,
     pub markers: Vec<Marker>,
-    pub notes: String,
     pub loops: Vec<SavedLoop>,
 }
 
@@ -84,6 +82,9 @@ pub struct SavedLoop {
     /// Tempo-factor.
     #[serde(default = "default_tempo")]
     pub tempo: f32,
+    /// Notities voor deze loop (akkoorden, noten, etc.)
+    #[serde(default)]
+    pub notes: String,
 }
 
 fn default_tempo() -> f32 {
@@ -118,6 +119,7 @@ pub fn load_library() -> Library {
                     loop_b_secs: old.loop_b_secs,
                     pitch_semitones: old.pitch_semitones,
                     tempo: old.tempo,
+                    notes: String::new(),
                 });
             }
             // Sla nieuwe format meteen op

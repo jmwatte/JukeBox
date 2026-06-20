@@ -377,6 +377,7 @@ impl SoundTouchSource {
         if (atomic_pos - self.read_pos as f64).abs() > 10.0 {
             // De UI heeft geseekt! Trek onze interne leespositie bij.
             self.read_pos = atomic_pos as usize;
+            self.st.clear();
         }
 
         self.out_buf.clear();
@@ -390,10 +391,12 @@ impl SoundTouchSource {
             let pitch_ratio = f64::powf(2.0, (new_pitch as f64) / 12.0);
             self.st.set_pitch(pitch_ratio);
             self.current_pitch = new_pitch;
+            self.st.clear();
         }
         if (new_tempo - self.current_tempo).abs() > 0.01 {
             self.st.set_tempo(new_tempo as f64);
             self.current_tempo = new_tempo;
+            self.st.clear();
         }
 
         let raw = self.raw_samples.lock().unwrap();
