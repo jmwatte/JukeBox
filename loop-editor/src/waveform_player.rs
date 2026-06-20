@@ -342,19 +342,23 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 }
 
 // ---------------------------------------------------------------------------
-// RealTimePitchTempoSource — two-stage DSP: pitch resample → tempo resample
+// RealTimePitchTempoSource — Granular Overlap-Add
 // ---------------------------------------------------------------------------
 
-/// Aantal samples per output chunk.
+/// Aantal output samples per chunk.
 const CHUNK_SIZE: usize = 512;
 
-/// Verwerkt audio in twee onafhankelijke fasen:
-/// 1. **Pitch-shift** (resample): leest uit `samples` met stap `pitch_factor`.
-///    Alleen `pitch_factor` bepaalt de leessnelheid → de toonhoogte verandert.
-/// 2. **Tempo** (resample): leest uit de pitch-buffer met stap `1/(tempo*pitch_factor)`.
-///    Hierdoor wordt de duur gecorrigeerd zonder de toonhoogte opnieuw te beïnvloeden.
+/// Grootte van elk grain (in output samples).
+const GRAIN_SIZE: usize = 2048;
+
+/// Gebruikt Granular Overlap-Add (OLA) met 2 simultane grains die 50% overlappen.
 ///
-/// Resultaat: `pitch` en `tempo` zijn volledig onafhankelijk.
+/// **Pitch** wordt bepaald door de leessnelheid (`read_step = pitch_factor`) onafhankelijk
+/// van de grain-envelope.
+/// **Tempo** wordt bepaald door hoe snel de grain-fase doorloopt (`tempo / grain_size`).
+///
+/// Doordat de leessnelheid (pitch) en de envelop-snelheid (tempo) volledig gescheiden zijn,
+/// is de toonhoogte onafhankelijk van de afspeelsnelheid.
 struct RealTimePitchTempoSource {
     samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
@@ -364,12 +368,16 @@ struct RealTimePitchTempoSource {
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
 
-    // Fase 1 — pitch-shift
-    src_pos: f64,          // leespositie in ruwe samples (alleen pitch-factor)
-    pitch_buf: Vec<f32>,   // tussenbuffer pitch-verschoven audio
-    pitch_consumed: usize, // aantal al-verbruikte pitch samples
+    // Granular state
+    read_pos_a: f64, // leespositie grain A in ruwe samples
+    read_pos_b: f64, // leespositie grain B in ruwe samples (offset = GRAIN_SIZE/2 * pitch_factor)
+    phase_a: f64,    // grain-fase A: 0.0–1.0
+    phase_b: f64,    // grain-fase B: 0.0–1.0 (offset = 0.5)
 
-    // Fase 2 — output
+    // Pre-berekende Hann window
+    hann: Vec<f32>,
+
+    // Output
     buf: Vec<f32>,
     buf_idx: usize,
 }
@@ -385,6 +393,16 @@ impl RealTimePitchTempoSource {
         wrap_count: Arc<AtomicU32>,
     ) -> Self {
         let start = f64::from_bits(source_pos.load(Ordering::Relaxed));
+        let pitch = f32::from_bits(pitch_semitones.load(Ordering::Relaxed));
+        let pf = f32::powf(2.0, pitch / 12.0) as f64;
+
+        // Pre-bereken Hann window
+        let mut hann = vec![0.0_f32; GRAIN_SIZE];
+        for i in 0..GRAIN_SIZE {
+            let p = std::f64::consts::TAU * i as f64 / (GRAIN_SIZE as f64 - 1.0);
+            hann[i] = (0.5 * (1.0 - p.cos())) as f32;
+        }
+
         Self {
             samples,
             sample_rate,
@@ -393,9 +411,11 @@ impl RealTimePitchTempoSource {
             loop_bounds,
             source_pos,
             wrap_count,
-            src_pos: start,
-            pitch_buf: Vec::new(),
-            pitch_consumed: 0,
+            read_pos_a: start,
+            read_pos_b: start + GRAIN_SIZE as f64 * pf * 0.5,
+            phase_a: 0.0,
+            phase_b: 0.5,
+            hann,
             buf: Vec::new(),
             buf_idx: 0,
         }
@@ -409,77 +429,81 @@ impl RealTimePitchTempoSource {
             return;
         }
 
-        let total_len = raw.len();
-        let pitch_bits = self.pitch_semitones.load(Ordering::Relaxed);
-        let tempo_bits = self.tempo.load(Ordering::Relaxed);
-        let pitch = f32::from_bits(pitch_bits);
-        let t = f32::from_bits(tempo_bits);
-        let pitch_factor = f32::powf(2.0, pitch / 12.0) as f64;
-        let tempo = t as f64;
-
+        let total_len = raw.len() as f64;
         let bounds = *self.loop_bounds.lock().unwrap();
         let looping = bounds.enabled();
+        let loop_a = bounds.a as f64;
+        let loop_b = bounds.b as f64;
+
+        let pitch_bits = self.pitch_semitones.load(Ordering::Relaxed);
+        let tempo_bits = self.tempo.load(Ordering::Relaxed);
+        let pf = f32::powf(2.0, f32::from_bits(pitch_bits) / 12.0) as f64;
+        let tempo = f32::from_bits(tempo_bits) as f64;
+
+        // Offset tussen A en B in de bron = halve korrel * pitch_factor
+        let grain_offset = GRAIN_SIZE as f64 * pf * 0.5;
+
+        // Fase-increment per output sample
+        let phase_inc = tempo / GRAIN_SIZE as f64;
 
         self.buf.clear();
 
-        // ── Opruimen verbruikte pitch samples ──
-        if self.pitch_consumed > 0 {
-            self.pitch_buf.drain(0..self.pitch_consumed);
-            self.pitch_consumed = 0;
-        }
-
-        // ── Fase 1: Pitch-shift (resample uit `raw` met stap pitch_factor) ──
-        // We hebben pitch_samples nodig voor CHUNK_SIZE output samples.
-        // Per output sample verbruiken we 1/(tempo*pitch_factor) pitch samples.
-        let needed = (CHUNK_SIZE as f64 / (tempo * pitch_factor)).ceil() as usize + 8;
-        while self.pitch_buf.len() < needed {
-            let mut pos = self.src_pos;
-
-            // Looping
-            if looping && pos as usize >= bounds.b {
-                pos = bounds.a as f64;
+        for _ in 0..CHUNK_SIZE {
+            // ── Looping check voor read_pos_a ──
+            if looping && self.read_pos_a >= loop_b {
+                self.read_pos_a -= loop_b - loop_a;
                 self.wrap_count.fetch_add(1, Ordering::Relaxed);
             }
-            if pos as usize >= total_len {
+            if self.read_pos_a >= total_len {
                 if looping {
-                    pos = bounds.a as f64;
+                    self.read_pos_a -= total_len;
                     self.wrap_count.fetch_add(1, Ordering::Relaxed);
                 } else {
                     break;
                 }
             }
 
-            // Her-initialiseer src_pos als deze gewrapt heeft
-            self.src_pos = pos;
-
-            let sample = lerp(raw, self.src_pos);
-            self.pitch_buf.push(sample);
-            self.src_pos += pitch_factor;
-        }
-
-        // ── Fase 2: Tempo-correctie (resample uit pitch_buf) ──
-        // tempo_step = 1 / (tempo * pitch_factor)
-        // Dit compenseert de tempo-verandering uit de pitch-shift EN past gewenste tempo toe.
-        let tempo_step = 1.0 / (tempo * pitch_factor);
-        let mut tpos = 0.0_f64;
-        for _ in 0..CHUNK_SIZE {
-            let idx = tpos as usize;
-            if idx >= self.pitch_buf.len() {
-                break;
+            // read_pos_b = read_pos_a + grain_offset (constant offset)
+            self.read_pos_b = self.read_pos_a + grain_offset;
+            if self.read_pos_b >= total_len {
+                if looping {
+                    self.read_pos_b -= total_len;
+                } else {
+                    // Clamp — grain B valt buiten de buffer
+                    self.read_pos_b = self.read_pos_b.min(total_len - 1.0).max(0.0);
+                }
             }
-            let frac = tpos - idx as f64;
-            let next = (idx + 1).min(self.pitch_buf.len() - 1);
-            let s0 = self.pitch_buf[idx] as f64;
-            let s1 = self.pitch_buf[next] as f64;
-            self.buf.push((s0 + (s1 - s0) * frac) as f32);
-            tpos += tempo_step;
+
+            // ── Lees samples met lineaire interpolatie ──
+            let s_a = lerp(raw, self.read_pos_a) as f64;
+            let s_b = lerp(raw, self.read_pos_b) as f64;
+
+            // ── Hann window op beide grains ──
+            let idx_a = (self.phase_a.clamp(0.0, 0.9999) * (GRAIN_SIZE as f64 - 1.0)) as usize;
+            let idx_b = (self.phase_b.clamp(0.0, 0.9999) * (GRAIN_SIZE as f64 - 1.0)) as usize;
+            let w_a = self.hann[idx_a] as f64;
+            let w_b = self.hann[idx_b] as f64;
+
+            // ── Output = som van gewogen grains ──
+            let out = s_a * w_a + s_b * w_b;
+            self.buf.push(out as f32);
+
+            // ── Advance ──
+            self.read_pos_a += pf; // ← PITCH: alleen pitch_factor
+            self.phase_a += phase_inc; // ← TEMPO: alleen tempo/grain_size
+            self.phase_b += phase_inc;
+
+            // Wrap grain-fases
+            if self.phase_a >= 1.0 {
+                self.phase_a -= 1.0;
+            }
+            if self.phase_b >= 1.0 {
+                self.phase_b -= 1.0;
+            }
         }
 
-        self.pitch_consumed = (tpos.ceil() as usize).min(self.pitch_buf.len());
-
-        // Lock-free write: de UI-thread leest `source_pos` voor de playhead
         self.source_pos
-            .store(f64::to_bits(self.src_pos), Ordering::Relaxed);
+            .store(f64::to_bits(self.read_pos_a), Ordering::Relaxed);
         self.buf_idx = 0;
     }
 }
