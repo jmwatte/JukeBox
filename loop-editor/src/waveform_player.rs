@@ -168,7 +168,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.clear();
                     }
                     is_playing = false;
-                    seek_requested.store(false, Ordering::Relaxed);
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 }
                 WaveformCommand::Pause => {
@@ -236,8 +235,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     tempo.store(f32::to_bits(new_tempo), Ordering::Relaxed);
                 }
                 WaveformCommand::SetLoopEnabled(enabled) => {
-                    let mut bounds = loop_bounds.lock().unwrap();
-                    bounds.enabled = enabled;
+                    loop_bounds.lock().unwrap().enabled = enabled;
                 }
             }
         }
@@ -258,7 +256,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         let loop_start_sec = bounds.a as f32 / sr as f32;
                         let loop_end_sec = bounds.b as f32 / sr as f32;
                         let loop_dur = loop_end_sec - loop_start_sec;
-
                         if loop_dur > 0.0 && pos_secs >= loop_end_sec {
                             loop_start_sec + ((pos_secs - loop_start_sec) % loop_dur)
                         } else {
@@ -300,13 +297,13 @@ struct SoundTouchSource {
     current_tempo: f32,
     base_read_pos: usize,
     consumed_out_samples: usize,
-
-    // ✅ CACHE voor lock-free next() functie
     cached_tempo: f64,
     cached_loop_enabled: bool,
     cached_loop_start: f64,
     cached_loop_end: f64,
     cached_loop_dur: f64,
+    // ✅ NIEUW: Track of we een fade-in moeten toepassen na een parameter-wijziging
+    needs_fade_in: bool,
 }
 
 impl SoundTouchSource {
@@ -333,7 +330,6 @@ impl SoundTouchSource {
 
         let start_pos = f64::from_bits(source_pos.load(Ordering::Relaxed)) as usize;
 
-        // ✅ Lees loop bounds en drop lock VOORDAT we loop_bounds in struct stoppen
         let bounds = loop_bounds.lock().unwrap();
         let c_enabled = bounds.enabled();
         let (c_start, c_end, c_dur) = if c_enabled {
@@ -367,11 +363,12 @@ impl SoundTouchSource {
             cached_loop_start: c_start,
             cached_loop_end: c_end,
             cached_loop_dur: c_dur,
+            needs_fade_in: false,
         }
     }
 
     fn fill_buffer(&mut self) {
-        // ✅ Echte seek detectie via dedicated flag
+        // 1. Echte seek detectie
         if self.seek_requested.swap(false, Ordering::Relaxed) {
             let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
             self.read_pos = atomic_pos as usize;
@@ -380,25 +377,62 @@ impl SoundTouchSource {
             self.consumed_out_samples = 0;
         }
 
-        self.out_buf.clear();
-        self.out_idx = 0;
-        self.consumed_out_samples = 0;
-
-        // ✅ Update parameters — GEEN st.clear()!
+        // 2. Check of UI parameters heeft gewijzigd
         let new_pitch = f32::from_bits(self.pitch_semitones.load(Ordering::Relaxed));
         let new_tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
+        let mut param_changed = false;
 
         if (new_pitch - self.current_pitch).abs() > 0.01 {
             let pitch_ratio = f64::powf(2.0, (new_pitch as f64) / 12.0);
             self.st.set_pitch(pitch_ratio);
             self.current_pitch = new_pitch;
+            param_changed = true;
         }
         if (new_tempo - self.current_tempo).abs() > 0.01 {
             self.st.set_tempo(new_tempo as f64);
             self.current_tempo = new_tempo;
+            param_changed = true;
         }
 
-        // ✅ UPDATE CACHE voor lock-free next() functie
+        // 3. ✅ CROSSFADE LOGICA: Voorkom delay ZONDER ticks
+        if param_changed {
+            // Fade-out de resterende samples in de huidige buffer
+            let remaining = self.out_buf.len().saturating_sub(self.out_idx);
+            if remaining > 0 {
+                let fade_len = remaining.min(256); // 256 samples = ~5.8ms
+                for i in 0..fade_len {
+                    let gain = 1.0 - (i as f32 / fade_len as f32);
+                    self.out_buf[self.out_idx + i] *= gain;
+                }
+                // Maak de rest stil om abrupte afkap te voorkomen
+                for i in fade_len..remaining {
+                    self.out_buf[self.out_idx + i] = 0.0;
+                }
+            }
+
+            // ✅ Verwijder interne积压 (delay) direct
+            self.st.clear();
+            self.needs_fade_in = true;
+
+            // Update cache direct zodat de UI playhead meteen reageert
+            self.cached_tempo = new_tempo as f64;
+            let bounds = self.loop_bounds.lock().unwrap();
+            self.cached_loop_enabled = bounds.enabled();
+            if self.cached_loop_enabled {
+                self.cached_loop_start = bounds.a as f64;
+                self.cached_loop_end = bounds.b as f64;
+                self.cached_loop_dur = self.cached_loop_end - self.cached_loop_start;
+            }
+            drop(bounds);
+
+            return; // ✅ Early return: laat next() eerst de fade-out samples afspelen
+        }
+
+        // 4. Normale buffer vulling
+        self.out_buf.clear();
+        self.out_idx = 0;
+        self.consumed_out_samples = 0;
+
         self.cached_tempo = new_tempo as f64;
         let bounds = self.loop_bounds.lock().unwrap();
         self.cached_loop_enabled = bounds.enabled();
@@ -479,6 +513,16 @@ impl SoundTouchSource {
             }
         }
 
+        // 5. ✅ Fade-in de nieuwe buffer om de overgang fluweelzacht te maken
+        if self.needs_fade_in {
+            let fade_len = self.out_buf.len().min(256);
+            for i in 0..fade_len {
+                let gain = i as f32 / fade_len as f32;
+                self.out_buf[i] *= gain;
+            }
+            self.needs_fade_in = false;
+        }
+
         self.base_read_pos = audio_start_pos;
     }
 }
@@ -495,8 +539,6 @@ impl Iterator for SoundTouchSource {
             self.out_idx += 1;
             self.consumed_out_samples += 1;
 
-            // ✅ PERFECT LOCK-FREE: Geen Mutex, geen Atomic loads!
-            // Gebruikt alleen cached values die elke ~4096 samples worden vernieuwd
             let mut current_raw_pos =
                 self.base_read_pos as f64 + (self.consumed_out_samples as f64 * self.cached_tempo);
 
@@ -510,7 +552,6 @@ impl Iterator for SoundTouchSource {
 
             self.source_pos
                 .store(f64::to_bits(current_raw_pos), Ordering::Relaxed);
-
             Some(val)
         } else {
             None
@@ -522,15 +563,12 @@ impl Source for SoundTouchSource {
     fn current_frame_len(&self) -> Option<usize> {
         Some(usize::MAX)
     }
-
     fn channels(&self) -> u16 {
         1
     }
-
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
-
     fn total_duration(&self) -> Option<Duration> {
         None
     }
