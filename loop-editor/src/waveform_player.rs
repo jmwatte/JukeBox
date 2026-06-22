@@ -295,14 +295,13 @@ struct SoundTouchSource {
     out_idx: usize,
     current_pitch: f32,
     current_tempo: f32,
-    base_read_pos: usize,
-    consumed_out_samples: usize,
     cached_tempo: f64,
     cached_loop_enabled: bool,
     cached_loop_start: f64,
     cached_loop_end: f64,
     cached_loop_dur: f64,
-    // ✅ NIEUW: Track of we een fade-in moeten toepassen na een parameter-wijziging
+    base_read_pos: usize,
+    consumed_out_samples: usize,
     needs_fade_in: bool,
 }
 
@@ -356,13 +355,13 @@ impl SoundTouchSource {
             out_idx: 0,
             current_pitch: initial_pitch,
             current_tempo: initial_tempo,
-            base_read_pos: start_pos,
-            consumed_out_samples: 0,
             cached_tempo: initial_tempo as f64,
             cached_loop_enabled: c_enabled,
             cached_loop_start: c_start,
             cached_loop_end: c_end,
             cached_loop_dur: c_dur,
+            base_read_pos: start_pos,
+            consumed_out_samples: 0,
             needs_fade_in: false,
         }
     }
@@ -375,6 +374,8 @@ impl SoundTouchSource {
             self.st.clear();
             self.base_read_pos = self.read_pos;
             self.consumed_out_samples = 0;
+            self.out_buf.clear();
+            self.out_idx = 0;
         }
 
         // 2. Check of UI parameters heeft gewijzigd
@@ -394,27 +395,25 @@ impl SoundTouchSource {
             param_changed = true;
         }
 
-        // 3. ✅ CROSSFADE LOGICA: Voorkom delay ZONDER ticks
+        // 3. ✅ CROSSFADE LOGICA: Geen 'return' meer! We vullen de buffer gewoon verder.
         if param_changed {
             // Fade-out de resterende samples in de huidige buffer
             let remaining = self.out_buf.len().saturating_sub(self.out_idx);
             if remaining > 0 {
-                let fade_len = remaining.min(256); // 256 samples = ~5.8ms
+                let fade_len = remaining.min(256);
                 for i in 0..fade_len {
                     let gain = 1.0 - (i as f32 / fade_len as f32);
                     self.out_buf[self.out_idx + i] *= gain;
                 }
-                // Maak de rest stil om abrupte afkap te voorkomen
                 for i in fade_len..remaining {
                     self.out_buf[self.out_idx + i] = 0.0;
                 }
             }
 
-            // ✅ Verwijder interne积压 (delay) direct
-            self.st.clear();
+            self.st.clear(); // Verwijder interne delay
             self.needs_fade_in = true;
 
-            // Update cache direct zodat de UI playhead meteen reageert
+            // Update cache
             self.cached_tempo = new_tempo as f64;
             let bounds = self.loop_bounds.lock().unwrap();
             self.cached_loop_enabled = bounds.enabled();
@@ -425,24 +424,33 @@ impl SoundTouchSource {
             }
             drop(bounds);
 
-            return; // ✅ Early return: laat next() eerst de fade-out samples afspelen
+            self.base_read_pos = self.read_pos;
+            self.consumed_out_samples = 0;
         }
 
-        // 4. Normale buffer vulling
+        // // 4. Voorbereiden voor het vullen van nieuwe data
+        // if !param_changed {
+        //     self.out_buf.clear();
+        //     self.out_idx = 0;
+        //     self.consumed_out_samples = 0;
+        //     self.base_read_pos = self.read_pos;
+        // }
+
+        // // Als de buffer al vol is (bijv. door de fade-out restanten), niet opnieuw vullen
+        // if self.out_buf.len() >= 4096 {
+        //     return;
+        // }
+        // 4. Buffer altijd resetten (ook bij param_changed!)
+        //    Zonder deze reset returned next() None → s.empty() → playback stopt
         self.out_buf.clear();
         self.out_idx = 0;
         self.consumed_out_samples = 0;
+        self.base_read_pos = self.read_pos;
 
-        self.cached_tempo = new_tempo as f64;
-        let bounds = self.loop_bounds.lock().unwrap();
-        self.cached_loop_enabled = bounds.enabled();
-        if self.cached_loop_enabled {
-            self.cached_loop_start = bounds.a as f64;
-            self.cached_loop_end = bounds.b as f64;
-            self.cached_loop_dur = self.cached_loop_end - self.cached_loop_start;
+        if param_changed {
+            self.needs_fade_in = true;
         }
-        drop(bounds);
-
+        // 5. Normale buffer vulling
         let raw = self.raw_samples.lock().unwrap();
         let total_len = raw.len();
         if total_len == 0 {
@@ -453,6 +461,9 @@ impl SoundTouchSource {
         let mut input_chunk = Vec::with_capacity(4096);
         let mut has_read_audio = false;
         let mut audio_start_pos = self.read_pos;
+
+        // Onthoud waar de nieuwe data begint voor de fade-in
+        let new_data_start_idx = self.out_buf.len();
 
         while self.out_buf.len() < target_out {
             input_chunk.clear();
@@ -483,6 +494,10 @@ impl SoundTouchSource {
                 }
 
                 let to_read = (4096 - input_chunk.len()).min(end_pos - self.read_pos);
+                if to_read == 0 {
+                    break;
+                } // Veiligheid tegen oneindige loops
+
                 input_chunk.extend_from_slice(&raw[self.read_pos..self.read_pos + to_read]);
                 self.read_pos += to_read;
             }
@@ -513,12 +528,12 @@ impl SoundTouchSource {
             }
         }
 
-        // 5. ✅ Fade-in de nieuwe buffer om de overgang fluweelzacht te maken
-        if self.needs_fade_in {
-            let fade_len = self.out_buf.len().min(256);
+        // 6. ✅ Fade-in de nieuwe data
+        if self.needs_fade_in && self.out_buf.len() > new_data_start_idx {
+            let fade_len = (self.out_buf.len() - new_data_start_idx).min(256);
             for i in 0..fade_len {
                 let gain = i as f32 / fade_len as f32;
-                self.out_buf[i] *= gain;
+                self.out_buf[new_data_start_idx + i] *= gain;
             }
             self.needs_fade_in = false;
         }
