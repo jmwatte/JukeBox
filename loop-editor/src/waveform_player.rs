@@ -82,6 +82,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let source_pos: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
     let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let seek_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let seek_target: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
 
     let mut prev_wrap: u32 = 0;
     let mut wrap_limit_sent = false;
@@ -117,6 +118,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     source_pos.store(f64::to_bits(start_sample as f64), Ordering::Relaxed);
                     *segment_start_sec.lock().unwrap() = seg_start;
                     seek_requested.store(false, Ordering::Relaxed);
+                    seek_target.store(f64::to_bits(start_sample as f64), Ordering::Relaxed);
 
                     let len = samples.lock().unwrap().len();
                     *segment_dur.lock().unwrap() = len as f32 / sr as f32;
@@ -148,6 +150,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         source_pos.clone(),
                         wrap_count.clone(),
                         seek_requested.clone(),
+                        seek_target.clone(),
                     );
 
                     if let Some(s) = &sink {
@@ -226,6 +229,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let rel_secs = (pos_secs - start_sec).max(0.0);
                     let sample = (rel_secs * sr as f32) as f64;
                     source_pos.store(f64::to_bits(sample), Ordering::Relaxed);
+                    seek_target.store(f64::to_bits(sample), Ordering::Relaxed);
                     seek_requested.store(true, Ordering::Relaxed);
                 }
                 WaveformCommand::SetPitch(semitones) => {
@@ -289,6 +293,7 @@ struct SoundTouchSource {
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
     seek_requested: Arc<AtomicBool>,
+    seek_target: Arc<AtomicU64>,
     st: SoundTouch,
     read_pos: usize,
     out_buf: Vec<f32>,
@@ -315,6 +320,7 @@ impl SoundTouchSource {
         source_pos: Arc<AtomicU64>,
         wrap_count: Arc<AtomicU32>,
         seek_requested: Arc<AtomicBool>,
+        seek_target: Arc<AtomicU64>,
     ) -> Self {
         let mut st = SoundTouch::new();
         st.set_sample_rate(sample_rate);
@@ -349,6 +355,7 @@ impl SoundTouchSource {
             source_pos,
             wrap_count,
             seek_requested,
+            seek_target,
             st,
             read_pos: start_pos,
             out_buf: Vec::with_capacity(4096),
@@ -369,8 +376,10 @@ impl SoundTouchSource {
     fn fill_buffer(&mut self) {
         // 1. Echte seek detectie
         if self.seek_requested.swap(false, Ordering::Relaxed) {
-            let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
+            let atomic_pos = f64::from_bits(self.seek_target.load(Ordering::Relaxed));
             self.read_pos = atomic_pos as usize;
+            self.source_pos
+                .store(f64::to_bits(self.read_pos as f64), Ordering::Relaxed);
             self.st.clear();
             self.base_read_pos = self.read_pos;
             self.consumed_out_samples = 0;
@@ -479,6 +488,7 @@ impl SoundTouchSource {
                     if self.cached_loop_enabled {
                         self.read_pos = self.cached_loop_start as usize;
                         self.wrap_count.fetch_add(1, Ordering::Relaxed);
+                        //   audio_start_pos = self.read_pos;
                         if !has_read_audio {
                             audio_start_pos = self.read_pos;
                         }
