@@ -186,6 +186,26 @@ impl LoopEditorApp {
             crate::loops::save_library(&self.library);
         }
     }
+
+    /// Centreer de viewport op de huidige A-B loop.
+    fn center_view_on_loop(&mut self, viewport_width_px: f32) {
+        if let (Some(a), Some(b)) = (
+            self.waveform_state.loop_a_secs,
+            self.waveform_state.loop_b_secs,
+        ) {
+            if b > a {
+                let loop_width = b - a;
+                let target_zoom = (viewport_width_px * 0.6) / loop_width;
+                self.waveform_state.zoom = target_zoom.max(5.0).min(5000.0);
+
+                let visible_secs = viewport_width_px / self.waveform_state.zoom;
+                let mid = (a + b) / 2.0;
+                self.waveform_state.scroll_offset = (mid - visible_secs / 2.0)
+                    .max(0.0)
+                    .min((self.waveform_state.duration_secs - visible_secs).max(0.0));
+            }
+        }
+    }
 }
 
 impl eframe::App for LoopEditorApp {
@@ -699,6 +719,7 @@ impl eframe::App for LoopEditorApp {
 
         // ── Hoofdpaneel ──
         egui::CentralPanel::default().show(ctx, |ui| {
+            let panel_width = ui.available_width().max(100.0);
             ui.separator();
 
             // ── Foutmelding ──
@@ -948,6 +969,24 @@ impl eframe::App for LoopEditorApp {
 
                 ui.separator();
 
+                // Center loop in viewport
+                if ui
+                    .button("🎯 Center Loop")
+                    .on_hover_text("Centreer de A-B loop in het venster")
+                    .clicked()
+                {
+                    if let (Some(a), Some(b)) = (
+                        self.waveform_state.loop_a_secs,
+                        self.waveform_state.loop_b_secs,
+                    ) {
+                        if b > a {
+                            self.center_view_on_loop(panel_width);
+                        }
+                    }
+                }
+
+                ui.separator();
+
                 // Zoom
                 if ui.button("🔍−").clicked() {
                     self.waveform_state.zoom = (self.waveform_state.zoom / 1.3).max(5.0);
@@ -1041,6 +1080,7 @@ impl eframe::App for LoopEditorApp {
                             self.status_message = format!("Loop '{}' geladen", saved.label);
                             self.status_message_timer = 3 * 60;
                             self.active_loop_idx = Some(idx);
+                            self.center_view_on_loop(panel_width);
                         }
                     }
                 }
@@ -1203,6 +1243,8 @@ impl eframe::App for LoopEditorApp {
                                 self.waveform_state.seek_pending = Some(saved.loop_a_secs);
                                 self.waveform_state.playhead_frames_after_drag = 15;
 
+                                self.center_view_on_loop(800.0);
+
                                 if self.waveform_is_playing {
                                     let _ = self
                                         .waveform_cmd_tx
@@ -1224,6 +1266,8 @@ impl eframe::App for LoopEditorApp {
                                 if !track_changed {
                                     self.active_loop_idx = Some(li);
                                 }
+
+                                self.center_view_on_loop(800.0);
 
                                 self.status_message = format!("Loop '{}' geladen", saved.label);
                                 self.status_message_timer = 3 * 60;
