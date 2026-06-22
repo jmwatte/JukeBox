@@ -70,7 +70,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let mut sink: Option<Sink> = None;
     let mut is_playing = false;
     let mut is_paused = false;
-
     let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let pitch_semitones: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(0.0)));
     let tempo: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
@@ -305,8 +304,8 @@ struct SoundTouchSource {
     cached_loop_start: f64,
     cached_loop_end: f64,
     cached_loop_dur: f64,
-    base_read_pos: usize,
-    consumed_out_samples: usize,
+    // ✅ NIEUW: Vervangt base_read_pos en consumed_out_samples
+    current_audio_pos: f64,
     needs_fade_in: bool,
 }
 
@@ -325,7 +324,6 @@ impl SoundTouchSource {
         let mut st = SoundTouch::new();
         st.set_sample_rate(sample_rate);
         st.set_channels(1);
-
         let initial_pitch = f32::from_bits(pitch_semitones.load(Ordering::Relaxed));
         let initial_tempo = f32::from_bits(tempo.load(Ordering::Relaxed));
 
@@ -367,8 +365,7 @@ impl SoundTouchSource {
             cached_loop_start: c_start,
             cached_loop_end: c_end,
             cached_loop_dur: c_dur,
-            base_read_pos: start_pos,
-            consumed_out_samples: 0,
+            current_audio_pos: start_pos as f64, // ✅ Init exacte audio-positie
             needs_fade_in: false,
         }
     }
@@ -378,11 +375,10 @@ impl SoundTouchSource {
         if self.seek_requested.swap(false, Ordering::Relaxed) {
             let atomic_pos = f64::from_bits(self.seek_target.load(Ordering::Relaxed));
             self.read_pos = atomic_pos as usize;
+            self.current_audio_pos = atomic_pos; // ✅ Sync exacte positie bij seek
             self.source_pos
                 .store(f64::to_bits(self.read_pos as f64), Ordering::Relaxed);
             self.st.clear();
-            self.base_read_pos = self.read_pos;
-            self.consumed_out_samples = 0;
             self.out_buf.clear();
             self.out_idx = 0;
         }
@@ -404,9 +400,8 @@ impl SoundTouchSource {
             param_changed = true;
         }
 
-        // 3. ✅ CROSSFADE LOGICA: Geen 'return' meer! We vullen de buffer gewoon verder.
+        // 3. CROSSFADE LOGICA
         if param_changed {
-            // Fade-out de resterende samples in de huidige buffer
             let remaining = self.out_buf.len().saturating_sub(self.out_idx);
             if remaining > 0 {
                 let fade_len = remaining.min(256);
@@ -419,10 +414,9 @@ impl SoundTouchSource {
                 }
             }
 
-            self.st.clear(); // Verwijder interne delay
+            self.st.clear();
             self.needs_fade_in = true;
 
-            // Update cache
             self.cached_tempo = new_tempo as f64;
             let bounds = self.loop_bounds.lock().unwrap();
             self.cached_loop_enabled = bounds.enabled();
@@ -432,33 +426,16 @@ impl SoundTouchSource {
                 self.cached_loop_dur = self.cached_loop_end - self.cached_loop_start;
             }
             drop(bounds);
-
-            self.base_read_pos = self.read_pos;
-            self.consumed_out_samples = 0;
         }
 
-        // // 4. Voorbereiden voor het vullen van nieuwe data
-        // if !param_changed {
-        //     self.out_buf.clear();
-        //     self.out_idx = 0;
-        //     self.consumed_out_samples = 0;
-        //     self.base_read_pos = self.read_pos;
-        // }
-
-        // // Als de buffer al vol is (bijv. door de fade-out restanten), niet opnieuw vullen
-        // if self.out_buf.len() >= 4096 {
-        //     return;
-        // }
-        // 4. Buffer altijd resetten (ook bij param_changed!)
-        //    Zonder deze reset returned next() None → s.empty() → playback stopt
+        // 4. Buffer resetten
         self.out_buf.clear();
         self.out_idx = 0;
-        self.consumed_out_samples = 0;
-        self.base_read_pos = self.read_pos;
 
         if param_changed {
             self.needs_fade_in = true;
         }
+
         // 5. Normale buffer vulling
         let raw = self.raw_samples.lock().unwrap();
         let total_len = raw.len();
@@ -468,10 +445,10 @@ impl SoundTouchSource {
 
         let target_out = 4096;
         let mut input_chunk = Vec::with_capacity(4096);
-        let mut has_read_audio = false;
-        let mut audio_start_pos = self.read_pos;
 
-        // Onthoud waar de nieuwe data begint voor de fade-in
+        // ✅ Opgeschoond: audio_start_pos en has_read_audio zijn niet meer nodig
+        // omdat we de visuele positie nu sample-accuraat in next() bijhouden.
+
         let new_data_start_idx = self.out_buf.len();
 
         while self.out_buf.len() < target_out {
@@ -488,25 +465,16 @@ impl SoundTouchSource {
                     if self.cached_loop_enabled {
                         self.read_pos = self.cached_loop_start as usize;
                         self.wrap_count.fetch_add(1, Ordering::Relaxed);
-                        //   audio_start_pos = self.read_pos;
-                        if !has_read_audio {
-                            audio_start_pos = self.read_pos;
-                        }
                         continue;
                     } else {
                         break;
                     }
                 }
 
-                if !has_read_audio {
-                    audio_start_pos = self.read_pos;
-                    has_read_audio = true;
-                }
-
                 let to_read = (4096 - input_chunk.len()).min(end_pos - self.read_pos);
                 if to_read == 0 {
                     break;
-                } // Veiligheid tegen oneindige loops
+                }
 
                 input_chunk.extend_from_slice(&raw[self.read_pos..self.read_pos + to_read]);
                 self.read_pos += to_read;
@@ -538,7 +506,7 @@ impl SoundTouchSource {
             }
         }
 
-        // 6. ✅ Fade-in de nieuwe data
+        // 6. Fade-in de nieuwe data
         if self.needs_fade_in && self.out_buf.len() > new_data_start_idx {
             let fade_len = (self.out_buf.len() - new_data_start_idx).min(256);
             for i in 0..fade_len {
@@ -547,8 +515,6 @@ impl SoundTouchSource {
             }
             self.needs_fade_in = false;
         }
-
-        self.base_read_pos = audio_start_pos;
     }
 }
 
@@ -559,24 +525,24 @@ impl Iterator for SoundTouchSource {
         if self.out_idx >= self.out_buf.len() {
             self.fill_buffer();
         }
+
         if self.out_idx < self.out_buf.len() {
             let val = self.out_buf[self.out_idx];
             self.out_idx += 1;
-            self.consumed_out_samples += 1;
 
-            let mut current_raw_pos =
-                self.base_read_pos as f64 + (self.consumed_out_samples as f64 * self.cached_tempo);
+            // ✅ DE FIX: Schuif de exacte audio-positie op per geleverde output sample.
+            // Dit is 100% synchroon met de audio, ongeacht buffer-latentie of tempo.
+            self.current_audio_pos += self.cached_tempo;
+            let mut pos = self.current_audio_pos;
 
-            if self.cached_loop_enabled
-                && self.cached_loop_dur > 0.0
-                && current_raw_pos >= self.cached_loop_end
+            if self.cached_loop_enabled && self.cached_loop_dur > 0.0 && pos >= self.cached_loop_end
             {
-                current_raw_pos = self.cached_loop_start
-                    + ((current_raw_pos - self.cached_loop_start) % self.cached_loop_dur);
+                pos = self.cached_loop_start
+                    + ((pos - self.cached_loop_start) % self.cached_loop_dur);
             }
 
-            self.source_pos
-                .store(f64::to_bits(current_raw_pos), Ordering::Relaxed);
+            self.source_pos.store(f64::to_bits(pos), Ordering::Relaxed);
+
             Some(val)
         } else {
             None
