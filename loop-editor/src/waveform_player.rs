@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
 use soundtouch::SoundTouch;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,8 +81,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     }));
     let source_pos: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
     let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    // ✅ NIEUW: Dedicated seek-flag om false-positive seek detectie te voorkomen
-    let seek_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+    let seek_requested: Arc<std::sync::atomic::AtomicBool> =
+        Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     let mut prev_wrap: u32 = 0;
     let mut wrap_limit_sent = false;
@@ -117,7 +117,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     *current_sample_rate.lock().unwrap() = sr;
                     source_pos.store(f64::to_bits(start_sample as f64), Ordering::Relaxed);
                     *segment_start_sec.lock().unwrap() = seg_start;
-                    // ✅ NIEUW: Reset seek flag bij nieuwe playback
                     seek_requested.store(false, Ordering::Relaxed);
 
                     let len = samples.lock().unwrap().len();
@@ -170,7 +169,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.clear();
                     }
                     is_playing = false;
-                    seek_requested.store(false, Ordering::Relaxed);
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 }
                 WaveformCommand::Pause => {
@@ -229,7 +227,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let rel_secs = (pos_secs - start_sec).max(0.0);
                     let sample = (rel_secs * sr as f32) as f64;
                     source_pos.store(f64::to_bits(sample), Ordering::Relaxed);
-                    // ✅ NIEUW: Set seek flag zodat SoundTouchSource weet dat dit een echte seek is
                     seek_requested.store(true, Ordering::Relaxed);
                 }
                 WaveformCommand::SetPitch(semitones) => {
@@ -239,8 +236,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     tempo.store(f32::to_bits(new_tempo), Ordering::Relaxed);
                 }
                 WaveformCommand::SetLoopEnabled(enabled) => {
-                    let mut bounds = loop_bounds.lock().unwrap();
-                    bounds.enabled = enabled;
+                    loop_bounds.lock().unwrap().enabled = enabled;
                 }
             }
         }
@@ -293,7 +289,7 @@ struct SoundTouchSource {
     loop_bounds: Arc<Mutex<LoopBounds>>,
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
-    seek_requested: Arc<AtomicBool>,
+    seek_requested: Arc<std::sync::atomic::AtomicBool>,
     st: SoundTouch,
     read_pos: usize,
     out_buf: Vec<f32>,
@@ -302,6 +298,13 @@ struct SoundTouchSource {
     current_tempo: f32,
     base_read_pos: usize,
     consumed_out_samples: usize,
+
+    // ✅ NIEUW: Cache voor de audio-thread om Mutex/Atomic locks in next() te voorkomen
+    cached_tempo: f64,
+    cached_loop_enabled: bool,
+    cached_loop_start: f64,
+    cached_loop_end: f64,
+    cached_loop_dur: f64,
 }
 
 impl SoundTouchSource {
@@ -313,11 +316,15 @@ impl SoundTouchSource {
         loop_bounds: Arc<Mutex<LoopBounds>>,
         source_pos: Arc<AtomicU64>,
         wrap_count: Arc<AtomicU32>,
-        seek_requested: Arc<AtomicBool>,
+        seek_requested: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let mut st = SoundTouch::new();
         st.set_sample_rate(sample_rate);
         st.set_channels(1);
+
+        // ✅ Optioneel: SoundTouch quality settings voor iets zachtere time-stretching
+        // st.set_setting(soundtouch::SETTING_OVERLAP_MS, 12); // Default is 8
+        // st.set_setting(soundtouch::SETTING_SEQUENCE_MS, 40); // Default is 40
 
         let initial_pitch = f32::from_bits(pitch_semitones.load(Ordering::Relaxed));
         let initial_tempo = f32::from_bits(tempo.load(Ordering::Relaxed));
@@ -327,6 +334,14 @@ impl SoundTouchSource {
         st.set_tempo(initial_tempo as f64);
 
         let start_pos = f64::from_bits(source_pos.load(Ordering::Relaxed)) as usize;
+        let bounds = loop_bounds.lock().unwrap();
+        let (c_start, c_end, c_dur) = if bounds.enabled() {
+            let s = bounds.a as f64;
+            let e = bounds.b as f64;
+            (s, e, e - s)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
 
         Self {
             raw_samples,
@@ -345,17 +360,16 @@ impl SoundTouchSource {
             current_tempo: initial_tempo,
             base_read_pos: start_pos,
             consumed_out_samples: 0,
+            cached_tempo: initial_tempo as f64,
+            cached_loop_enabled: bounds.enabled(),
+            cached_loop_start: c_start,
+            cached_loop_end: c_end,
+            cached_loop_dur: c_dur,
         }
     }
 
     fn fill_buffer(&mut self) {
-        // ✅ FIX: Gebruik dedicated seek-flag i.p.v. positie-vergelijking
-        // De oude methode vergeleek source_pos (geïnterpoleerd met tempo) met
-        // read_pos (raw input positie). Bij tempo != 1.0 wijken deze altijd af,
-        // wat resulteerde in false-positive seeks en st.clear() → ticks!
-        //
-        // Nu: alleen als de UI expliciet een Seek commando heeft gestuurd,
-        // wordt de flag gezet en voeren we een echte seek uit.
+        // 1. Echte seek detectie via flag
         if self.seek_requested.swap(false, Ordering::Relaxed) {
             let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
             self.read_pos = atomic_pos as usize;
@@ -368,7 +382,7 @@ impl SoundTouchSource {
         self.out_idx = 0;
         self.consumed_out_samples = 0;
 
-        // Update SoundTouch parameters — GEEN st.clear()!
+        // 2. Update parameters (GEEN st.clear!)
         let new_pitch = f32::from_bits(self.pitch_semitones.load(Ordering::Relaxed));
         let new_tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
 
@@ -382,18 +396,25 @@ impl SoundTouchSource {
             self.current_tempo = new_tempo;
         }
 
-        let raw = self.raw_samples.lock().unwrap();
+        // ✅ 3. CACHE UPDATEN voor de next() functie (voorkomt 44100 locks per seconde!)
+        self.cached_tempo = new_tempo as f64;
         let bounds = self.loop_bounds.lock().unwrap();
-        let looping = bounds.enabled();
-        let total_len = raw.len();
+        self.cached_loop_enabled = bounds.enabled();
+        if self.cached_loop_enabled {
+            self.cached_loop_start = bounds.a as f64;
+            self.cached_loop_end = bounds.b as f64;
+            self.cached_loop_dur = self.cached_loop_end - self.cached_loop_start;
+        }
+        drop(bounds);
 
+        let raw = self.raw_samples.lock().unwrap();
+        let total_len = raw.len();
         if total_len == 0 {
             return;
         }
 
         let target_out = 4096;
         let mut input_chunk = Vec::with_capacity(4096);
-
         let mut has_read_audio = false;
         let mut audio_start_pos = self.read_pos;
 
@@ -401,14 +422,18 @@ impl SoundTouchSource {
             input_chunk.clear();
 
             while input_chunk.len() < 4096 {
-                let end_pos = if looping { bounds.b } else { total_len };
+                let end_pos = if self.cached_loop_enabled {
+                    self.cached_loop_end as usize
+                } else {
+                    total_len
+                };
 
                 if self.read_pos >= end_pos {
-                    if looping {
-                        self.read_pos = bounds.a;
+                    if self.cached_loop_enabled {
+                        self.read_pos = self.cached_loop_start as usize;
                         self.wrap_count.fetch_add(1, Ordering::Relaxed);
                         if !has_read_audio {
-                            audio_start_pos = bounds.a;
+                            audio_start_pos = self.read_pos;
                         }
                         continue;
                     } else {
@@ -442,7 +467,7 @@ impl SoundTouchSource {
             let received = self.st.receive_samples(&mut temp_out, 4096);
             if received > 0 {
                 self.out_buf.extend_from_slice(&temp_out[..received]);
-            } else if !looping && self.read_pos >= total_len {
+            } else if !self.cached_loop_enabled && self.read_pos >= total_len {
                 self.st.flush();
                 let received = self.st.receive_samples(&mut temp_out, 4096);
                 if received > 0 {
@@ -451,7 +476,6 @@ impl SoundTouchSource {
                 break;
             }
         }
-
         self.base_read_pos = audio_start_pos;
     }
 }
@@ -468,24 +492,21 @@ impl Iterator for SoundTouchSource {
             self.out_idx += 1;
             self.consumed_out_samples += 1;
 
-            let tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
+            // ✅ PERFECT LOCK-FREE: Geen Mutex, geen Atomic loads meer hier!
+            // Dit voorkomt audio-thread starvation en buffer underruns (de oorzaak van micro-ticks).
             let mut current_raw_pos =
-                self.base_read_pos as f64 + (self.consumed_out_samples as f64 * tempo as f64);
+                self.base_read_pos as f64 + (self.consumed_out_samples as f64 * self.cached_tempo);
 
-            let bounds = self.loop_bounds.lock().unwrap();
-            if bounds.enabled() {
-                let loop_start = bounds.a as f64;
-                let loop_end = bounds.b as f64;
-                let loop_dur = loop_end - loop_start;
-
-                if loop_dur > 0.0 && current_raw_pos >= loop_end {
-                    current_raw_pos = loop_start + ((current_raw_pos - loop_start) % loop_dur);
-                }
+            if self.cached_loop_enabled
+                && self.cached_loop_dur > 0.0
+                && current_raw_pos >= self.cached_loop_end
+            {
+                current_raw_pos = self.cached_loop_start
+                    + ((current_raw_pos - self.cached_loop_start) % self.cached_loop_dur);
             }
 
             self.source_pos
                 .store(f64::to_bits(current_raw_pos), Ordering::Relaxed);
-
             Some(val)
         } else {
             None
