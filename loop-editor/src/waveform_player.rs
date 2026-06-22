@@ -5,9 +5,6 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Commando's van UI naar waveform audio-thread
-// ---------------------------------------------------------------------------
 pub enum WaveformCommand {
     Play {
         samples: Arc<Mutex<Vec<f32>>>,
@@ -37,9 +34,6 @@ pub enum WaveformCommand {
     SetLoopEnabled(bool),
 }
 
-// ---------------------------------------------------------------------------
-// Events van waveform audio-thread naar UI
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone)]
 pub enum WaveformEvent {
     Playing,
@@ -51,9 +45,6 @@ pub enum WaveformEvent {
     LoopLimitReached,
 }
 
-// ---------------------------------------------------------------------------
-// Gedeelde loop-grenzen
-// ---------------------------------------------------------------------------
 #[derive(Debug, Clone, Copy)]
 pub struct LoopBounds {
     pub a: usize,
@@ -67,28 +58,19 @@ impl LoopBounds {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Start de thread. Geeft (cmd_tx, event_rx).
-// ---------------------------------------------------------------------------
 pub fn start_waveform_thread() -> (Sender<WaveformCommand>, Receiver<WaveformEvent>) {
     let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
     let (event_tx, event_rx) = crossbeam_channel::unbounded();
-    std::thread::spawn(move || {
-        run_waveform_audio(cmd_rx, event_tx);
-    });
+    std::thread::spawn(move || run_waveform_audio(cmd_rx, event_tx));
     (cmd_tx, event_rx)
 }
 
-// ---------------------------------------------------------------------------
-// Interne audio-loop
-// ---------------------------------------------------------------------------
 fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEvent>) {
     let mut _stream: Option<OutputStream> = None;
     let mut sink: Option<Sink> = None;
     let mut is_playing = false;
     let mut is_paused = false;
 
-    // Lock-free shared state
     let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
     let pitch_semitones: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(0.0)));
     let tempo: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
@@ -226,7 +208,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                             b: b_sample,
                             enabled: true,
                         };
-                        // *segment_start_sec.lock().unwrap() = a_secs;
                         *segment_dur.lock().unwrap() = (b_secs - a_secs).max(0.001);
                     } else {
                         *loop_bounds.lock().unwrap() = LoopBounds {
@@ -262,23 +243,16 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     is_playing = false;
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 } else {
-                    // Lock-free: atomic read
                     let pos_samples = f64::from_bits(source_pos.load(Ordering::Relaxed));
                     let sr = *current_sample_rate.lock().unwrap();
                     let bounds = *loop_bounds.lock().unwrap();
-
-                    // ✅ Nieuwe totale duur is de lengte van de volledige track buffer
                     let total_dur = samples.lock().unwrap().len() as f32 / sr as f32;
-
-                    // Absolute tijd in de track
                     let pos_secs = pos_samples as f32 / sr as f32;
 
                     let effective_pos = if bounds.enabled() {
                         let loop_start_sec = bounds.a as f32 / sr as f32;
                         let loop_end_sec = bounds.b as f32 / sr as f32;
                         let loop_dur = loop_end_sec - loop_start_sec;
-
-                        // ✅ Correcte wrap-wiskunde voor absolute tijden
                         if loop_dur > 0.0 && pos_secs >= loop_end_sec {
                             loop_start_sec + ((pos_secs - loop_start_sec) % loop_dur)
                         } else {
@@ -290,7 +264,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 
                     let _ = event_tx.send(WaveformEvent::Position(effective_pos, total_dur));
 
-                    // Wrap-detectie: als de source 4× heeft gewrapt, stuur LoopLimitReached
                     let cur_wrap = wrap_count.load(Ordering::Relaxed);
                     if cur_wrap >= prev_wrap + 4 && !wrap_limit_sent {
                         let _ = event_tx.send(WaveformEvent::LoopLimitReached);
@@ -304,9 +277,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     }
 }
 
-// ---------------------------------------------------------------------------
-// SoundTouchSource — Industry Standard DSP via SoundTouch
-// ---------------------------------------------------------------------------
 struct SoundTouchSource {
     raw_samples: Arc<Mutex<Vec<f32>>>,
     sample_rate: u32,
@@ -315,15 +285,12 @@ struct SoundTouchSource {
     loop_bounds: Arc<Mutex<LoopBounds>>,
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
-
     st: SoundTouch,
     read_pos: usize,
     out_buf: Vec<f32>,
     out_idx: usize,
-
     current_pitch: f32,
     current_tempo: f32,
-    // ✅ NIEUW: Voor vloeiende playhead interpolatie
     base_read_pos: usize,
     consumed_out_samples: usize,
 }
@@ -340,16 +307,13 @@ impl SoundTouchSource {
     ) -> Self {
         let mut st = SoundTouch::new();
         st.set_sample_rate(sample_rate);
-        st.set_channels(1); // Mono
+        st.set_channels(1);
 
         let initial_pitch = f32::from_bits(pitch_semitones.load(Ordering::Relaxed));
         let initial_tempo = f32::from_bits(tempo.load(Ordering::Relaxed));
 
-        // ✅ FIX 1: Gebruik set_pitch met een ratio i.p.v. set_pitch_semitones
         let pitch_ratio = f64::powf(2.0, (initial_pitch as f64) / 12.0);
         st.set_pitch(pitch_ratio);
-
-        // ✅ FIX 2: Cast tempo naar f64
         st.set_tempo(initial_tempo as f64);
 
         let start_pos = f64::from_bits(source_pos.load(Ordering::Relaxed)) as usize;
@@ -368,29 +332,38 @@ impl SoundTouchSource {
             out_idx: 0,
             current_pitch: initial_pitch,
             current_tempo: initial_tempo,
-            base_read_pos: start_pos, // ✅ NIEUW
-            consumed_out_samples: 0,  // ✅ NIEUW
+            base_read_pos: start_pos,
+            consumed_out_samples: 0,
         }
     }
 
     fn fill_buffer(&mut self) {
-        // ✅ FIX: Detecteer of de UI een Seek commando heeft gestuurd (bijv. pijltjestoetsen)
-        // We lezen de Atomic source_pos. Als deze afwijkt van onze interne read_pos,
-        // is er geseekt. We gebruiken een drempel van 10 samples om floating-point
-        // afrondingsfouten te negeren.
+        // Seek-detectie: respecteer loops zodat een wrap geen false positive geeft
         let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
-        if (atomic_pos - self.read_pos as f64).abs() > 10.0 {
-            // De UI heeft geseekt! Trek onze interne leespositie bij.
-            self.read_pos = atomic_pos as usize;
+        let bounds_check = self.loop_bounds.lock().unwrap();
+        let looping_check = bounds_check.enabled();
+
+        let mut expected_pos = atomic_pos;
+        if looping_check {
+            let loop_len = (bounds_check.b - bounds_check.a) as f64;
+            if loop_len > 0.0 && expected_pos >= bounds_check.b as f64 {
+                expected_pos =
+                    bounds_check.a as f64 + ((expected_pos - bounds_check.a as f64) % loop_len);
+            }
+        }
+        drop(bounds_check);
+
+        if (expected_pos - self.read_pos as f64).abs() > 10.0 {
+            self.read_pos = expected_pos as usize;
             self.st.clear();
         }
-        // ✅ NIEUW: Reset interpolatie tellers voor deze nieuwe buffer-vulling
-        self.base_read_pos = self.read_pos;
-        self.consumed_out_samples = 0;
+
         self.out_buf.clear();
         self.out_idx = 0;
+        self.consumed_out_samples = 0;
 
-        // Update SoundTouch parameters als de UI ze heeft gewijzigd
+        // Update SoundTouch parameters — GEEN st.clear() hier!
+        // SoundTouch kan parameters on-the-fly aanpassen zonder buffer te wissen.
         let new_pitch = f32::from_bits(self.pitch_semitones.load(Ordering::Relaxed));
         let new_tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
 
@@ -398,12 +371,12 @@ impl SoundTouchSource {
             let pitch_ratio = f64::powf(2.0, (new_pitch as f64) / 12.0);
             self.st.set_pitch(pitch_ratio);
             self.current_pitch = new_pitch;
-            self.st.clear();
+            // ❌ VERWIJDERD: self.st.clear(); — dit veroorzaakte de clicks!
         }
         if (new_tempo - self.current_tempo).abs() > 0.01 {
             self.st.set_tempo(new_tempo as f64);
             self.current_tempo = new_tempo;
-            self.st.clear();
+            // ❌ VERWIJDERD: self.st.clear(); — dit veroorzaakte de clicks!
         }
 
         let raw = self.raw_samples.lock().unwrap();
@@ -418,34 +391,40 @@ impl SoundTouchSource {
         let target_out = 4096;
         let mut input_chunk = Vec::with_capacity(4096);
 
+        // Track waar de audio daadwerkelijk vandaan komt (na eventuele loop-wrap)
+        let mut has_read_audio = false;
+        let mut audio_start_pos = self.read_pos;
+
         while self.out_buf.len() < target_out {
             input_chunk.clear();
 
-            // 1. Verzamel ruwe input samples (respecteer loops)
             while input_chunk.len() < 4096 {
-                // ✅ FIX: Bepaal de harde grens waar we maximaal tot mogen lezen
                 let end_pos = if looping { bounds.b } else { total_len };
 
-                // ✅ FIX: Als we de grens bereiken (of passeren), wrap direct terug naar A
                 if self.read_pos >= end_pos {
                     if looping {
                         self.read_pos = bounds.a;
                         self.wrap_count.fetch_add(1, Ordering::Relaxed);
-                        continue; // Ga opnieuw door de loop om de nieuwe chunk te lezen
+                        if !has_read_audio {
+                            audio_start_pos = bounds.a;
+                        }
+                        continue;
                     } else {
-                        break; // Einde van de track (geen loop)
+                        break;
                     }
                 }
 
-                // Bereken hoeveel samples we in dit stukje kunnen lezen
-                let to_read = (4096 - input_chunk.len()).min(end_pos - self.read_pos);
+                if !has_read_audio {
+                    audio_start_pos = self.read_pos;
+                    has_read_audio = true;
+                }
 
+                let to_read = (4096 - input_chunk.len()).min(end_pos - self.read_pos);
                 input_chunk.extend_from_slice(&raw[self.read_pos..self.read_pos + to_read]);
                 self.read_pos += to_read;
             }
 
             if input_chunk.is_empty() {
-                // Einde van audio, flush resterende DSP buffer
                 self.st.flush();
                 let mut flush_buf = vec![0.0; 4096];
                 let received = self.st.receive_samples(&mut flush_buf, 4096);
@@ -455,10 +434,8 @@ impl SoundTouchSource {
                 break;
             }
 
-            // 2. Feed into SoundTouch
             self.st.put_samples(&input_chunk, input_chunk.len());
 
-            // 3. Extract processed audio
             let mut temp_out = vec![0.0; 4096];
             let received = self.st.receive_samples(&mut temp_out, 4096);
             if received > 0 {
@@ -473,14 +450,14 @@ impl SoundTouchSource {
             }
         }
 
-        // Update UI playhead positie
-        //   self.source_pos
-        //     .store(f64::to_bits(self.read_pos as f64), Ordering::Relaxed);
+        // base_read_pos is waar de audio daadwerkelijk begon
+        self.base_read_pos = audio_start_pos;
     }
 }
 
 impl Iterator for SoundTouchSource {
     type Item = f32;
+
     fn next(&mut self) -> Option<f32> {
         if self.out_idx >= self.out_buf.len() {
             self.fill_buffer();
@@ -490,11 +467,21 @@ impl Iterator for SoundTouchSource {
             self.out_idx += 1;
             self.consumed_out_samples += 1;
 
-            // ✅ FIX: Update source_pos continu terwijl Rodio samples consumeert.
-            // Dit maakt de playhead perfect vloeiend, ongeacht het tempo.
             let tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
-            let current_raw_pos =
+            let mut current_raw_pos =
                 self.base_read_pos as f64 + (self.consumed_out_samples as f64 * tempo as f64);
+
+            // Wrap terug als we voorbij de loop-grens interpoleren
+            let bounds = self.loop_bounds.lock().unwrap();
+            if bounds.enabled() {
+                let loop_start = bounds.a as f64;
+                let loop_end = bounds.b as f64;
+                let loop_dur = loop_end - loop_start;
+
+                if loop_dur > 0.0 && current_raw_pos >= loop_end {
+                    current_raw_pos = loop_start + ((current_raw_pos - loop_start) % loop_dur);
+                }
+            }
 
             self.source_pos
                 .store(f64::to_bits(current_raw_pos), Ordering::Relaxed);

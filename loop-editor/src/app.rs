@@ -852,6 +852,8 @@ impl eframe::App for LoopEditorApp {
                         if self.waveform_is_playing {
                             if ui.button("⏹ Stop").clicked() {
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+                                self.waveform_is_playing = false;
+                                ctx.request_repaint();
                             }
 
                             // Bypass loop toggle
@@ -897,6 +899,8 @@ impl eframe::App for LoopEditorApp {
                                         self.waveform_state.tempo,
                                     ))),
                                 });
+                                self.waveform_is_playing = true;
+                                ctx.request_repaint();
                             }
                         }
                     }
