@@ -593,13 +593,13 @@ impl eframe::App for LoopEditorApp {
                     self.waveform_play_position = new_pos;
                     self.waveform_state.seek_pending = Some(new_pos); // ✅ NIEUW: Markeer als pending
 
-                    if self.waveform_has_content {
-                        let _ = self
-                            .waveform_cmd_tx
-                            .send(WaveformCommand::Seek { pos_secs: new_pos });
-                        // ✅ FIX: Negeer oude Position events voor ~250ms
-                        self.waveform_state.playhead_frames_after_drag = 15;
-                    }
+                    // if self.waveform_has_content {
+                    let _ = self
+                        .waveform_cmd_tx
+                        .send(WaveformCommand::Seek { pos_secs: new_pos });
+                    // ✅ FIX: Negeer oude Position events voor ~250ms
+                    self.waveform_state.playhead_frames_after_drag = 15;
+                    //   }
                 }
             }
 
@@ -770,11 +770,11 @@ impl eframe::App for LoopEditorApp {
             if let Some(seek_pos) = seek_to {
                 self.waveform_play_position = seek_pos;
                 self.waveform_state.seek_pending = Some(seek_pos); // ✅ NIEUW: Markeer als pending
-                if self.waveform_has_content {
-                    let _ = self
-                        .waveform_cmd_tx
-                        .send(WaveformCommand::Seek { pos_secs: seek_pos });
-                }
+                                                                   //    if self.waveform_has_content {
+                let _ = self
+                    .waveform_cmd_tx
+                    .send(WaveformCommand::Seek { pos_secs: seek_pos });
+                //  }
             }
 
             // Toon bestandsinfo rechts
