@@ -3,6 +3,7 @@
 mod app;
 mod loops;
 mod shortcuts;
+mod timestretch;
 mod waveform;
 mod waveform_player;
 
