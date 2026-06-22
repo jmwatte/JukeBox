@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
 use soundtouch::SoundTouch;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,6 +81,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     }));
     let source_pos: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
     let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
+    // ✅ NIEUW: Dedicated seek-flag om false-positive seek detectie te voorkomen
+    let seek_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let mut prev_wrap: u32 = 0;
     let mut wrap_limit_sent = false;
@@ -115,6 +117,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     *current_sample_rate.lock().unwrap() = sr;
                     source_pos.store(f64::to_bits(start_sample as f64), Ordering::Relaxed);
                     *segment_start_sec.lock().unwrap() = seg_start;
+                    // ✅ NIEUW: Reset seek flag bij nieuwe playback
+                    seek_requested.store(false, Ordering::Relaxed);
 
                     let len = samples.lock().unwrap().len();
                     *segment_dur.lock().unwrap() = len as f32 / sr as f32;
@@ -145,6 +149,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         loop_bounds.clone(),
                         source_pos.clone(),
                         wrap_count.clone(),
+                        seek_requested.clone(),
                     );
 
                     if let Some(s) = &sink {
@@ -165,6 +170,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.clear();
                     }
                     is_playing = false;
+                    seek_requested.store(false, Ordering::Relaxed);
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 }
                 WaveformCommand::Pause => {
@@ -223,6 +229,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let rel_secs = (pos_secs - start_sec).max(0.0);
                     let sample = (rel_secs * sr as f32) as f64;
                     source_pos.store(f64::to_bits(sample), Ordering::Relaxed);
+                    // ✅ NIEUW: Set seek flag zodat SoundTouchSource weet dat dit een echte seek is
+                    seek_requested.store(true, Ordering::Relaxed);
                 }
                 WaveformCommand::SetPitch(semitones) => {
                     pitch_semitones.store(f32::to_bits(semitones), Ordering::Relaxed);
@@ -285,6 +293,7 @@ struct SoundTouchSource {
     loop_bounds: Arc<Mutex<LoopBounds>>,
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
+    seek_requested: Arc<AtomicBool>,
     st: SoundTouch,
     read_pos: usize,
     out_buf: Vec<f32>,
@@ -304,6 +313,7 @@ impl SoundTouchSource {
         loop_bounds: Arc<Mutex<LoopBounds>>,
         source_pos: Arc<AtomicU64>,
         wrap_count: Arc<AtomicU32>,
+        seek_requested: Arc<AtomicBool>,
     ) -> Self {
         let mut st = SoundTouch::new();
         st.set_sample_rate(sample_rate);
@@ -326,6 +336,7 @@ impl SoundTouchSource {
             loop_bounds,
             source_pos,
             wrap_count,
+            seek_requested,
             st,
             read_pos: start_pos,
             out_buf: Vec::with_capacity(4096),
@@ -338,32 +349,26 @@ impl SoundTouchSource {
     }
 
     fn fill_buffer(&mut self) {
-        // Seek-detectie: respecteer loops zodat een wrap geen false positive geeft
-        let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
-        let bounds_check = self.loop_bounds.lock().unwrap();
-        let looping_check = bounds_check.enabled();
-
-        let mut expected_pos = atomic_pos;
-        if looping_check {
-            let loop_len = (bounds_check.b - bounds_check.a) as f64;
-            if loop_len > 0.0 && expected_pos >= bounds_check.b as f64 {
-                expected_pos =
-                    bounds_check.a as f64 + ((expected_pos - bounds_check.a as f64) % loop_len);
-            }
-        }
-        drop(bounds_check);
-
-        if (expected_pos - self.read_pos as f64).abs() > 10.0 {
-            self.read_pos = expected_pos as usize;
+        // ✅ FIX: Gebruik dedicated seek-flag i.p.v. positie-vergelijking
+        // De oude methode vergeleek source_pos (geïnterpoleerd met tempo) met
+        // read_pos (raw input positie). Bij tempo != 1.0 wijken deze altijd af,
+        // wat resulteerde in false-positive seeks en st.clear() → ticks!
+        //
+        // Nu: alleen als de UI expliciet een Seek commando heeft gestuurd,
+        // wordt de flag gezet en voeren we een echte seek uit.
+        if self.seek_requested.swap(false, Ordering::Relaxed) {
+            let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
+            self.read_pos = atomic_pos as usize;
             self.st.clear();
+            self.base_read_pos = self.read_pos;
+            self.consumed_out_samples = 0;
         }
 
         self.out_buf.clear();
         self.out_idx = 0;
         self.consumed_out_samples = 0;
 
-        // Update SoundTouch parameters — GEEN st.clear() hier!
-        // SoundTouch kan parameters on-the-fly aanpassen zonder buffer te wissen.
+        // Update SoundTouch parameters — GEEN st.clear()!
         let new_pitch = f32::from_bits(self.pitch_semitones.load(Ordering::Relaxed));
         let new_tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
 
@@ -371,12 +376,10 @@ impl SoundTouchSource {
             let pitch_ratio = f64::powf(2.0, (new_pitch as f64) / 12.0);
             self.st.set_pitch(pitch_ratio);
             self.current_pitch = new_pitch;
-            // ❌ VERWIJDERD: self.st.clear(); — dit veroorzaakte de clicks!
         }
         if (new_tempo - self.current_tempo).abs() > 0.01 {
             self.st.set_tempo(new_tempo as f64);
             self.current_tempo = new_tempo;
-            // ❌ VERWIJDERD: self.st.clear(); — dit veroorzaakte de clicks!
         }
 
         let raw = self.raw_samples.lock().unwrap();
@@ -391,7 +394,6 @@ impl SoundTouchSource {
         let target_out = 4096;
         let mut input_chunk = Vec::with_capacity(4096);
 
-        // Track waar de audio daadwerkelijk vandaan komt (na eventuele loop-wrap)
         let mut has_read_audio = false;
         let mut audio_start_pos = self.read_pos;
 
@@ -450,7 +452,6 @@ impl SoundTouchSource {
             }
         }
 
-        // base_read_pos is waar de audio daadwerkelijk begon
         self.base_read_pos = audio_start_pos;
     }
 }
@@ -471,7 +472,6 @@ impl Iterator for SoundTouchSource {
             let mut current_raw_pos =
                 self.base_read_pos as f64 + (self.consumed_out_samples as f64 * tempo as f64);
 
-            // Wrap terug als we voorbij de loop-grens interpoleren
             let bounds = self.loop_bounds.lock().unwrap();
             if bounds.enabled() {
                 let loop_start = bounds.a as f64;
