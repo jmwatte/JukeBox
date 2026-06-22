@@ -1,7 +1,7 @@
 use crossbeam_channel::{Receiver, Sender};
 use rodio::{OutputStream, Sink, Source};
 use soundtouch::SoundTouch;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -81,8 +81,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     }));
     let source_pos: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
     let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
-    let seek_requested: Arc<std::sync::atomic::AtomicBool> =
-        Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let seek_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
 
     let mut prev_wrap: u32 = 0;
     let mut wrap_limit_sent = false;
@@ -169,6 +168,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.clear();
                     }
                     is_playing = false;
+                    seek_requested.store(false, Ordering::Relaxed);
                     let _ = event_tx.send(WaveformEvent::Stopped);
                 }
                 WaveformCommand::Pause => {
@@ -236,7 +236,8 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     tempo.store(f32::to_bits(new_tempo), Ordering::Relaxed);
                 }
                 WaveformCommand::SetLoopEnabled(enabled) => {
-                    loop_bounds.lock().unwrap().enabled = enabled;
+                    let mut bounds = loop_bounds.lock().unwrap();
+                    bounds.enabled = enabled;
                 }
             }
         }
@@ -257,6 +258,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         let loop_start_sec = bounds.a as f32 / sr as f32;
                         let loop_end_sec = bounds.b as f32 / sr as f32;
                         let loop_dur = loop_end_sec - loop_start_sec;
+
                         if loop_dur > 0.0 && pos_secs >= loop_end_sec {
                             loop_start_sec + ((pos_secs - loop_start_sec) % loop_dur)
                         } else {
@@ -289,7 +291,7 @@ struct SoundTouchSource {
     loop_bounds: Arc<Mutex<LoopBounds>>,
     source_pos: Arc<AtomicU64>,
     wrap_count: Arc<AtomicU32>,
-    seek_requested: Arc<std::sync::atomic::AtomicBool>,
+    seek_requested: Arc<AtomicBool>,
     st: SoundTouch,
     read_pos: usize,
     out_buf: Vec<f32>,
@@ -299,7 +301,7 @@ struct SoundTouchSource {
     base_read_pos: usize,
     consumed_out_samples: usize,
 
-    // ✅ NIEUW: Cache voor de audio-thread om Mutex/Atomic locks in next() te voorkomen
+    // ✅ CACHE voor lock-free next() functie
     cached_tempo: f64,
     cached_loop_enabled: bool,
     cached_loop_start: f64,
@@ -316,15 +318,11 @@ impl SoundTouchSource {
         loop_bounds: Arc<Mutex<LoopBounds>>,
         source_pos: Arc<AtomicU64>,
         wrap_count: Arc<AtomicU32>,
-        seek_requested: Arc<std::sync::atomic::AtomicBool>,
+        seek_requested: Arc<AtomicBool>,
     ) -> Self {
         let mut st = SoundTouch::new();
         st.set_sample_rate(sample_rate);
         st.set_channels(1);
-
-        // ✅ Optioneel: SoundTouch quality settings voor iets zachtere time-stretching
-        // st.set_setting(soundtouch::SETTING_OVERLAP_MS, 12); // Default is 8
-        // st.set_setting(soundtouch::SETTING_SEQUENCE_MS, 40); // Default is 40
 
         let initial_pitch = f32::from_bits(pitch_semitones.load(Ordering::Relaxed));
         let initial_tempo = f32::from_bits(tempo.load(Ordering::Relaxed));
@@ -334,14 +332,18 @@ impl SoundTouchSource {
         st.set_tempo(initial_tempo as f64);
 
         let start_pos = f64::from_bits(source_pos.load(Ordering::Relaxed)) as usize;
+
+        // ✅ Lees loop bounds en drop lock VOORDAT we loop_bounds in struct stoppen
         let bounds = loop_bounds.lock().unwrap();
-        let (c_start, c_end, c_dur) = if bounds.enabled() {
+        let c_enabled = bounds.enabled();
+        let (c_start, c_end, c_dur) = if c_enabled {
             let s = bounds.a as f64;
             let e = bounds.b as f64;
             (s, e, e - s)
         } else {
             (0.0, 0.0, 0.0)
         };
+        drop(bounds);
 
         Self {
             raw_samples,
@@ -361,7 +363,7 @@ impl SoundTouchSource {
             base_read_pos: start_pos,
             consumed_out_samples: 0,
             cached_tempo: initial_tempo as f64,
-            cached_loop_enabled: bounds.enabled(),
+            cached_loop_enabled: c_enabled,
             cached_loop_start: c_start,
             cached_loop_end: c_end,
             cached_loop_dur: c_dur,
@@ -369,7 +371,7 @@ impl SoundTouchSource {
     }
 
     fn fill_buffer(&mut self) {
-        // 1. Echte seek detectie via flag
+        // ✅ Echte seek detectie via dedicated flag
         if self.seek_requested.swap(false, Ordering::Relaxed) {
             let atomic_pos = f64::from_bits(self.source_pos.load(Ordering::Relaxed));
             self.read_pos = atomic_pos as usize;
@@ -382,7 +384,7 @@ impl SoundTouchSource {
         self.out_idx = 0;
         self.consumed_out_samples = 0;
 
-        // 2. Update parameters (GEEN st.clear!)
+        // ✅ Update parameters — GEEN st.clear()!
         let new_pitch = f32::from_bits(self.pitch_semitones.load(Ordering::Relaxed));
         let new_tempo = f32::from_bits(self.tempo.load(Ordering::Relaxed));
 
@@ -396,7 +398,7 @@ impl SoundTouchSource {
             self.current_tempo = new_tempo;
         }
 
-        // ✅ 3. CACHE UPDATEN voor de next() functie (voorkomt 44100 locks per seconde!)
+        // ✅ UPDATE CACHE voor lock-free next() functie
         self.cached_tempo = new_tempo as f64;
         let bounds = self.loop_bounds.lock().unwrap();
         self.cached_loop_enabled = bounds.enabled();
@@ -476,6 +478,7 @@ impl SoundTouchSource {
                 break;
             }
         }
+
         self.base_read_pos = audio_start_pos;
     }
 }
@@ -492,8 +495,8 @@ impl Iterator for SoundTouchSource {
             self.out_idx += 1;
             self.consumed_out_samples += 1;
 
-            // ✅ PERFECT LOCK-FREE: Geen Mutex, geen Atomic loads meer hier!
-            // Dit voorkomt audio-thread starvation en buffer underruns (de oorzaak van micro-ticks).
+            // ✅ PERFECT LOCK-FREE: Geen Mutex, geen Atomic loads!
+            // Gebruikt alleen cached values die elke ~4096 samples worden vernieuwd
             let mut current_raw_pos =
                 self.base_read_pos as f64 + (self.consumed_out_samples as f64 * self.cached_tempo);
 
@@ -507,6 +510,7 @@ impl Iterator for SoundTouchSource {
 
             self.source_pos
                 .store(f64::to_bits(current_raw_pos), Ordering::Relaxed);
+
             Some(val)
         } else {
             None
@@ -518,12 +522,15 @@ impl Source for SoundTouchSource {
     fn current_frame_len(&self) -> Option<usize> {
         Some(usize::MAX)
     }
+
     fn channels(&self) -> u16 {
         1
     }
+
     fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
+
     fn total_duration(&self) -> Option<Duration> {
         None
     }
