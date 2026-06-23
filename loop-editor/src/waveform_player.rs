@@ -512,18 +512,27 @@ impl Iterator for SoundTouchSource {
             }
             self.out_idx += 1;
 
-            // ✅ DE FIX: Schuif de exacte audio-positie op per geleverde output sample.
-            // Dit is 100% synchroon met de audio, ongeacht buffer-latentie of tempo.
+            // ✅ Positie accumuleren en wrappen — subtractie ipv modulo
             self.current_audio_pos += self.cached_tempo;
-            let mut pos = self.current_audio_pos;
-
-            if self.cached_loop_enabled && self.cached_loop_dur > 0.0 && pos >= self.cached_loop_end
             {
-                pos = self.cached_loop_start
-                    + ((pos - self.cached_loop_start) % self.cached_loop_dur);
+                let bounds = self.loop_bounds.lock().unwrap();
+                if bounds.enabled() {
+                    let loop_start = bounds.a as f64;
+                    let loop_end = bounds.b as f64;
+                    let loop_dur = loop_end - loop_start;
+                    // Wrap door subtractie: blijf in [loop_start, loop_end)
+                    if loop_dur > 0.0 {
+                        while self.current_audio_pos >= loop_end {
+                            self.current_audio_pos -= loop_dur;
+                        }
+                        if self.current_audio_pos < loop_start {
+                            self.current_audio_pos = loop_start;
+                        }
+                    }
+                }
             }
-
-            self.source_pos.store(f64::to_bits(pos), Ordering::Relaxed);
+            self.source_pos
+                .store(f64::to_bits(self.current_audio_pos), Ordering::Relaxed);
 
             Some(val)
         } else {
