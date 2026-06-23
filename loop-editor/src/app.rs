@@ -1,5 +1,6 @@
 use crate::chroma::{detect_chroma, Chroma};
 use crate::loops::{Library, SavedLoop};
+use crate::session::SessionState;
 use crate::shortcuts::{KeyBinding, SerializableKey, ShortcutAction, ShortcutsConfig};
 use crate::waveform::{render_waveform, ChannelMode, WaveformState};
 use crate::waveform_player::{start_waveform_thread, WaveformCommand, WaveformEvent};
@@ -45,14 +46,34 @@ pub struct LoopEditorApp {
     pub shortcuts: ShortcutsConfig,
     pub show_shortcut_editor: bool,
     pub listening_for_action: Option<ShortcutAction>,
+
+    // Undo/Redo
+    pub undo_stack: Vec<UndoState>,
+    pub redo_stack: Vec<UndoState>,
+}
+
+/// Momentopname van de muteerbare editor state (voor undo/redo).
+#[derive(Clone)]
+pub struct UndoState {
+    pub play_position: f32,
+    pub loop_a_secs: Option<f32>,
+    pub loop_b_secs: Option<f32>,
+    pub pitch_semitones: f32,
+    pub tempo: f32,
+    pub volume: f32,
+    pub zoom: f32,
+    pub scroll_offset: f32,
+    pub markers: Vec<crate::waveform::Marker>,
+    pub loop_bypassed: bool,
 }
 
 impl LoopEditorApp {
     pub fn new() -> Self {
         let (waveform_cmd_tx, waveform_event_rx) = start_waveform_thread();
         let library = crate::loops::load_library();
+        let shortcuts = ShortcutsConfig::load();
 
-        Self {
+        let mut app = Self {
             waveform_state: WaveformState::default(),
             waveform_cmd_tx,
             waveform_event_rx,
@@ -70,10 +91,36 @@ impl LoopEditorApp {
             status_message_timer: 0,
             show_shortcuts: false,
             loop_bypassed: false,
-            shortcuts: ShortcutsConfig::load(),
+            shortcuts,
             show_shortcut_editor: false,
             listening_for_action: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        };
+
+        // Laad sessie (vorige file, positie, etc.)
+        if let Some(session) = SessionState::load() {
+            app.waveform_state.zoom = session.zoom;
+            app.waveform_state.scroll_offset = session.scroll_offset;
+            app.waveform_state.loop_a_secs = session.loop_a_secs;
+            app.waveform_state.loop_b_secs = session.loop_b_secs;
+            app.waveform_state.pitch_semitones = session.pitch_semitones;
+            app.waveform_state.tempo = session.tempo;
+            app.waveform_state.volume = session.volume;
+            app.waveform_play_position = session.play_position;
+            app.waveform_state.channel_mode =
+                serde_json::from_str(&format!("\"{}\"", session.channel_mode))
+                    .unwrap_or(ChannelMode::Mono);
+
+            if let Some(ref path) = session.file_path {
+                if Path::new(path).exists() {
+                    app.file_path = path.clone();
+                    app.load_file(path);
+                }
+            }
         }
+
+        app
     }
     fn egui_key_to_serializable(&self, key: egui::Key) -> SerializableKey {
         match key {
@@ -169,6 +216,7 @@ impl LoopEditorApp {
                 self.active_loop_idx = None;
                 self.pending_loop_point = None;
                 self.chroma_result = None;
+                self.save_session();
 
                 self.status_message = format!(
                     "Geladen: {} ({:.1}s, {} Hz)",
@@ -206,6 +254,61 @@ impl LoopEditorApp {
             a_secs: a,
             b_secs: b,
         });
+    }
+
+    /// Sla huidige editor state op voor undo.
+    fn push_undo(&mut self) {
+        const MAX_UNDO: usize = 50;
+        self.undo_stack.push(UndoState {
+            play_position: self.waveform_play_position,
+            loop_a_secs: self.waveform_state.loop_a_secs,
+            loop_b_secs: self.waveform_state.loop_b_secs,
+            pitch_semitones: self.waveform_state.pitch_semitones,
+            tempo: self.waveform_state.tempo,
+            volume: self.waveform_state.volume,
+            zoom: self.waveform_state.zoom,
+            scroll_offset: self.waveform_state.scroll_offset,
+            markers: self.waveform_state.markers.clone(),
+            loop_bypassed: self.loop_bypassed,
+        });
+        if self.undo_stack.len() > MAX_UNDO {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Sla huidige state op in session.json (voor herstart).
+    fn save_session(&self) {
+        let mode_str = format!("{:?}", self.waveform_state.channel_mode);
+        SessionState::save(
+            self.waveform_state.path.as_deref(),
+            self.waveform_play_position,
+            self.waveform_state.zoom,
+            self.waveform_state.scroll_offset,
+            self.waveform_state.loop_a_secs,
+            self.waveform_state.loop_b_secs,
+            self.waveform_state.pitch_semitones,
+            self.waveform_state.tempo,
+            self.waveform_state.volume,
+            &mode_str,
+        );
+    }
+
+    /// Herstel een UndoState.
+    fn restore_undo(&mut self, state: UndoState) {
+        self.waveform_play_position = state.play_position;
+        self.waveform_state.loop_a_secs = state.loop_a_secs;
+        self.waveform_state.loop_b_secs = state.loop_b_secs;
+        self.waveform_state.pitch_semitones = state.pitch_semitones;
+        self.waveform_state.tempo = state.tempo;
+        self.waveform_state.volume = state.volume;
+        self.waveform_state.zoom = state.zoom;
+        self.waveform_state.scroll_offset = state.scroll_offset;
+        self.waveform_state.markers = state.markers;
+        self.loop_bypassed = state.loop_bypassed;
+        self.sync_loop_bounds();
+        self.status_message = "Undo/Redo".to_string();
+        self.status_message_timer = 2 * 60;
     }
 
     /// Centreer de viewport op de huidige A-B loop.
@@ -415,6 +518,7 @@ impl eframe::App for LoopEditorApp {
                         position_secs: self.waveform_play_position,
                         kind: crate::waveform::MarkerKind::Section,
                     });
+                    self.push_undo();
                     self.sync_markers_to_library();
                     self.status_message =
                         format!("Section marker op {:.1}s", self.waveform_play_position);
@@ -437,6 +541,7 @@ impl eframe::App for LoopEditorApp {
                         position_secs: self.waveform_play_position,
                         kind: crate::waveform::MarkerKind::Measure,
                     });
+                    self.push_undo();
                     self.sync_markers_to_library();
                     self.status_message =
                         format!("Measure marker op {:.1}s", self.waveform_play_position);
@@ -459,6 +564,7 @@ impl eframe::App for LoopEditorApp {
                         position_secs: self.waveform_play_position,
                         kind: crate::waveform::MarkerKind::Beat,
                     });
+                    self.push_undo();
                     self.sync_markers_to_library();
                     self.status_message =
                         format!("Beat marker op {:.1}s", self.waveform_play_position);
@@ -481,6 +587,7 @@ impl eframe::App for LoopEditorApp {
                     }
                     if let Some(idx) = best_idx {
                         let removed = self.waveform_state.markers.remove(idx);
+                        self.push_undo();
                         self.sync_markers_to_library();
                         self.status_message = format!("Marker '{}' verwijderd", removed.name);
                         self.status_message_timer = 3 * 60;
@@ -492,6 +599,7 @@ impl eframe::App for LoopEditorApp {
                     .is_pressed(ShortcutAction::SetLoopA, &ctx.input(|i| i.clone()))
                 {
                     self.waveform_state.loop_a_secs = Some(self.waveform_play_position);
+                    self.push_undo();
                     let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
                         a_secs: self.waveform_play_position,
                         b_secs: self
@@ -509,6 +617,7 @@ impl eframe::App for LoopEditorApp {
                     .is_pressed(ShortcutAction::SetLoopB, &ctx.input(|i| i.clone()))
                 {
                     self.waveform_state.loop_b_secs = Some(self.waveform_play_position);
+                    self.push_undo();
                     let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
                         a_secs: self.waveform_state.loop_a_secs.unwrap_or(0.0),
                         b_secs: self.waveform_play_position,
@@ -594,7 +703,7 @@ impl eframe::App for LoopEditorApp {
 
             // ── Nudge marker A links/rechts (J / Shift+J) ──
             if self.waveform_state.path.is_some() {
-                let step = 0.5;
+                let step = 0.05;
                 let mut changed = false;
                 if self
                     .shortcuts
@@ -631,7 +740,7 @@ impl eframe::App for LoopEditorApp {
 
             // ── Nudge marker B links/rechts (L / Shift+L) ──
             if self.waveform_state.path.is_some() {
-                let step = 0.5;
+                let step = 0.05;
                 let mut changed = false;
                 if self
                     .shortcuts
@@ -666,7 +775,35 @@ impl eframe::App for LoopEditorApp {
                 }
             }
 
-            // ── ← → Rewind/Forward 2 seconden ──
+            // ── ←/→ Playhead nudgen (0.20s) ──
+            if self.waveform_state.path.is_some() {
+                let step = 0.20;
+                let mut new_pos: Option<f32> = None;
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgePlayheadLeft, &ctx.input(|i| i.clone()))
+                {
+                    new_pos = Some((self.waveform_play_position - step).max(0.0));
+                }
+                if self.shortcuts.is_pressed(
+                    ShortcutAction::NudgePlayheadRight,
+                    &ctx.input(|i| i.clone()),
+                ) {
+                    new_pos = Some(
+                        (self.waveform_play_position + step).min(self.waveform_state.duration_secs),
+                    );
+                }
+                if let Some(pos) = new_pos {
+                    self.waveform_play_position = pos;
+                    self.waveform_state.seek_pending = Some(pos);
+                    let _ = self
+                        .waveform_cmd_tx
+                        .send(WaveformCommand::Seek { pos_secs: pos });
+                    self.waveform_state.playhead_frames_after_drag = 15;
+                }
+            }
+
+            // ── ↑/↓ Rewind/Forward 2 seconden ──
             if self.waveform_state.path.is_some() {
                 let mut seek_delta: Option<f32> = None;
                 if self
@@ -716,6 +853,7 @@ impl eframe::App for LoopEditorApp {
                 self.waveform_state.loop_a_secs = None;
                 self.waveform_state.loop_b_secs = None;
                 self.pending_loop_point = None;
+                self.push_undo();
                 let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
                     a_secs: 0.0,
                     b_secs: 0.0,
@@ -756,6 +894,7 @@ impl eframe::App for LoopEditorApp {
                     self.waveform_state.loop_a_secs = Some(a);
                     self.waveform_state.loop_b_secs = Some(b);
                     self.pending_loop_point = None;
+                    self.push_undo();
                     let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
                         a_secs: a,
                         b_secs: b,
@@ -805,12 +944,91 @@ impl eframe::App for LoopEditorApp {
                 }
             }
 
+            // Undo
+            if self
+                .shortcuts
+                .is_pressed(ShortcutAction::Undo, &ctx.input(|i| i.clone()))
+            {
+                if let Some(state) = self.undo_stack.pop() {
+                    self.redo_stack.push(UndoState {
+                        play_position: self.waveform_play_position,
+                        loop_a_secs: self.waveform_state.loop_a_secs,
+                        loop_b_secs: self.waveform_state.loop_b_secs,
+                        pitch_semitones: self.waveform_state.pitch_semitones,
+                        tempo: self.waveform_state.tempo,
+                        volume: self.waveform_state.volume,
+                        zoom: self.waveform_state.zoom,
+                        scroll_offset: self.waveform_state.scroll_offset,
+                        markers: self.waveform_state.markers.clone(),
+                        loop_bypassed: self.loop_bypassed,
+                    });
+                    self.restore_undo(state);
+                }
+            }
+
+            // Redo
+            if self
+                .shortcuts
+                .is_pressed(ShortcutAction::Redo, &ctx.input(|i| i.clone()))
+            {
+                if let Some(state) = self.redo_stack.pop() {
+                    self.undo_stack.push(UndoState {
+                        play_position: self.waveform_play_position,
+                        loop_a_secs: self.waveform_state.loop_a_secs,
+                        loop_b_secs: self.waveform_state.loop_b_secs,
+                        pitch_semitones: self.waveform_state.pitch_semitones,
+                        tempo: self.waveform_state.tempo,
+                        volume: self.waveform_state.volume,
+                        zoom: self.waveform_state.zoom,
+                        scroll_offset: self.waveform_state.scroll_offset,
+                        markers: self.waveform_state.markers.clone(),
+                        loop_bypassed: self.loop_bypassed,
+                    });
+                    self.restore_undo(state);
+                }
+            }
+
             // View
             if self
                 .shortcuts
                 .is_pressed(ShortcutAction::ShowShortcuts, &ctx.input(|i| i.clone()))
             {
                 self.show_shortcuts = !self.show_shortcuts;
+            }
+
+            // RestartLoop — seek naar A en start playback
+            if self
+                .shortcuts
+                .is_pressed(ShortcutAction::RestartLoop, &ctx.input(|i| i.clone()))
+            {
+                if let (Some(a), Some(b)) = (
+                    self.waveform_state.loop_a_secs,
+                    self.waveform_state.loop_b_secs,
+                ) {
+                    if b > a {
+                        self.waveform_play_position = a;
+                        self.waveform_state.seek_pending = Some(a);
+                        self.waveform_state.playhead_frames_after_drag = 15;
+                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
+                            samples: Arc::new(Mutex::new(self.waveform_state.samples.clone())),
+                            sample_rate: self.waveform_state.sample_rate,
+                            start_sample: (a * self.waveform_state.sample_rate as f32) as usize,
+                            segment_start_sec: 0.0,
+                            a_sample: (a * self.waveform_state.sample_rate as f32) as usize,
+                            b_sample: (b * self.waveform_state.sample_rate as f32) as usize,
+                            pitch_semitones: Arc::new(AtomicU32::new(f32::to_bits(
+                                self.waveform_state.pitch_semitones,
+                            ))),
+                            tempo: Arc::new(AtomicU32::new(f32::to_bits(
+                                self.waveform_state.tempo,
+                            ))),
+                        });
+                        self.waveform_is_playing = true;
+                        self.waveform_has_content = true;
+                        self.status_message = format!("Loop herstart vanaf {:.1}s", a);
+                        self.status_message_timer = 3 * 60;
+                    }
+                }
             }
         }
         // ── Drag & drop bestanden ──
@@ -868,6 +1086,7 @@ impl eframe::App for LoopEditorApp {
                     if let Some(ref path) = self.waveform_state.path.clone() {
                         self.load_file(path);
                     }
+                    self.save_session();
                 }
 
                 let resp = ui.add(
@@ -909,43 +1128,65 @@ impl eframe::App for LoopEditorApp {
             ui.add_space(4.0);
         });
 
-        // ── Shortcuts help overlay ──
+        // ── Shortcuts help overlay (dynamisch uit shortcuts data) ──
         if self.show_shortcuts {
             egui::Window::new("⌨ Toetsenbord Shortcuts")
                 .id(egui::Id::new("shortcuts_window"))
-                .resizable(false)
+                .resizable(true)
+                .default_size([400.0, 500.0])
                 .default_pos([200.0, 150.0])
                 .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        shortcut_row(ui, "F1", "Toon/verberg deze help");
-                        ui.separator();
-                        shortcut_row(ui, "Space", "Play / Pauze");
-                        shortcut_row(ui, "Esc", "Stop");
-                        shortcut_row(ui, "< / >", "2 sec terug / vooruit");
-                        shortcut_row(ui, "S", "Section marker op playhead (goud)");
-                        shortcut_row(ui, "M", "Measure marker op playhead (blauw)");
-                        shortcut_row(ui, "B", "Beat marker op playhead (groen)");
-                        shortcut_row(ui, "Backspace", "Marker verwijderen (dichtstbij)");
-                        shortcut_row(ui, "Shift+<", "Loop naar links nudgen");
-                        shortcut_row(ui, "Shift+>", "Loop naar rechts nudgen");
-                        shortcut_row(ui, "[", "Loop punt zetten / A-B maken");
-                        shortcut_row(ui, "J / Shift+J", "Marker A links/rechts nudgen");
-                        shortcut_row(ui, "L / Shift+L", "Marker B links/rechts nudgen");
-                        shortcut_row(ui, "Ctrl+Sleep", "A-B selectie maken");
-                        shortcut_row(ui, "Dubbelklik", "Zet A-marker");
-                        shortcut_row(ui, "Shift+Dubbelklik", "Zet B-marker");
-                        shortcut_row(ui, "Rechterklik", "Wis A-B selectie");
-                        shortcut_row(ui, "Scroll", "Zoom in/uit");
-                        shortcut_row(ui, "Sleep (geen Ctrl)", "Horizontaal scrollen");
-                        ui.separator();
-                        if ui.button("⚙ Edit Shortcuts").clicked() {
-                            self.show_shortcut_editor = !self.show_shortcut_editor;
-                        }
-                        ui.label(
-                            RichText::new("Druk op F1 om te sluiten")
-                                .size(11.0)
-                                .color(Color32::GRAY),
-                        );
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            // ── Dynamische shortcuts uit ShortcutAction::all() ──
+                            use crate::shortcuts::ShortcutAction;
+                            let categories =
+                                ["Playback", "Loop", "Markers", "View", "File", "Edit"];
+                            for category in categories {
+                                ui.label(
+                                    RichText::new(category)
+                                        .size(13.0)
+                                        .strong()
+                                        .color(Color32::from_rgb(180, 180, 220)),
+                                );
+                                for action in ShortcutAction::all()
+                                    .iter()
+                                    .filter(|a| a.category() == category)
+                                {
+                                    let key_text = self
+                                        .shortcuts
+                                        .binding_for(*action)
+                                        .map(|b| b.display())
+                                        .unwrap_or_else(|| "—".to_string());
+                                    shortcut_row(ui, &key_text, action.display_name());
+                                }
+                                ui.separator();
+                            }
+
+                            // ── Extra muis-acties (geen shortcuts) ──
+                            ui.label(
+                                RichText::new("Mouse / Interactie")
+                                    .size(13.0)
+                                    .strong()
+                                    .color(Color32::from_rgb(180, 180, 220)),
+                            );
+                            shortcut_row(ui, "Ctrl+Sleep", "A-B selectie maken");
+                            shortcut_row(ui, "Dubbelklik", "Zet A-marker");
+                            shortcut_row(ui, "Shift+Dubbelklik", "Zet B-marker");
+                            shortcut_row(ui, "Rechterklik", "Wis A-B selectie");
+                            shortcut_row(ui, "Scroll", "Zoom in/uit");
+                            shortcut_row(ui, "Sleep (geen Ctrl)", "Horizontaal scrollen");
+                            ui.separator();
+
+                            if ui.button("⚙ Edit Shortcuts").clicked() {
+                                self.show_shortcut_editor = !self.show_shortcut_editor;
+                            }
+                            ui.label(
+                                RichText::new("Druk op F1 om te sluiten")
+                                    .size(11.0)
+                                    .color(Color32::GRAY),
+                            );
+                        });
                     });
                 });
         }
@@ -996,6 +1237,15 @@ impl eframe::App for LoopEditorApp {
                             self.status_message_timer = 3 * 60;
                         }
                     }
+                } else {
+                    // Rechterklik: loop gewist → stuur 0/0 naar audio-thread (enabled: false)
+                    let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+                        a_secs: 0.0,
+                        b_secs: 0.0,
+                    });
+                    self.pending_loop_point = None;
+                    self.status_message = "Loop gewist".to_string();
+                    self.status_message_timer = 2 * 60;
                 }
             }
 

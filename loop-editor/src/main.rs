@@ -3,6 +3,7 @@
 mod app;
 mod chroma;
 mod loops;
+mod session;
 mod shortcuts;
 mod timestretch;
 mod waveform;

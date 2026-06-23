@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 const SHORTCUTS_FILE: &str = "shortcuts.json";
+const CURRENT_VERSION: u32 = 1;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Alle mogelijke acties in de app
@@ -30,6 +31,8 @@ pub enum ShortcutAction {
     NudgeARight,
     NudgeBLeft,
     NudgeBRight,
+    NudgePlayheadLeft,
+    NudgePlayheadRight,
 
     // Markers
     AddSectionMarker,
@@ -45,6 +48,9 @@ pub enum ShortcutAction {
 
     // File
     OpenFile,
+    Undo,
+    Redo,
+    RestartLoop,
 }
 
 impl ShortcutAction {
@@ -66,6 +72,8 @@ impl ShortcutAction {
             Self::NudgeARight => "Nudge marker A right",
             Self::NudgeBLeft => "Nudge marker B left",
             Self::NudgeBRight => "Nudge marker B right",
+            Self::NudgePlayheadLeft => "Nudge playhead left",
+            Self::NudgePlayheadRight => "Nudge playhead right",
             Self::AddSectionMarker => "Add section marker",
             Self::AddMeasureMarker => "Add measure marker",
             Self::AddBeatMarker => "Add beat marker",
@@ -75,6 +83,9 @@ impl ShortcutAction {
             Self::ResetZoom => "Reset zoom/scroll",
             Self::ShowShortcuts => "Show shortcuts help",
             Self::OpenFile => "Open audio file",
+            Self::Undo => "Undo",
+            Self::Redo => "Redo",
+            Self::RestartLoop => "Restart loop (seek to A & play)",
         }
     }
 
@@ -92,13 +103,16 @@ impl ShortcutAction {
             | Self::NudgeALeft
             | Self::NudgeARight
             | Self::NudgeBLeft
-            | Self::NudgeBRight => "Loop",
+            | Self::NudgeBRight
+            | Self::NudgePlayheadLeft
+            | Self::NudgePlayheadRight => "Loop",
             Self::AddSectionMarker
             | Self::AddMeasureMarker
             | Self::AddBeatMarker
             | Self::DeleteNearestMarker => "Markers",
             Self::ZoomIn | Self::ZoomOut | Self::ResetZoom | Self::ShowShortcuts => "View",
             Self::OpenFile => "File",
+            Self::Undo | Self::Redo | Self::RestartLoop => "Edit",
         }
     }
 
@@ -120,6 +134,8 @@ impl ShortcutAction {
             Self::NudgeARight,
             Self::NudgeBLeft,
             Self::NudgeBRight,
+            Self::NudgePlayheadLeft,
+            Self::NudgePlayheadRight,
             Self::AddSectionMarker,
             Self::AddMeasureMarker,
             Self::AddBeatMarker,
@@ -129,6 +145,9 @@ impl ShortcutAction {
             Self::ResetZoom,
             Self::ShowShortcuts,
             Self::OpenFile,
+            Self::Undo,
+            Self::Redo,
+            Self::RestartLoop,
         ]
     }
 }
@@ -399,6 +418,8 @@ impl From<SerializableKey> for egui::Key {
 // ─────────────────────────────────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ShortcutsConfig {
+    #[serde(default)]
+    pub version: u32,
     pub bindings: HashMap<ShortcutAction, KeyBinding>,
 }
 
@@ -417,11 +438,11 @@ impl Default for ShortcutsConfig {
         );
         bindings.insert(
             ShortcutAction::SeekForward,
-            KeyBinding::new(SerializableKey::ArrowRight),
+            KeyBinding::new(SerializableKey::ArrowUp),
         );
         bindings.insert(
             ShortcutAction::SeekBackward,
-            KeyBinding::new(SerializableKey::ArrowLeft),
+            KeyBinding::new(SerializableKey::ArrowDown),
         );
 
         // Loop
@@ -469,6 +490,14 @@ impl Default for ShortcutsConfig {
             ShortcutAction::NudgeBRight,
             KeyBinding::new(SerializableKey::L).with_shift(),
         );
+        bindings.insert(
+            ShortcutAction::NudgePlayheadLeft,
+            KeyBinding::new(SerializableKey::ArrowLeft),
+        );
+        bindings.insert(
+            ShortcutAction::NudgePlayheadRight,
+            KeyBinding::new(SerializableKey::ArrowRight),
+        );
 
         // Markers
         bindings.insert(
@@ -513,8 +542,23 @@ impl Default for ShortcutsConfig {
             ShortcutAction::OpenFile,
             KeyBinding::new(SerializableKey::O).with_ctrl(),
         );
+        bindings.insert(
+            ShortcutAction::Undo,
+            KeyBinding::new(SerializableKey::Z).with_ctrl(),
+        );
+        bindings.insert(
+            ShortcutAction::Redo,
+            KeyBinding::new(SerializableKey::Z).with_ctrl().with_shift(),
+        );
+        bindings.insert(
+            ShortcutAction::RestartLoop,
+            KeyBinding::new(SerializableKey::Enter),
+        );
 
-        Self { bindings }
+        Self {
+            version: CURRENT_VERSION,
+            bindings,
+        }
     }
 }
 
@@ -524,8 +568,14 @@ impl ShortcutsConfig {
         let path = Path::new(SHORTCUTS_FILE);
         if path.exists() {
             match fs::read_to_string(path) {
-                Ok(json) => match serde_json::from_str(&json) {
+                Ok(json) => match serde_json::from_str::<ShortcutsConfig>(&json) {
                     Ok(config) => {
+                        // Als de versie niet matcht, reset naar defaults
+                        if config.version != CURRENT_VERSION {
+                            let defaults = Self::default();
+                            let _ = defaults.save();
+                            return defaults;
+                        }
                         // Merge met defaults: ontbrekende acties krijgen hun default
                         let defaults = Self::default();
                         let mut merged: Self = config;
