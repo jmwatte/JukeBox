@@ -7,6 +7,38 @@ use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::probe::Hint;
 
+/// Kanaal modus voor het mixen naar mono.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChannelMode {
+    Mono,
+    Left,
+    Right,
+    Mid,
+    Side,
+}
+
+impl ChannelMode {
+    pub fn display(&self) -> &'static str {
+        match self {
+            Self::Mono => "Mono (L+R)",
+            Self::Left => "Links (L)",
+            Self::Right => "Rechts (R)",
+            Self::Mid => "Mid (center)",
+            Self::Side => "Side (breedte)",
+        }
+    }
+
+    pub fn mix(&self, left: f32, right: f32) -> f32 {
+        match self {
+            Self::Mono => (left + right) * 0.5,
+            Self::Left => left,
+            Self::Right => right,
+            Self::Mid => (left + right) * 0.5,
+            Self::Side => (left - right) * 0.5,
+        }
+    }
+}
+
 /// Soort marker: bepaalt kleur en functie
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MarkerKind {
@@ -78,6 +110,8 @@ pub struct WaveformState {
     pub select_drag_start: Option<f32>,
     // ✅ NIEUW: Houdt bij of we wachten op de audio-thread na een seek
     pub seek_pending: Option<f32>,
+    /// Kanaal modus voor mixen naar mono
+    pub channel_mode: ChannelMode,
 }
 
 impl Default for WaveformState {
@@ -103,6 +137,7 @@ impl Default for WaveformState {
             editing_marker_name: String::new(),
             select_drag_start: None,
             seek_pending: None,
+            channel_mode: ChannelMode::Mono,
         }
     }
 }
@@ -112,7 +147,7 @@ impl Default for WaveformState {
 ///
 /// ## Geheugenbescherming
 /// Bestanden groter dan 100 MB worden beperkt tot de eerste 5 minuten audio.
-pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
+pub fn decode_audio(path: &str, mode: ChannelMode) -> Result<(Vec<f32>, u32, f32), String> {
     let path_obj = Path::new(path);
 
     // 0. Controleer bestandsgrootte vóór decoderen
@@ -220,19 +255,21 @@ pub fn decode_audio(path: &str) -> Result<(Vec<f32>, u32, f32), String> {
 
                 let buf = sample_buf.samples();
 
-                // Mix naar mono: gemiddelde van kanalen
+                // Mix naar mono volgens gekozen modus
                 for frame in 0..num_frames {
                     if samples.len() >= max_samples {
                         break;
                     }
-                    let mut frame_sum = 0.0_f32;
-                    for ch in 0..num_channels {
-                        let idx = frame * num_channels + ch;
-                        if idx < buf.len() {
-                            frame_sum += buf[idx];
-                        }
+                    if num_channels >= 2 {
+                        let l_idx = frame * num_channels;
+                        let r_idx = frame * num_channels + 1;
+                        let left = buf.get(l_idx).copied().unwrap_or(0.0);
+                        let right = buf.get(r_idx).copied().unwrap_or(0.0);
+                        samples.push(mode.mix(left, right));
+                    } else if num_channels == 1 {
+                        let idx = frame;
+                        samples.push(buf.get(idx).copied().unwrap_or(0.0));
                     }
-                    samples.push(frame_sum / num_channels as f32);
                 }
                 if samples.len() >= max_samples {
                     break;

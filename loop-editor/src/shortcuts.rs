@@ -25,6 +25,7 @@ pub enum ShortcutAction {
     ToggleLoopBypass,
     NudgeLoopLeft,
     NudgeLoopRight,
+    ToggleLoopPoint,
 
     // Markers
     AddSectionMarker,
@@ -56,6 +57,7 @@ impl ShortcutAction {
             Self::ToggleLoopBypass => "Toggle loop bypass",
             Self::NudgeLoopLeft => "Nudge loop left",
             Self::NudgeLoopRight => "Nudge loop right",
+            Self::ToggleLoopPoint => "Toggle loop point (1e=set, 2e=A-B)",
             Self::AddSectionMarker => "Add section marker",
             Self::AddMeasureMarker => "Add measure marker",
             Self::AddBeatMarker => "Add beat marker",
@@ -77,7 +79,8 @@ impl ShortcutAction {
             | Self::ClearLoop
             | Self::ToggleLoopBypass
             | Self::NudgeLoopLeft
-            | Self::NudgeLoopRight => "Loop",
+            | Self::NudgeLoopRight
+            | Self::ToggleLoopPoint => "Loop",
             Self::AddSectionMarker
             | Self::AddMeasureMarker
             | Self::AddBeatMarker
@@ -100,6 +103,7 @@ impl ShortcutAction {
             Self::ToggleLoopBypass,
             Self::NudgeLoopLeft,
             Self::NudgeLoopRight,
+            Self::ToggleLoopPoint,
             Self::AddSectionMarker,
             Self::AddMeasureMarker,
             Self::AddBeatMarker,
@@ -428,6 +432,10 @@ impl Default for ShortcutsConfig {
         bindings.insert(
             ShortcutAction::NudgeLoopRight,
             KeyBinding::new(SerializableKey::ArrowRight).with_shift(),
+        );
+        bindings.insert(
+            ShortcutAction::ToggleLoopPoint,
+            KeyBinding::new(SerializableKey::OpenBracket),
         );
 
         // Markers
