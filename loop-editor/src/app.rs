@@ -1,3 +1,4 @@
+use crate::chroma::{detect_chroma, Chroma};
 use crate::loops::{Library, SavedLoop};
 use crate::shortcuts::{KeyBinding, SerializableKey, ShortcutAction, ShortcutsConfig};
 use crate::waveform::{render_waveform, ChannelMode, WaveformState};
@@ -25,6 +26,9 @@ pub struct LoopEditorApp {
 
     // Loop point pending (voor 1-toets A-B zetten)
     pub pending_loop_point: Option<f32>,
+
+    // Chroma detectie
+    pub chroma_result: Option<Chroma>,
 
     // File path input
     pub file_path: String,
@@ -60,6 +64,7 @@ impl LoopEditorApp {
             show_loop_library: false,
             active_loop_idx: None,
             pending_loop_point: None,
+            chroma_result: None,
             file_path: String::new(),
             status_message: String::new(),
             status_message_timer: 0,
@@ -163,6 +168,7 @@ impl LoopEditorApp {
                 self.waveform_state.markers = track.markers.clone();
                 self.active_loop_idx = None;
                 self.pending_loop_point = None;
+                self.chroma_result = None;
 
                 self.status_message = format!(
                     "Geladen: {} ({:.1}s, {} Hz)",
@@ -190,6 +196,16 @@ impl LoopEditorApp {
             track.markers = self.waveform_state.markers.clone();
             crate::loops::save_library(&self.library);
         }
+    }
+
+    /// Stuur huidige A-B loop naar de audio-thread.
+    fn sync_loop_bounds(&mut self) {
+        let a = self.waveform_state.loop_a_secs.unwrap_or(0.0);
+        let b = self.waveform_state.loop_b_secs.unwrap_or(0.0);
+        let _ = self.waveform_cmd_tx.send(WaveformCommand::SetLoopBounds {
+            a_secs: a,
+            b_secs: b,
+        });
     }
 
     /// Centreer de viewport op de huidige A-B loop.
@@ -576,6 +592,80 @@ impl eframe::App for LoopEditorApp {
                 }
             }
 
+            // ── Nudge marker A links/rechts (J / Shift+J) ──
+            if self.waveform_state.path.is_some() {
+                let step = 0.5;
+                let mut changed = false;
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgeALeft, &ctx.input(|i| i.clone()))
+                {
+                    if let Some(a) = self.waveform_state.loop_a_secs.as_mut() {
+                        *a = (*a - step).max(0.0);
+                        if let Some(b) = self.waveform_state.loop_b_secs {
+                            if *a >= b {
+                                *a = (b - step).max(0.0);
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgeARight, &ctx.input(|i| i.clone()))
+                {
+                    if let Some(a) = self.waveform_state.loop_a_secs.as_mut() {
+                        *a = (*a + step).min(self.waveform_state.duration_secs);
+                        if let Some(b) = self.waveform_state.loop_b_secs {
+                            if *a >= b {
+                                *a = (b - step).max(0.0);
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.sync_loop_bounds();
+                }
+            }
+
+            // ── Nudge marker B links/rechts (L / Shift+L) ──
+            if self.waveform_state.path.is_some() {
+                let step = 0.5;
+                let mut changed = false;
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgeBLeft, &ctx.input(|i| i.clone()))
+                {
+                    if let Some(b) = self.waveform_state.loop_b_secs.as_mut() {
+                        *b = (*b - step).max(0.0);
+                        if let Some(a) = self.waveform_state.loop_a_secs {
+                            if *b <= a {
+                                *b = (a + step).min(self.waveform_state.duration_secs);
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::NudgeBRight, &ctx.input(|i| i.clone()))
+                {
+                    if let Some(b) = self.waveform_state.loop_b_secs.as_mut() {
+                        *b = (*b + step).min(self.waveform_state.duration_secs);
+                        if let Some(a) = self.waveform_state.loop_a_secs {
+                            if *b <= a {
+                                *b = (a + step).min(self.waveform_state.duration_secs);
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+                if changed {
+                    self.sync_loop_bounds();
+                }
+            }
+
             // ── ← → Rewind/Forward 2 seconden ──
             if self.waveform_state.path.is_some() {
                 let mut seek_delta: Option<f32> = None;
@@ -831,14 +921,16 @@ impl eframe::App for LoopEditorApp {
                         ui.separator();
                         shortcut_row(ui, "Space", "Play / Pauze");
                         shortcut_row(ui, "Esc", "Stop");
-                        shortcut_row(ui, "← / →", "2 sec terug / vooruit");
+                        shortcut_row(ui, "< / >", "2 sec terug / vooruit");
                         shortcut_row(ui, "S", "Section marker op playhead (goud)");
                         shortcut_row(ui, "M", "Measure marker op playhead (blauw)");
                         shortcut_row(ui, "B", "Beat marker op playhead (groen)");
                         shortcut_row(ui, "Backspace", "Marker verwijderen (dichtstbij)");
-                        shortcut_row(ui, "Shift+←", "Loop naar links nudgen");
-                        shortcut_row(ui, "Shift+→", "Loop naar rechts nudgen");
+                        shortcut_row(ui, "Shift+<", "Loop naar links nudgen");
+                        shortcut_row(ui, "Shift+>", "Loop naar rechts nudgen");
                         shortcut_row(ui, "[", "Loop punt zetten / A-B maken");
+                        shortcut_row(ui, "J / Shift+J", "Marker A links/rechts nudgen");
+                        shortcut_row(ui, "L / Shift+L", "Marker B links/rechts nudgen");
                         shortcut_row(ui, "Ctrl+Sleep", "A-B selectie maken");
                         shortcut_row(ui, "Dubbelklik", "Zet A-marker");
                         shortcut_row(ui, "Shift+Dubbelklik", "Zet B-marker");
@@ -1242,6 +1334,80 @@ impl eframe::App for LoopEditorApp {
                             self.active_loop_idx = Some(idx);
                             self.center_view_on_loop(panel_width);
                         }
+                    }
+                }
+
+                // ── Chroma detectie knop ──
+                if ui
+                    .button(if self.chroma_result.is_some() {
+                        "🔄 Opnieuw detecteren"
+                    } else {
+                        "🔍 Detecteer noten"
+                    })
+                    .on_hover_text("Analyseer de A-B selectie op toonhoogtes")
+                    .clicked()
+                {
+                    let samples = &self.waveform_state.samples;
+                    let sr = self.waveform_state.sample_rate;
+                    let a = self.waveform_state.loop_a_secs;
+                    let b = self.waveform_state.loop_b_secs;
+                    if !samples.is_empty() && sr > 0 {
+                        self.chroma_result = Some(detect_chroma(samples, sr, a, b));
+                        if let Some(chroma) = self.chroma_result {
+                            let (note, conf) = chroma.peak();
+                            let name = Chroma::note_name(note);
+                            self.status_message = format!(
+                                "🔍 Meest waarschijnlijke noot: {} ({:.0}% zeker)",
+                                name,
+                                conf * 100.0
+                            );
+                            self.status_message_timer = 5 * 60;
+                        }
+                    }
+                }
+
+                // ── Chroma visualisatie ──
+                if let Some(chroma) = self.chroma_result {
+                    ui.separator();
+                    ui.label(RichText::new("Toonhoogtes (chroma)").size(12.0).strong());
+                    let bar_max_width = ui.available_width().min(300.0);
+                    for i in 0..12 {
+                        let val = chroma.0[i];
+                        if val < 0.01 {
+                            continue;
+                        }
+                        let bar_width = bar_max_width * val;
+                        let name = Chroma::note_name(i);
+                        let name_nl = Chroma::note_name_nl(i);
+                        let (r, g, b) = match i % 12 {
+                            0 | 2 | 4 | 5 | 7 | 9 | 11 => (220, 180, 50), // witte toetsen
+                            _ => (100, 100, 100),                         // zwarte toetsen
+                        };
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("{:>3} ({})", name, name_nl))
+                                    .size(13.0)
+                                    .color(Color32::from_rgb(r, g, b)),
+                            );
+                            let _ = egui::Frame::none().fill(Color32::from_rgb(r, g, b)).show(
+                                ui,
+                                |ui| {
+                                    ui.set_min_size(egui::vec2(bar_width.max(2.0), 12.0));
+                                },
+                            );
+                        });
+                    }
+                    if let Some((note, conf)) = chroma.compact(0.2).first().copied() {
+                        ui.label(
+                            RichText::new(format!(
+                                "→ Meest waarschijnlijk: {} ({:.0}%)",
+                                Chroma::note_name(note),
+                                conf * 100.0
+                            ))
+                            .size(14.0)
+                            .strong()
+                            .color(Color32::from_rgb(100, 200, 100)),
+                        );
                     }
                 }
 

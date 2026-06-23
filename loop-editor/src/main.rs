@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod chroma;
 mod loops;
 mod shortcuts;
 mod timestretch;
