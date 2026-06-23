@@ -31,6 +31,7 @@ pub enum WaveformCommand {
     },
     SetPitch(f32),
     SetTempo(f32),
+    SetVolume(f32),
     SetLoopEnabled(bool),
 }
 
@@ -82,6 +83,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let seek_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let seek_target: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
+    let volume: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
 
     let mut prev_wrap: u32 = 0;
     let mut wrap_limit_sent = false;
@@ -150,6 +152,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         wrap_count.clone(),
                         seek_requested.clone(),
                         seek_target.clone(),
+                        volume.clone(),
                     );
 
                     if let Some(s) = &sink {
@@ -237,6 +240,9 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                 WaveformCommand::SetTempo(new_tempo) => {
                     tempo.store(f32::to_bits(new_tempo), Ordering::Relaxed);
                 }
+                WaveformCommand::SetVolume(new_volume) => {
+                    volume.store(f32::to_bits(new_volume), Ordering::Relaxed);
+                }
                 WaveformCommand::SetLoopEnabled(enabled) => {
                     loop_bounds.lock().unwrap().enabled = enabled;
                 }
@@ -293,6 +299,7 @@ struct SoundTouchSource {
     wrap_count: Arc<AtomicU32>,
     seek_requested: Arc<AtomicBool>,
     seek_target: Arc<AtomicU64>,
+    volume: Arc<AtomicU32>,
     ts: TimeStretch,
     read_pos: usize,
     out_buf: Vec<f32>,
@@ -318,6 +325,7 @@ impl SoundTouchSource {
         wrap_count: Arc<AtomicU32>,
         seek_requested: Arc<AtomicBool>,
         seek_target: Arc<AtomicU64>,
+        volume: Arc<AtomicU32>,
     ) -> Self {
         let total_frames = {
             let samples_lock = raw_samples.lock().unwrap();
@@ -357,6 +365,7 @@ impl SoundTouchSource {
             wrap_count,
             seek_requested,
             seek_target,
+            volume,
             ts,
             read_pos: start_pos,
             out_buf: Vec::with_capacity(4096),
@@ -492,7 +501,15 @@ impl Iterator for SoundTouchSource {
         }
 
         if self.out_idx < self.out_buf.len() {
-            let val = self.out_buf[self.out_idx];
+            let raw_val = self.out_buf[self.out_idx];
+            let vol = f32::from_bits(self.volume.load(Ordering::Relaxed));
+            let mut val = raw_val * vol;
+            // Soft-clip limiter: voorkomt harde vervorming bij volume > 1.0
+            if val > 1.0 {
+                val = 1.0 - 1.0 / (val + 1.0);
+            } else if val < -1.0 {
+                val = -1.0 + 1.0 / (-val + 1.0);
+            }
             self.out_idx += 1;
 
             // ✅ DE FIX: Schuif de exacte audio-positie op per geleverde output sample.

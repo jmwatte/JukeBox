@@ -112,6 +112,8 @@ pub struct WaveformState {
     pub seek_pending: Option<f32>,
     /// Kanaal modus voor mixen naar mono
     pub channel_mode: ChannelMode,
+    /// Volume gain factor (0.0 .. 2.0)
+    pub volume: f32,
 }
 
 impl Default for WaveformState {
@@ -138,6 +140,7 @@ impl Default for WaveformState {
             select_drag_start: None,
             seek_pending: None,
             channel_mode: ChannelMode::Mono,
+            volume: 1.0,
         }
     }
 }

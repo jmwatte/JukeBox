@@ -984,6 +984,25 @@ impl eframe::App for LoopEditorApp {
                     }
                 }
 
+                ui.separator();
+
+                ui.label("Vol:");
+                let old_vol = self.waveform_state.volume;
+                let mut vol = old_vol;
+                ui.add(
+                    egui::Slider::new(&mut vol, 0.0..=2.0)
+                        .text("x")
+                        .step_by(0.05),
+                );
+                if (vol - old_vol).abs() > 0.01 {
+                    self.waveform_state.volume = vol;
+                    let _ = self.waveform_cmd_tx.send(WaveformCommand::SetVolume(vol));
+                }
+                if ui.button("⟲").clicked() {
+                    self.waveform_state.volume = 1.0;
+                    let _ = self.waveform_cmd_tx.send(WaveformCommand::SetVolume(1.0));
+                }
+
                 // Playback status
                 if self.waveform_is_playing {
                     let p = self.waveform_play_position;
