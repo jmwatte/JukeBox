@@ -471,9 +471,10 @@ impl eframe::App for LoopEditorApp {
                             (a, start, b)
                         }
                         _ => {
-                            // No loop, decode from playhead to end
+                            // Geen loop: decode alleen vanaf playhead, stuur a == b zodat de
+                            // audio-thread weet dat er géén looping is.
                             let start = self.waveform_play_position;
-                            (start, start, self.waveform_state.duration_secs)
+                            (start, start, start) // decode_end == play_start → a_sample == b_sample
                         }
                     };
 
@@ -1217,7 +1218,10 @@ impl eframe::App for LoopEditorApp {
 
             // 🔥 Loop-grenzen tijdens playback: stuur SetLoopBounds
             //    → audio-thread past ze direct toe zonder de source te herstarten
-            if loop_changed && self.waveform_is_playing {
+            // Stuur loop-verandering altijd naar audio-thread, ook als de
+            // audio stilstaat. Anders blijft de audio-thread een oude loop
+            // onthouden, die bij een volgende Play onzichtbaar wordt hervat.
+            if loop_changed {
                 if let (Some(a), Some(b)) = (
                     self.waveform_state.loop_a_secs,
                     self.waveform_state.loop_b_secs,
