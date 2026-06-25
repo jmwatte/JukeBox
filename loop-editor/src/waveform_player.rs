@@ -83,6 +83,10 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let seek_target: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
     let volume: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
 
+    // Watchdog: detecteert als source_pos niet meer verandert (audio-device weggevallen)
+    let mut last_source_pos: u64 = f64::to_bits(0.0);
+    let mut stuck_frames: u32 = 0;
+
     let segment_start_sec: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let segment_dur: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let current_sample_rate: Arc<Mutex<u32>> = Arc::new(Mutex::new(44100));
@@ -152,6 +156,9 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.play();
                         is_playing = true;
                         is_paused = false;
+                        // watchdog resetten bij een frisse start
+                        stuck_frames = 0;
+                        last_source_pos = f64::to_bits(0.0);
                         let _ = event_tx.send(WaveformEvent::Playing);
                     } else {
                         let _ = event_tx.send(WaveformEvent::Error("Geen audio-apparaat".into()));
@@ -265,6 +272,26 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     };
 
                     let _ = event_tx.send(WaveformEvent::Position(effective_pos, total_dur));
+
+                    // Watchdog: als source_pos niet verandert, is het audio-device
+                    // waarschijnlijk weggevallen (bv. Windows power management).
+                    // Forceer dan een Stopped event zodat de UI de juiste status toont.
+                    let cur_pos = source_pos.load(Ordering::Relaxed);
+                    if cur_pos == last_source_pos {
+                        stuck_frames += 1;
+                        if stuck_frames > 60 {
+                            // ~1 seconde stilstand (16ms per frame)
+                            if let Some(s) = &sink {
+                                s.stop();
+                                s.clear();
+                            }
+                            is_playing = false;
+                            let _ = event_tx.send(WaveformEvent::Stopped);
+                        }
+                    } else {
+                        stuck_frames = 0;
+                        last_source_pos = cur_pos;
+                    }
                 }
             }
         }
