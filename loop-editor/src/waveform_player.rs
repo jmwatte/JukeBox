@@ -43,7 +43,6 @@ pub enum WaveformEvent {
     Resumed,
     Error(String),
     Position(f32, f32),
-    LoopLimitReached,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -80,13 +79,9 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
         enabled: false,
     }));
     let source_pos: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
-    let wrap_count: Arc<AtomicU32> = Arc::new(AtomicU32::new(0));
     let seek_requested: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
     let seek_target: Arc<AtomicU64> = Arc::new(AtomicU64::new(f64::to_bits(0.0)));
     let volume: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
-
-    let mut prev_wrap: u32 = 0;
-    let mut wrap_limit_sent = false;
 
     let segment_start_sec: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let segment_dur: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
@@ -138,10 +133,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         };
                     }
 
-                    wrap_count.store(0, Ordering::Relaxed);
-                    prev_wrap = 0;
-                    wrap_limit_sent = false;
-
                     let source = SoundTouchSource::new(
                         samples.clone(),
                         sr,
@@ -149,7 +140,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         tempo.clone(),
                         loop_bounds.clone(),
                         source_pos.clone(),
-                        wrap_count.clone(),
                         seek_requested.clone(),
                         seek_target.clone(),
                         volume.clone(),
@@ -275,13 +265,6 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     };
 
                     let _ = event_tx.send(WaveformEvent::Position(effective_pos, total_dur));
-
-                    let cur_wrap = wrap_count.load(Ordering::Relaxed);
-                    if cur_wrap >= prev_wrap + 4 && !wrap_limit_sent {
-                        let _ = event_tx.send(WaveformEvent::LoopLimitReached);
-                        wrap_limit_sent = true;
-                    }
-                    prev_wrap = cur_wrap;
                 }
             }
         }
@@ -296,7 +279,6 @@ struct SoundTouchSource {
     tempo: Arc<AtomicU32>,
     loop_bounds: Arc<Mutex<LoopBounds>>,
     source_pos: Arc<AtomicU64>,
-    wrap_count: Arc<AtomicU32>,
     seek_requested: Arc<AtomicBool>,
     seek_target: Arc<AtomicU64>,
     volume: Arc<AtomicU32>,
@@ -322,7 +304,6 @@ impl SoundTouchSource {
         tempo: Arc<AtomicU32>,
         loop_bounds: Arc<Mutex<LoopBounds>>,
         source_pos: Arc<AtomicU64>,
-        wrap_count: Arc<AtomicU32>,
         seek_requested: Arc<AtomicBool>,
         seek_target: Arc<AtomicU64>,
         volume: Arc<AtomicU32>,
@@ -362,7 +343,6 @@ impl SoundTouchSource {
             tempo,
             loop_bounds,
             source_pos,
-            wrap_count,
             seek_requested,
             seek_target,
             volume,
@@ -446,7 +426,6 @@ impl SoundTouchSource {
                 if self.read_pos >= end_pos {
                     if self.cached_loop_enabled {
                         self.read_pos = self.cached_loop_start as usize;
-                        self.wrap_count.fetch_add(1, Ordering::Relaxed);
                         continue;
                     } else {
                         break;

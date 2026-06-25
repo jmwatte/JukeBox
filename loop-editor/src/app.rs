@@ -383,22 +383,6 @@ impl eframe::App for LoopEditorApp {
 
                     ctx.request_repaint();
                 }
-                WaveformEvent::LoopLimitReached => {
-                    // Na 4× wrappen: seek naar loop_b + 1 seconde om de loop te "breken"
-                    if let Some(b) = self.waveform_state.loop_b_secs {
-                        let target = (b + 1.0).min(self.waveform_state.duration_secs);
-                        self.waveform_play_position = target;
-                        if self.waveform_has_content {
-                            let _ = self
-                                .waveform_cmd_tx
-                                .send(WaveformCommand::Seek { pos_secs: target });
-                        }
-                        self.status_message =
-                            format!("Loop limiet bereikt → seek naar {:.1}s", target);
-                        self.status_message_timer = 5 * 60;
-                    }
-                    ctx.request_repaint();
-                }
             }
         }
 
