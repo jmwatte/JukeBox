@@ -42,6 +42,10 @@ pub struct LoopEditorApp {
     // Looping bypass
     pub loop_bypassed: bool,
 
+    // Loop herhaal-teller
+    pub loop_repeat_count: u32,    // 0 = oneindig
+    pub loop_iteration_count: u32, // interne teller, reset bij elke Play
+
     // Shortcuts
     pub shortcuts: ShortcutsConfig,
     pub show_shortcut_editor: bool,
@@ -91,6 +95,8 @@ impl LoopEditorApp {
             status_message_timer: 0,
             show_shortcuts: false,
             loop_bypassed: false,
+            loop_repeat_count: 0,
+            loop_iteration_count: 0,
             shortcuts,
             show_shortcut_editor: false,
             listening_for_action: None,
@@ -375,10 +381,43 @@ impl eframe::App for LoopEditorApp {
                     // ✅ Accepteer de positie ALLEEN als:
                     // 1. Er geen seek pending is (de audio is gearriveerd)
                     // 2. We niet aan het slepen zijn
+                    let prev_pos = self.waveform_play_position;
                     if self.waveform_state.seek_pending.is_none()
                         && !self.waveform_state.dragging_playhead
                     {
                         self.waveform_play_position = pos;
+                    }
+
+                    // Loop-herhaal detectie: als de positie van B terugspringt
+                    // naar A (wrap), tel dan een iteratie.
+                    // We gebruiken prev_pos (oude waarde) omdat play_position
+                    // hierboven al is bijgewerkt naar de nieuwe positie.
+                    if self.loop_repeat_count > 0 {
+                        if let (Some(a), Some(b)) = (
+                            self.waveform_state.loop_a_secs,
+                            self.waveform_state.loop_b_secs,
+                        ) {
+                            let loop_dur = b - a;
+                            if loop_dur > 0.0
+                                && pos < prev_pos
+                                && (prev_pos - pos).abs() > loop_dur * 0.5
+                                // Alleen tellen als prev_pos dicht bij B was (echte wrap)
+                                && prev_pos >= b - loop_dur * 0.1
+                            {
+                                self.loop_iteration_count += 1;
+                                // Stop pas als de teller boven loop_repeat_count uitkomt.
+                                // Bij 2 wil de gebruiker 2× horen: 1/2 en 2/2, dus stoppen bij 3.
+                                if self.loop_iteration_count > self.loop_repeat_count {
+                                    let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
+                                    self.waveform_is_playing = false;
+                                    self.status_message = format!(
+                                        "Loop {}/{} — gestopt",
+                                        self.loop_repeat_count, self.loop_repeat_count
+                                    );
+                                    self.status_message_timer = 3 * 60;
+                                }
+                            }
+                        }
                     }
 
                     ctx.request_repaint();
@@ -481,6 +520,7 @@ impl eframe::App for LoopEditorApp {
                     });
 
                     self.waveform_is_playing = true;
+                    self.loop_iteration_count = 1; // 1e play-through
                 }
             }
 
@@ -1411,9 +1451,37 @@ impl eframe::App for LoopEditorApp {
                                     ))),
                                 });
                                 self.waveform_is_playing = true;
+                                self.loop_iteration_count = 1; // 1e play-through
                                 ctx.request_repaint();
                             }
                         }
+                    }
+                }
+
+                // ── Loop herhaal-teller ──
+                if let (Some(a), Some(b)) = (
+                    self.waveform_state.loop_a_secs,
+                    self.waveform_state.loop_b_secs,
+                ) {
+                    if b > a {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Herhaal:");
+                            let resp = ui.add(
+                                egui::DragValue::new(&mut self.loop_repeat_count)
+                                    .range(0..=999)
+                                    .speed(1.0)
+                                    .prefix("× "),
+                            );
+                            if resp.changed() && self.loop_repeat_count == 0 {
+                                self.status_message = "0 = oneindig herhalen".to_string();
+                                self.status_message_timer = 2 * 60;
+                            }
+                            if self.loop_repeat_count > 0 && self.waveform_is_playing {
+                                let display = self.loop_iteration_count.min(self.loop_repeat_count);
+                                ui.label(format!("({}/{})", display, self.loop_repeat_count));
+                            }
+                        });
                     }
                 }
 
