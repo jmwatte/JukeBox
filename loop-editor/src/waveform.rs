@@ -2,6 +2,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::Path;
+use std::sync::Arc;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -87,7 +88,7 @@ pub struct Marker {
 #[derive(Clone)]
 pub struct WaveformState {
     pub path: Option<String>,
-    pub samples: Vec<f32>, // PCM samples (mono, gemixt)
+    pub samples: Arc<Vec<f32>>, // PCM samples (mono, gemixt)
     pub sample_rate: u32,
     pub duration_secs: f32,
     pub zoom: f32,          // pixels per second
@@ -120,7 +121,7 @@ impl Default for WaveformState {
     fn default() -> Self {
         Self {
             path: None,
-            samples: Vec::new(),
+            samples: Arc::new(Vec::new()),
             sample_rate: 44100,
             duration_secs: 0.0,
             zoom: 50.0, // 50 pixels per seconde (default)

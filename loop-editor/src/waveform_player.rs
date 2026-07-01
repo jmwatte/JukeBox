@@ -7,7 +7,7 @@ use std::time::Duration;
 
 pub enum WaveformCommand {
     Play {
-        samples: Arc<Mutex<Vec<f32>>>,
+        samples: Arc<Vec<f32>>,
         sample_rate: u32,
         start_sample: usize,
         segment_start_sec: f32,
@@ -121,7 +121,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     let mut sink: Option<Sink> = None;
     let mut is_playing = false;
     let mut is_paused = false;
-    let samples: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut samples: Arc<Vec<f32>> = Arc::new(Vec::new());
     let pitch_semitones: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(0.0)));
     let tempo: Arc<AtomicU32> = Arc::new(AtomicU32::new(f32::to_bits(1.0)));
     let loop_bounds: Arc<Mutex<LoopBounds>> = Arc::new(Mutex::new(LoopBounds {
@@ -157,7 +157,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     pitch_semitones: ps,
                     tempo: t,
                 } => {
-                    *samples.lock().unwrap() = new_samples.lock().unwrap().clone();
+                    samples = new_samples.clone();
                     pitch_semitones.store(ps.load(Ordering::Relaxed), Ordering::Relaxed);
                     tempo.store(t.load(Ordering::Relaxed), Ordering::Relaxed);
                     *current_sample_rate.lock().unwrap() = sr;
@@ -166,7 +166,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     seek_requested.store(false, Ordering::Relaxed);
                     seek_target.store(f64::to_bits(start_sample as f64), Ordering::Relaxed);
 
-                    let len = samples.lock().unwrap().len();
+                    let len = samples.len();
                     *segment_dur.lock().unwrap() = len as f32 / sr as f32;
 
                     if b_sample > a_sample && b_sample <= len {
@@ -328,7 +328,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     let pos_samples = f64::from_bits(source_pos.load(Ordering::Relaxed));
                     let sr = *current_sample_rate.lock().unwrap();
                     let bounds = *loop_bounds.lock().unwrap();
-                    let total_dur = samples.lock().unwrap().len() as f32 / sr as f32;
+                    let total_dur = samples.len() as f32 / sr as f32;
                     let pos_secs = pos_samples as f32 / sr as f32;
 
                     let effective_pos = if bounds.enabled() {
@@ -376,7 +376,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 }
 
 struct SoundTouchSource {
-    raw_samples: Arc<Mutex<Vec<f32>>>,
+    raw_samples: Arc<Vec<f32>>,
     sample_rate: u32,
     pitch_semitones: Arc<AtomicU32>,
     tempo: Arc<AtomicU32>,
@@ -401,7 +401,7 @@ struct SoundTouchSource {
 
 impl SoundTouchSource {
     fn new(
-        raw_samples: Arc<Mutex<Vec<f32>>>,
+        raw_samples: Arc<Vec<f32>>,
         sample_rate: u32,
         pitch_semitones: Arc<AtomicU32>,
         tempo: Arc<AtomicU32>,
@@ -411,12 +411,7 @@ impl SoundTouchSource {
         seek_target: Arc<AtomicU64>,
         volume: Arc<AtomicU32>,
     ) -> Self {
-        let total_frames = {
-            let samples_lock = raw_samples.lock().unwrap();
-            let len = samples_lock.len();
-            drop(samples_lock);
-            len
-        };
+        let total_frames = raw_samples.len();
 
         let mut ts = TimeStretch::new(sample_rate, 1, total_frames);
 
@@ -507,8 +502,7 @@ impl SoundTouchSource {
         self.out_idx = 0;
 
         // 5. Buffer vulling via SoundTouch
-        let raw = self.raw_samples.lock().unwrap();
-        let total_len = raw.len();
+        let total_len = self.raw_samples.len();
         if total_len == 0 {
             return;
         }
@@ -540,7 +534,8 @@ impl SoundTouchSource {
                     break;
                 }
 
-                input_chunk.extend_from_slice(&raw[self.read_pos..self.read_pos + to_read]);
+                input_chunk
+                    .extend_from_slice(&self.raw_samples[self.read_pos..self.read_pos + to_read]);
                 self.read_pos += to_read;
             }
 

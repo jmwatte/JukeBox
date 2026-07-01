@@ -8,7 +8,7 @@ use crossbeam_channel::{Receiver, Sender};
 use eframe::egui::{self, Color32, RichText};
 use std::path::Path;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub struct LoopEditorApp {
     // Waveform state
@@ -205,7 +205,7 @@ impl LoopEditorApp {
         match crate::waveform::decode_audio(path, self.waveform_state.channel_mode) {
             Ok((samples, sample_rate, duration_secs)) => {
                 self.waveform_state.path = Some(path.to_string());
-                self.waveform_state.samples = samples;
+                self.waveform_state.samples = Arc::new(samples);
                 self.waveform_state.sample_rate = sample_rate;
                 self.waveform_state.duration_secs = duration_secs;
                 self.waveform_state.zoom = 50.0;
@@ -507,7 +507,7 @@ impl eframe::App for LoopEditorApp {
                     let b_sample = (decode_end * sr) as usize;
 
                     let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                        samples: Arc::new(Mutex::new(self.waveform_state.samples.clone())), // ✅ Volledige track!
+                        samples: self.waveform_state.samples.clone(),
                         sample_rate: self.waveform_state.sample_rate,
                         start_sample,
                         segment_start_sec: 0.0, // ✅ De buffer begint nu bij 0.0s van de track
@@ -1035,7 +1035,7 @@ impl eframe::App for LoopEditorApp {
                         self.waveform_state.seek_pending = Some(a);
                         self.waveform_state.playhead_frames_after_drag = 15;
                         let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                            samples: Arc::new(Mutex::new(self.waveform_state.samples.clone())),
+                            samples: self.waveform_state.samples.clone(),
                             sample_rate: self.waveform_state.sample_rate,
                             start_sample: (a * self.waveform_state.sample_rate as f32) as usize,
                             segment_start_sec: 0.0,
@@ -1435,9 +1435,7 @@ impl eframe::App for LoopEditorApp {
                                 let b_sample = (b * sr) as usize;
 
                                 let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                                    samples: Arc::new(Mutex::new(
-                                        self.waveform_state.samples.clone(),
-                                    )), // ✅ Volledige track!
+                                    samples: self.waveform_state.samples.clone(),
                                     sample_rate: self.waveform_state.sample_rate,
                                     start_sample: a_sample, // Start met spelen op A
                                     segment_start_sec: 0.0, // ✅ De buffer begint nu bij 0.0s van de track
