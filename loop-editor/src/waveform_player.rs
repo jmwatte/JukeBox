@@ -65,6 +65,57 @@ pub fn start_waveform_thread() -> (Sender<WaveformCommand>, Receiver<WaveformEve
     (cmd_tx, event_rx)
 }
 
+// ─── Helper: maak een verse OutputStream + Sink aan ───
+fn recreate_stream(
+    stream: &mut Option<OutputStream>,
+    sink: &mut Option<Sink>,
+    event_tx: &Sender<WaveformEvent>,
+) -> bool {
+    match OutputStream::try_default() {
+        Ok((new_stream, handle)) => match Sink::try_new(&handle) {
+            Ok(new_sink) => {
+                *stream = Some(new_stream);
+                *sink = Some(new_sink);
+                true
+            }
+            Err(e) => {
+                let _ = event_tx.send(WaveformEvent::Error(format!("Sink fout: {}", e)));
+                false
+            }
+        },
+        Err(e) => {
+            let _ = event_tx.send(WaveformEvent::Error(format!("Audio-apparaat fout: {}", e)));
+            false
+        }
+    }
+}
+
+// ─── Helper: herbouw de stream alleen als nodig (lazy) ───
+fn check_and_recreate_stream(
+    stream: &mut Option<OutputStream>,
+    sink: &mut Option<Sink>,
+    event_tx: &Sender<WaveformEvent>,
+    last_activity: &mut std::time::Instant,
+    stream_is_dead: &mut bool,
+) -> bool {
+    let idle_time = last_activity.elapsed();
+    let needs_recreation =
+        *stream_is_dead || sink.is_none() || idle_time > std::time::Duration::from_secs(120);
+
+    if needs_recreation {
+        if recreate_stream(stream, sink, event_tx) {
+            *stream_is_dead = false;
+            *last_activity = std::time::Instant::now();
+            true
+        } else {
+            false
+        }
+    } else {
+        *last_activity = std::time::Instant::now();
+        true
+    }
+}
+
 fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEvent>) {
     let mut _stream: Option<OutputStream> = None;
     let mut sink: Option<Sink> = None;
@@ -86,17 +137,12 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
     // Watchdog: detecteert als source_pos niet meer verandert (audio-device weggevallen)
     let mut last_source_pos: u64 = f64::to_bits(0.0);
     let mut stuck_frames: u32 = 0;
+    let mut last_audio_activity = std::time::Instant::now();
+    let mut stream_is_dead = true; // start met dood → dwingt 1e stream-creatie af
 
     let segment_start_sec: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let segment_dur: Arc<Mutex<f32>> = Arc::new(Mutex::new(0.0));
     let current_sample_rate: Arc<Mutex<u32>> = Arc::new(Mutex::new(44100));
-
-    if let Ok((stream, handle)) = OutputStream::try_default() {
-        if let Ok(new_sink) = Sink::try_new(&handle) {
-            _stream = Some(stream);
-            sink = Some(new_sink);
-        }
-    }
 
     loop {
         while let Ok(cmd) = rx.try_recv() {
@@ -137,6 +183,17 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         };
                     }
 
+                    // ✅ Lazy recreation: herbouw stream alleen als nodig (OS-slaap / crash)
+                    if !check_and_recreate_stream(
+                        &mut _stream,
+                        &mut sink,
+                        &event_tx,
+                        &mut last_audio_activity,
+                        &mut stream_is_dead,
+                    ) {
+                        continue;
+                    }
+
                     let source = SoundTouchSource::new(
                         samples.clone(),
                         sr,
@@ -156,12 +213,9 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                         s.play();
                         is_playing = true;
                         is_paused = false;
-                        // watchdog resetten bij een frisse start
                         stuck_frames = 0;
-                        last_source_pos = f64::to_bits(0.0);
+                        last_source_pos = source_pos.load(Ordering::Relaxed);
                         let _ = event_tx.send(WaveformEvent::Playing);
-                    } else {
-                        let _ = event_tx.send(WaveformEvent::Error("Geen audio-apparaat".into()));
                     }
                 }
                 WaveformCommand::Stop => {
@@ -182,6 +236,15 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     }
                 }
                 WaveformCommand::Resume => {
+                    if !check_and_recreate_stream(
+                        &mut _stream,
+                        &mut sink,
+                        &event_tx,
+                        &mut last_audio_activity,
+                        &mut stream_is_dead,
+                    ) {
+                        continue;
+                    }
                     if let Some(s) = &sink {
                         if s.is_paused() {
                             s.play();
@@ -191,16 +254,26 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     }
                 }
                 WaveformCommand::TogglePause => {
-                    if let Some(s) = &sink {
-                        if s.is_paused() {
+                    if sink.as_ref().map_or(false, |s| s.is_paused()) {
+                        // ✅ Hervatten: controleer of stream nog leeft
+                        if !check_and_recreate_stream(
+                            &mut _stream,
+                            &mut sink,
+                            &event_tx,
+                            &mut last_audio_activity,
+                            &mut stream_is_dead,
+                        ) {
+                            continue;
+                        }
+                        if let Some(s) = &sink {
                             s.play();
                             is_paused = false;
                             let _ = event_tx.send(WaveformEvent::Resumed);
-                        } else {
-                            s.pause();
-                            is_paused = true;
-                            let _ = event_tx.send(WaveformEvent::Paused);
                         }
+                    } else if let Some(s) = &sink {
+                        s.pause();
+                        is_paused = true;
+                        let _ = event_tx.send(WaveformEvent::Paused);
                     }
                 }
                 WaveformCommand::SetLoopBounds { a_secs, b_secs } => {
@@ -275,12 +348,14 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
 
                     // Watchdog: als source_pos niet verandert, is het audio-device
                     // waarschijnlijk weggevallen (bv. Windows power management).
-                    // Forceer dan een Stopped event zodat de UI de juiste status toont.
+                    // Markeer de stream als "dood" zodat bij de volgende Play
+                    // check_and_recreate_stream een verse stream aanmaakt.
                     let cur_pos = source_pos.load(Ordering::Relaxed);
                     if cur_pos == last_source_pos {
                         stuck_frames += 1;
                         if stuck_frames > 60 {
                             // ~1 seconde stilstand (16ms per frame)
+                            stream_is_dead = true;
                             if let Some(s) = &sink {
                                 s.stop();
                                 s.clear();
@@ -291,6 +366,7 @@ fn run_waveform_audio(rx: Receiver<WaveformCommand>, event_tx: Sender<WaveformEv
                     } else {
                         stuck_frames = 0;
                         last_source_pos = cur_pos;
+                        last_audio_activity = std::time::Instant::now();
                     }
                 }
             }
