@@ -9,6 +9,11 @@ use super::app::MusicPlayerApp;
 
 impl MusicPlayerApp {
     pub fn handle_keyboard_navigation(&mut self, ctx: &egui::Context) {
+        // Als de zoekbalk actief is, gaan alle toetsaanslagen naar de search input
+        if self.is_search_active {
+            return;
+        }
+
         let cfg = self.config.shortcuts.clone();
 
         // --- PLAYBACK CONTROLES (altijd actief, ook als widgets focus hebben) ---
