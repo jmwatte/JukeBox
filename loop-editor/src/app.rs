@@ -920,6 +920,40 @@ impl eframe::App for LoopEditorApp {
                 self.status_message_timer = 2 * 60;
             }
 
+            // SaveLoop
+            if self
+                .shortcuts
+                .is_pressed(ShortcutAction::SaveLoop, &ctx.input(|i| i.clone()))
+            {
+                if let (Some(a), Some(b)) = (
+                    self.waveform_state.loop_a_secs,
+                    self.waveform_state.loop_b_secs,
+                ) {
+                    if b > a {
+                        if let Some(ref path) = self.waveform_state.path {
+                            let label = self.library.generate_label(path);
+                            let saved = SavedLoop {
+                                label,
+                                loop_a_secs: a,
+                                loop_b_secs: b,
+                                pitch_semitones: self.waveform_state.pitch_semitones,
+                                tempo: self.waveform_state.tempo,
+                                notes: String::new(),
+                            };
+                            let track = self.library.track_for_path(path);
+                            track.loops.push(saved);
+                            let total = track.loops.len();
+                            crate::loops::save_library(&self.library);
+                            self.status_message = format!("Loop opgeslagen! ({} totaal)", total);
+                            self.status_message_timer = 3 * 60;
+                        }
+                    }
+                } else {
+                    self.status_message = "Geen A-B loop om op te slaan".to_string();
+                    self.status_message_timer = 2 * 60;
+                }
+            }
+
             // ToggleLoopPoint — 1 toets A-B
             if self
                 .shortcuts

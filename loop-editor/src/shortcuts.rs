@@ -34,6 +34,7 @@ pub enum ShortcutAction {
     NudgePlayheadLeft,
     NudgePlayheadRight,
     CenterLoop,
+    SaveLoop,
 
     // Markers
     AddSectionMarker,
@@ -76,6 +77,7 @@ impl ShortcutAction {
             Self::NudgePlayheadLeft => "Nudge playhead left",
             Self::NudgePlayheadRight => "Nudge playhead right",
             Self::CenterLoop => "Center view on loop",
+            Self::SaveLoop => "Save current loop",
             Self::AddSectionMarker => "Add section marker",
             Self::AddMeasureMarker => "Add measure marker",
             Self::AddBeatMarker => "Add beat marker",
@@ -108,7 +110,8 @@ impl ShortcutAction {
             | Self::NudgeBRight
             | Self::NudgePlayheadLeft
             | Self::NudgePlayheadRight
-            | Self::CenterLoop => "Loop",
+            | Self::CenterLoop
+            | Self::SaveLoop => "Loop",
             Self::AddSectionMarker
             | Self::AddMeasureMarker
             | Self::AddBeatMarker
@@ -152,6 +155,7 @@ impl ShortcutAction {
             Self::Redo,
             Self::RestartLoop,
             Self::CenterLoop,
+            Self::SaveLoop,
         ]
     }
 }
@@ -561,6 +565,10 @@ impl Default for ShortcutsConfig {
         bindings.insert(
             ShortcutAction::CenterLoop,
             KeyBinding::new(SerializableKey::C),
+        );
+        bindings.insert(
+            ShortcutAction::SaveLoop,
+            KeyBinding::new(SerializableKey::S).with_ctrl(),
         );
 
         Self {
