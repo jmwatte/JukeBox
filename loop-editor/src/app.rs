@@ -828,6 +828,18 @@ impl eframe::App for LoopEditorApp {
                 }
             }
 
+            // ── Center loop in viewport ──
+            if self.waveform_state.path.is_some() {
+                if self
+                    .shortcuts
+                    .is_pressed(ShortcutAction::CenterLoop, &ctx.input(|i| i.clone()))
+                {
+                    self.center_view_on_loop(800.0);
+                    self.status_message = "Loop gecentreerd in viewport".to_string();
+                    self.status_message_timer = 2 * 60;
+                }
+            }
+
             // ── ↑/↓ Rewind/Forward 2 seconden ──
             if self.waveform_state.path.is_some() {
                 let mut seek_delta: Option<f32> = None;
