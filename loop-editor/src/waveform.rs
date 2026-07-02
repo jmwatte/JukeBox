@@ -292,14 +292,15 @@ pub fn decode_audio(path: &str, mode: ChannelMode) -> Result<(Vec<f32>, u32, f32
 }
 
 /// Teken de waveform in een egui UI.
-/// Geeft `(loop_changed, seek_to)` terug:
+/// Geeft `(loop_changed, seek_to, drag_ended)` terug:
 /// - loop_changed: Of de A-B loop markers zijn gewijzigd
 /// - seek_to: Optionele positie (seconden) om naartoe te seeken (playhead drag)
+/// - drag_ended: Of een A/B marker drag zojuist is losgelaten (voor undo)
 pub fn render_waveform(
     ui: &mut egui::Ui,
     state: &mut WaveformState,
     now_playing_position: Option<f32>,
-) -> (bool, Option<f32>) {
+) -> (bool, Option<f32>, bool) {
     // ── Marker zone (30px boven de waveform) ──
     let marker_zone_height = 30.0;
     let (marker_zone_rect, mz_response) = ui.allocate_exact_size(
@@ -490,6 +491,7 @@ pub fn render_waveform(
     let center_y = rect.center().y;
 
     let mut loop_changed = false;
+    let mut drag_ended = false;
 
     if state.samples.is_empty() {
         painter.text(
@@ -499,7 +501,7 @@ pub fn render_waveform(
             egui::TextStyle::Body.resolve(ui.style()),
             egui::Color32::GRAY,
         );
-        return (false, None);
+        return (false, None, false);
     }
 
     let total_samples = state.samples.len();
@@ -514,7 +516,7 @@ pub fn render_waveform(
     let visible_samples = end_sample.saturating_sub(start_sample);
 
     if visible_samples == 0 {
-        return (false, None);
+        return (false, None, false);
     }
 
     //let samples_per_pixel = (visible_samples as f32 / width).ceil() as usize;
@@ -676,6 +678,9 @@ pub fn render_waveform(
                     loop_changed = true;
                 }
             }
+            if marker_response.drag_stopped() {
+                drag_ended = true;
+            }
         }
     }
 
@@ -697,6 +702,9 @@ pub fn render_waveform(
                     state.loop_b_secs = Some(new_b);
                     loop_changed = true;
                 }
+            }
+            if marker_response.drag_stopped() {
+                drag_ended = true;
             }
         }
     }
@@ -1011,5 +1019,5 @@ pub fn render_waveform(
         state.scroll_offset = state.scroll_offset.max(0.0);
     }
 
-    (loop_changed, seek_action)
+    (loop_changed, seek_action, drag_ended)
 }

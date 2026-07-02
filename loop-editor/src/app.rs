@@ -1254,7 +1254,7 @@ impl eframe::App for LoopEditorApp {
                 None
             };
 
-            let (loop_changed, seek_to) =
+            let (loop_changed, seek_to, drag_ended) =
                 render_waveform(ui, &mut self.waveform_state, play_position);
 
             // 🔥 Loop-grenzen tijdens playback: stuur SetLoopBounds
@@ -1292,6 +1292,11 @@ impl eframe::App for LoopEditorApp {
                     self.status_message = "Loop gewist".to_string();
                     self.status_message_timer = 2 * 60;
                 }
+            }
+
+            // Als een A/B marker drag zojuist is losgelaten, sla de staat op voor undo
+            if drag_ended {
+                self.push_undo();
             }
 
             // Click of drag-release: update playhead position, seek audio-thread if playing
