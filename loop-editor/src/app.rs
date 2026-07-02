@@ -54,6 +54,9 @@ pub struct LoopEditorApp {
     // Undo/Redo
     pub undo_stack: Vec<UndoState>,
     pub redo_stack: Vec<UndoState>,
+
+    // Paneel breedte (voor center_view_on_loop)
+    pub last_panel_width: f32,
 }
 
 /// Momentopname van de muteerbare editor state (voor undo/redo).
@@ -102,6 +105,7 @@ impl LoopEditorApp {
             listening_for_action: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            last_panel_width: 800.0,
         };
 
         // Laad sessie (vorige file, positie, etc.)
@@ -834,7 +838,7 @@ impl eframe::App for LoopEditorApp {
                     .shortcuts
                     .is_pressed(ShortcutAction::CenterLoop, &ctx.input(|i| i.clone()))
                 {
-                    self.center_view_on_loop(800.0);
+                    self.center_view_on_loop(self.last_panel_width);
                     self.status_message = "Loop gecentreerd in viewport".to_string();
                     self.status_message_timer = 2 * 60;
                 }
@@ -1231,6 +1235,7 @@ impl eframe::App for LoopEditorApp {
         // ── Hoofdpaneel ──
         egui::CentralPanel::default().show(ctx, |ui| {
             let panel_width = ui.available_width().max(100.0);
+            self.last_panel_width = panel_width;
             ui.separator();
 
             // ── Foutmelding ──
