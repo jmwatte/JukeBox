@@ -1,12 +1,14 @@
 use crate::config::Config;
 use crate::loops::SavedLoop;
-use crate::models::{Album, Library};
-use crate::player::{PlayerCommand, PlayerEvent, RepeatMode};
+use crate::models::Library;
+use crate::player::{PlayerCommand, PlayerEvent};
 use crate::scanner::ScannerMessage;
 use crate::search::{
     collect_composers, collect_genres, collect_years, filter_by_composer, filter_by_genre,
     filter_by_year,
 };
+use crate::ui::filters::FilterState;
+use crate::ui::playback::PlaybackState;
 use crate::ui::types::{FilterNode, NavLevel, ViewMode};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -15,40 +17,14 @@ use std::collections::HashSet;
 
 pub struct MusicPlayerApp {
     pub config: Config,
-    pub player_tx: Sender<PlayerCommand>,
-    pub player_event_rx: Receiver<PlayerEvent>,
+    pub playback: PlaybackState,
+    pub filters: FilterState,
     pub scanner_tx: Sender<ScannerMessage>,
     pub scanner_rx: Receiver<ScannerMessage>,
     pub library: Option<Library>,
-
-    /// De filter-pipeline. Elke node is een filtertype met een optionele waarde.
-    /// - `None` = picker-mode (gebruiker moet nog kiezen)
-    /// - `Some(...)` = actief filter
-    pub filter_path: Vec<FilterNode>,
-    /// Huidige positie in de pipeline (0..=filter_path.len()).
-    /// Als filter_step == filter_path.len(), zijn we door alle pickers heen.
-    pub filter_step: usize,
-    /// Gecachte bibliotheek na toepassen van filters tot aan filter_step.
-    pub cached_filtered: Option<Library>,
-
-    // Status
-    pub now_playing: Option<String>,
-    pub now_playing_path: Option<String>,
-    pub now_playing_position: f32,
-    pub now_playing_duration: f32,
-    pub volume: f32,
-    pub repeat_mode: RepeatMode,
-    pub shuffle_on: bool,
-    pub show_queue: bool,
-    pub queue: Vec<String>,
-    pub loop_a: Option<f32>,
-    pub loop_b: Option<f32>,
-    pub status_error: Option<String>,
-    pub compact_mode: bool,
     pub config_errors: Vec<String>,
     pub force_help: bool,
     pub show_help: bool,
-    pub _status_message: String,
 
     // Navigatie
     pub current_level: NavLevel,
@@ -64,16 +40,6 @@ pub struct MusicPlayerApp {
     pub is_search_active: bool,
     pub search_input_id: egui::Id,
     pub filtered_library: Option<Library>,
-
-    // Picker state (genre, year, etc.)
-    pub genres: Vec<(String, usize)>,
-    pub selected_genre: usize,
-    pub selected_genre_name: String,
-    pub sort_by_date: bool,
-
-    // Recent Albums
-    pub recent_albums: Vec<(String, Album)>,
-    pub selected_recent: usize,
 
     // Track Details / Batch Edit
     pub show_track_details: bool,
@@ -97,12 +63,6 @@ pub struct MusicPlayerApp {
     pub remove_genre_text: String,
     pub selected_tracks: HashSet<String>,
     pub tracks_to_edit: Vec<String>,
-
-    // Jaar/componist pickers (voor later)
-    pub years: Vec<(Option<u32>, usize)>,
-    pub selected_year: usize,
-    pub composers: Vec<(String, usize)>,
-    pub selected_composer: usize,
 
     /// Split ratio between "Bestanden" and "Ruwe tags" columns in the batch edit panel (0.0–1.0).
     pub edit_panel_split: f32,
@@ -131,31 +91,14 @@ impl MusicPlayerApp {
         };
         let mut app = Self {
             config,
-            player_tx,
-            player_event_rx,
+            playback: PlaybackState::new(player_tx, player_event_rx),
+            filters: FilterState::new(),
             scanner_tx,
             scanner_rx,
             library: None,
-            filter_path: Vec::new(),
-            filter_step: 0,
-            cached_filtered: None,
-            now_playing: None,
-            now_playing_path: None,
-            now_playing_position: 0.0,
-            now_playing_duration: 0.0,
-            volume: 1.0,
-            repeat_mode: RepeatMode::None,
-            shuffle_on: false,
-            show_queue: false,
-            queue: Vec::new(),
-            loop_a: None,
-            loop_b: None,
-            status_error: None,
-            compact_mode: false,
             config_errors: Vec::new(),
             force_help: false,
             show_help: false,
-            _status_message: "Bibliotheek opstarten...".to_string(),
             filtered_library: None,
             search_query: String::new(),
             current_level: NavLevel::Artist,
@@ -167,12 +110,6 @@ impl MusicPlayerApp {
             scroll_to_selection: true,
             is_search_active: false,
             search_input_id: eframe::egui::Id::new("global_search_input"),
-            genres: Vec::new(),
-            selected_genre: 0,
-            selected_genre_name: String::new(),
-            recent_albums: Vec::new(),
-            selected_recent: 0,
-            sort_by_date: false,
             show_track_details: false,
             editing_track_path: None,
             edit_title: String::new(),
@@ -194,10 +131,6 @@ impl MusicPlayerApp {
             remove_genre_text: String::new(),
             selected_tracks: HashSet::new(),
             tracks_to_edit: Vec::new(),
-            years: Vec::new(),
-            selected_year: 0,
-            composers: Vec::new(),
-            selected_composer: 0,
             edit_panel_split: 0.4,
             show_waveform: false,
             waveform_state: crate::waveform::WaveformState::default(),
@@ -221,18 +154,23 @@ impl MusicPlayerApp {
     pub fn active_library(&self) -> Option<&Library> {
         self.filtered_library
             .as_ref()
-            .or(self.cached_filtered.as_ref())
+            .or(self.filters.cached_filtered.as_ref())
             .or(self.library.as_ref())
     }
 
     /// Pas ALLEEN de filters toe tot de huidige filter_step.
     pub fn recompute(&mut self) {
         let Some(ref base) = self.library else {
-            self.cached_filtered = None;
+            self.filters.cached_filtered = None;
             return;
         };
         let mut result = base.clone();
-        for node in self.filter_path.iter().take(self.filter_step) {
+        for node in self
+            .filters
+            .filter_path
+            .iter()
+            .take(self.filters.filter_step)
+        {
             match node {
                 FilterNode::Genre(Some(name)) => {
                     result = filter_by_genre(&result, name);
@@ -246,10 +184,10 @@ impl MusicPlayerApp {
                 _ => {} // None = picker, slaat geen filter toe
             }
         }
-        self.cached_filtered = Some(result);
+        self.filters.cached_filtered = Some(result);
 
         // Veiligheid: selectie-indices resetten als ze out-of-bounds zijn
-        if let Some(ref lib) = self.cached_filtered {
+        if let Some(ref lib) = self.filters.cached_filtered {
             if lib.artists.is_empty() {
                 self.current_level = NavLevel::Artist;
                 self.selected_artist = 0;
@@ -283,39 +221,45 @@ impl MusicPlayerApp {
                     }
                 }
             }
-            if self.selected_genre >= self.genres.len() && !self.genres.is_empty() {
-                self.selected_genre = self.genres.len().saturating_sub(1);
+            if self.filters.selected_genre >= self.filters.genres.len()
+                && !self.filters.genres.is_empty()
+            {
+                self.filters.selected_genre = self.filters.genres.len().saturating_sub(1);
             }
-            if self.selected_year >= self.years.len() && !self.years.is_empty() {
-                self.selected_year = self.years.len().saturating_sub(1);
+            if self.filters.selected_year >= self.filters.years.len()
+                && !self.filters.years.is_empty()
+            {
+                self.filters.selected_year = self.filters.years.len().saturating_sub(1);
             }
-            if self.selected_composer >= self.composers.len() && !self.composers.is_empty() {
-                self.selected_composer = self.composers.len().saturating_sub(1);
+            if self.filters.selected_composer >= self.filters.composers.len()
+                && !self.filters.composers.is_empty()
+            {
+                self.filters.selected_composer = self.filters.composers.len().saturating_sub(1);
             }
         }
     }
 
     /// Vul de huidige picker met data uit de (tot filter_step) gefilterde library.
     pub fn populate_current_picker(&mut self) {
-        let Some(node) = self.filter_path.get(self.filter_step) else {
+        let Some(node) = self.filters.filter_path.get(self.filters.filter_step) else {
             return;
         };
-        let Some(ref lib) = self.cached_filtered else {
+        let Some(ref lib) = self.filters.cached_filtered else {
             return;
         };
 
         match node {
             FilterNode::Genre(_) => {
-                self.genres = collect_genres(lib);
-                self.selected_genre = 0;
+                self.filters.genres = collect_genres(lib);
+                self.filters.selected_genre = 0;
             }
             FilterNode::Year(_) => {
-                self.years = collect_years(lib);
-                self.selected_year = 0;
+                self.filters.years = collect_years(lib);
+                self.filters.selected_year = 0;
             }
             FilterNode::Composer(_) => {
-                self.composers = collect_composers(lib);
-                self.selected_composer = 0;
+                self.filters.composers = collect_composers(lib);
+                self.filters.selected_composer = 0;
             }
         }
     }
@@ -323,14 +267,14 @@ impl MusicPlayerApp {
     /// Ga één stap terug in de filter pipeline en herstel de cursor-positie
     /// naar het item dat eerder geselecteerd was.
     pub fn step_back_filter(&mut self) {
-        if self.filter_step > 0 {
-            self.filter_step -= 1;
+        if self.filters.filter_step > 0 {
+            self.filters.filter_step -= 1;
 
             // 1. Bewaar wat we op deze laag hadden gekozen
-            let previous_node = self.filter_path[self.filter_step].clone();
+            let previous_node = self.filters.filter_path[self.filters.filter_step].clone();
 
             // 2. Wis de waarde zodat het weer een Picker wordt (None)
-            self.filter_path[self.filter_step].clear();
+            self.filters.filter_path[self.filters.filter_step].clear();
 
             // 3. Herbereken de library en vul de picker lijsten (dit zet index even op 0)
             self.recompute();
@@ -339,20 +283,30 @@ impl MusicPlayerApp {
             // 4. Zoek de index van de oude keuze en overschrijf de 0!
             match previous_node {
                 FilterNode::Genre(Some(g)) => {
-                    if let Some(idx) = self.genres.iter().position(|(name, _)| name == &g) {
-                        self.selected_genre = idx;
+                    if let Some(idx) = self.filters.genres.iter().position(|(name, _)| name == &g) {
+                        self.filters.selected_genre = idx;
                     }
                 }
                 FilterNode::Year(Some(y)) => {
                     // y == 0 = sentinel voor "Onbekend" (None in de lijst)
                     let target: Option<u32> = if y == 0 { None } else { Some(y) };
-                    if let Some(idx) = self.years.iter().position(|(val, _)| *val == target) {
-                        self.selected_year = idx;
+                    if let Some(idx) = self
+                        .filters
+                        .years
+                        .iter()
+                        .position(|(val, _)| *val == target)
+                    {
+                        self.filters.selected_year = idx;
                     }
                 }
                 FilterNode::Composer(Some(c)) => {
-                    if let Some(idx) = self.composers.iter().position(|(name, _)| name == &c) {
-                        self.selected_composer = idx;
+                    if let Some(idx) = self
+                        .filters
+                        .composers
+                        .iter()
+                        .position(|(name, _)| name == &c)
+                    {
+                        self.filters.selected_composer = idx;
                     }
                 }
                 _ => {}
@@ -364,8 +318,8 @@ impl MusicPlayerApp {
 
     /// Reset de filters naar leeg (volledige bibliotheek).
     pub fn reset_filters(&mut self) {
-        self.filter_path.clear();
-        self.filter_step = 0;
+        self.filters.filter_path.clear();
+        self.filters.filter_step = 0;
         self.recompute();
         self.current_level = NavLevel::Artist;
         self.selected_artist = 0;
@@ -377,8 +331,9 @@ impl MusicPlayerApp {
 
     /// Check of de huidige filter_step op een picker wijst (None-waarde node).
     pub fn is_picker_active(&self) -> bool {
-        self.filter_path
-            .get(self.filter_step)
+        self.filters
+            .filter_path
+            .get(self.filters.filter_step)
             .map(|node| {
                 matches!(
                     node,
@@ -390,7 +345,12 @@ impl MusicPlayerApp {
 
     /// Genereer de breadcrumb-string uit de filter pipeline.
     pub fn breadcrumb(&self) -> String {
-        let mut parts: Vec<String> = self.filter_path.iter().map(|n| n.display_name()).collect();
+        let mut parts: Vec<String> = self
+            .filters
+            .filter_path
+            .iter()
+            .map(|n| n.display_name())
+            .collect();
         if parts.is_empty() {
             parts.push("Bibliotheek".into());
         }
@@ -450,10 +410,10 @@ impl MusicPlayerApp {
     // === FILTER HELPERS ===
 
     pub fn toggle_sort(&mut self) {
-        self.sort_by_date = !self.sort_by_date;
+        self.filters.sort_by_date = !self.filters.sort_by_date;
 
         let sort_fn = |lib: &mut Library| {
-            if self.sort_by_date {
+            if self.filters.sort_by_date {
                 lib.artists.sort_by(|a, b| {
                     let a_max = a
                         .albums
@@ -488,7 +448,7 @@ impl MusicPlayerApp {
         if let Some(lib) = &mut self.filtered_library {
             sort_fn(lib);
         }
-        if let Some(lib) = &mut self.cached_filtered {
+        if let Some(lib) = &mut self.filters.cached_filtered {
             sort_fn(lib);
         }
         self.selected_artist = 0;
@@ -499,10 +459,10 @@ impl MusicPlayerApp {
     /// Voeg een Genre-picker toe op de huidige positie, of verwijder hem als hij er al staat.
     pub fn toggle_genre_picker(&mut self) {
         // Staat er al een Genre node op de huidige filter_step? -> Verwijder hem
-        if let Some(FilterNode::Genre(_)) = self.filter_path.get(self.filter_step) {
-            self.filter_path.remove(self.filter_step);
-            if self.filter_step > self.filter_path.len() {
-                self.filter_step = self.filter_path.len();
+        if let Some(FilterNode::Genre(_)) = self.filters.filter_path.get(self.filters.filter_step) {
+            self.filters.filter_path.remove(self.filters.filter_step);
+            if self.filters.filter_step > self.filters.filter_path.len() {
+                self.filters.filter_step = self.filters.filter_path.len();
             }
             self.recompute();
             self.populate_current_picker();
@@ -514,6 +474,7 @@ impl MusicPlayerApp {
 
         // Voorkom duplicaten in de pipeline
         if self
+            .filters
             .filter_path
             .iter()
             .any(|n| matches!(n, FilterNode::Genre(_)))
@@ -522,8 +483,9 @@ impl MusicPlayerApp {
         }
 
         // Voeg een lege Genre node in op de huidige positie
-        self.filter_path
-            .insert(self.filter_step, FilterNode::Genre(None));
+        self.filters
+            .filter_path
+            .insert(self.filters.filter_step, FilterNode::Genre(None));
         self.recompute();
         self.populate_current_picker();
         self.current_level = NavLevel::Artist;
@@ -533,12 +495,14 @@ impl MusicPlayerApp {
 
     /// Selecteer een genre in de huidige Genre-picker.
     pub fn select_genre(&mut self, genre: &str) {
-        self.selected_genre_name = genre.to_string();
-        if let Some(FilterNode::Genre(val)) = self.filter_path.get_mut(self.filter_step) {
+        self.filters.selected_genre_name = Some(genre.to_string());
+        if let Some(FilterNode::Genre(val)) =
+            self.filters.filter_path.get_mut(self.filters.filter_step)
+        {
             *val = Some(genre.to_string());
-            self.filter_step += 1;
+            self.filters.filter_step += 1;
             self.recompute();
-            if self.filter_step < self.filter_path.len() {
+            if self.filters.filter_step < self.filters.filter_path.len() {
                 self.populate_current_picker();
             } else {
                 self.current_level = NavLevel::Artist;
@@ -553,10 +517,10 @@ impl MusicPlayerApp {
 
     /// Voeg een Year-picker toe op de huidige positie, of verwijder hem als hij er al staat.
     pub fn toggle_year_picker(&mut self) {
-        if let Some(FilterNode::Year(_)) = self.filter_path.get(self.filter_step) {
-            self.filter_path.remove(self.filter_step);
-            if self.filter_step > self.filter_path.len() {
-                self.filter_step = self.filter_path.len();
+        if let Some(FilterNode::Year(_)) = self.filters.filter_path.get(self.filters.filter_step) {
+            self.filters.filter_path.remove(self.filters.filter_step);
+            if self.filters.filter_step > self.filters.filter_path.len() {
+                self.filters.filter_step = self.filters.filter_path.len();
             }
             self.recompute();
             self.populate_current_picker();
@@ -567,6 +531,7 @@ impl MusicPlayerApp {
         }
 
         if self
+            .filters
             .filter_path
             .iter()
             .any(|n| matches!(n, FilterNode::Year(_)))
@@ -574,8 +539,9 @@ impl MusicPlayerApp {
             return;
         }
 
-        self.filter_path
-            .insert(self.filter_step, FilterNode::Year(None));
+        self.filters
+            .filter_path
+            .insert(self.filters.filter_step, FilterNode::Year(None));
         self.recompute();
         self.populate_current_picker();
         self.current_level = NavLevel::Artist;
@@ -585,11 +551,13 @@ impl MusicPlayerApp {
 
     /// Selecteer een jaar in de huidige Year-picker.
     pub fn select_year(&mut self, year: u32) {
-        if let Some(FilterNode::Year(val)) = self.filter_path.get_mut(self.filter_step) {
+        if let Some(FilterNode::Year(val)) =
+            self.filters.filter_path.get_mut(self.filters.filter_step)
+        {
             *val = Some(year);
-            self.filter_step += 1;
+            self.filters.filter_step += 1;
             self.recompute();
-            if self.filter_step < self.filter_path.len() {
+            if self.filters.filter_step < self.filters.filter_path.len() {
                 self.populate_current_picker();
             } else {
                 self.current_level = NavLevel::Artist;
@@ -604,10 +572,12 @@ impl MusicPlayerApp {
 
     /// Voeg een Composer-picker toe op de huidige positie, of verwijder hem als hij er al staat.
     pub fn toggle_composer_picker(&mut self) {
-        if let Some(FilterNode::Composer(_)) = self.filter_path.get(self.filter_step) {
-            self.filter_path.remove(self.filter_step);
-            if self.filter_step > self.filter_path.len() {
-                self.filter_step = self.filter_path.len();
+        if let Some(FilterNode::Composer(_)) =
+            self.filters.filter_path.get(self.filters.filter_step)
+        {
+            self.filters.filter_path.remove(self.filters.filter_step);
+            if self.filters.filter_step > self.filters.filter_path.len() {
+                self.filters.filter_step = self.filters.filter_path.len();
             }
             self.recompute();
             self.populate_current_picker();
@@ -618,6 +588,7 @@ impl MusicPlayerApp {
         }
 
         if self
+            .filters
             .filter_path
             .iter()
             .any(|n| matches!(n, FilterNode::Composer(_)))
@@ -625,8 +596,9 @@ impl MusicPlayerApp {
             return;
         }
 
-        self.filter_path
-            .insert(self.filter_step, FilterNode::Composer(None));
+        self.filters
+            .filter_path
+            .insert(self.filters.filter_step, FilterNode::Composer(None));
         self.recompute();
         self.populate_current_picker();
         self.current_level = NavLevel::Artist;
@@ -636,11 +608,13 @@ impl MusicPlayerApp {
 
     /// Selecteer een componist in de huidige Composer-picker.
     pub fn select_composer(&mut self, composer: &str) {
-        if let Some(FilterNode::Composer(val)) = self.filter_path.get_mut(self.filter_step) {
+        if let Some(FilterNode::Composer(val)) =
+            self.filters.filter_path.get_mut(self.filters.filter_step)
+        {
             *val = Some(composer.to_string());
-            self.filter_step += 1;
+            self.filters.filter_step += 1;
             self.recompute();
-            if self.filter_step < self.filter_path.len() {
+            if self.filters.filter_step < self.filters.filter_path.len() {
                 self.populate_current_picker();
             } else {
                 self.current_level = NavLevel::Artist;
@@ -658,13 +632,13 @@ impl MusicPlayerApp {
             let mut flat_albums = Vec::new();
             for artist in &lib.artists {
                 for album in &artist.albums {
-                    flat_albums.push((artist.name.clone(), album.clone()));
+                    flat_albums.push((album.added_timestamp, album.clone()));
                 }
             }
             flat_albums.sort_by(|a, b| b.1.added_timestamp.cmp(&a.1.added_timestamp));
             flat_albums.truncate(500);
-            self.recent_albums = flat_albums;
-            self.selected_recent = 0;
+            self.filters.recent_albums = flat_albums;
+            self.filters.selected_recent = 0;
         }
     }
 
@@ -714,9 +688,15 @@ impl MusicPlayerApp {
         }
         if !queue.is_empty() {
             if replace {
-                let _ = self.player_tx.send(PlayerCommand::ReplaceQueue(queue));
+                let _ = self
+                    .playback
+                    .player_tx
+                    .send(PlayerCommand::ReplaceQueue(queue));
             } else {
-                let _ = self.player_tx.send(PlayerCommand::AppendToQueue(queue));
+                let _ = self
+                    .playback
+                    .player_tx
+                    .send(PlayerCommand::AppendToQueue(queue));
             }
         }
     }
@@ -733,7 +713,7 @@ impl MusicPlayerApp {
     /// Navigeer naar het huidig spelende nummer in de bibliotheek
     #[allow(dead_code)]
     pub fn navigate_to_now_playing(&mut self, lib: &Library) {
-        let target = match &self.now_playing_path {
+        let target = match &self.playback.now_playing_path {
             Some(p) => p.clone(),
             None => return,
         };

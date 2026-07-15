@@ -18,41 +18,47 @@ impl MusicPlayerApp {
 
         // --- PLAYBACK CONTROLES (altijd actief, ook als widgets focus hebben) ---
         if shortcuts::check_action(&cfg, ctx, "PlayPause") {
-            let _ = self.player_tx.send(PlayerCommand::PlayPause);
+            let _ = self.playback.player_tx.send(PlayerCommand::PlayPause);
         }
         if shortcuts::check_action(&cfg, ctx, "Skip") {
-            let _ = self.player_tx.send(PlayerCommand::Skip);
+            let _ = self.playback.player_tx.send(PlayerCommand::Skip);
         }
         if shortcuts::check_action(&cfg, ctx, "Rewind") {
-            let _ = self.player_tx.send(PlayerCommand::Rewind);
+            let _ = self.playback.player_tx.send(PlayerCommand::Rewind);
         }
         if shortcuts::check_action(&cfg, ctx, "Forward") {
-            let _ = self.player_tx.send(PlayerCommand::Forward);
+            let _ = self.playback.player_tx.send(PlayerCommand::Forward);
         }
         if shortcuts::check_action(&cfg, ctx, "RepeatToggle") {
-            let _ = self.player_tx.send(PlayerCommand::ToggleRepeat);
+            let _ = self.playback.player_tx.send(PlayerCommand::ToggleRepeat);
         }
         if shortcuts::check_action(&cfg, ctx, "ShuffleToggle") {
-            let _ = self.player_tx.send(PlayerCommand::ToggleShuffle);
+            let _ = self.playback.player_tx.send(PlayerCommand::ToggleShuffle);
         }
         if shortcuts::check_action(&cfg, ctx, "VolumeUp") {
-            self.volume = (self.volume + 0.1).min(2.0);
-            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
+            self.playback.volume = (self.playback.volume + 0.1).min(2.0);
+            let _ = self
+                .playback
+                .player_tx
+                .send(PlayerCommand::SetVolume(self.playback.volume));
         }
         if shortcuts::check_action(&cfg, ctx, "VolumeDown") {
-            self.volume = (self.volume - 0.1).max(0.0);
-            let _ = self.player_tx.send(PlayerCommand::SetVolume(self.volume));
+            self.playback.volume = (self.playback.volume - 0.1).max(0.0);
+            let _ = self
+                .playback
+                .player_tx
+                .send(PlayerCommand::SetVolume(self.playback.volume));
         }
 
         // --- A-B LOOP (altijd actief) ---
         if shortcuts::check_action(&cfg, ctx, "LoopA") {
-            let _ = self.player_tx.send(PlayerCommand::SetLoopA);
+            let _ = self.playback.player_tx.send(PlayerCommand::SetLoopA);
         }
         if shortcuts::check_action(&cfg, ctx, "LoopB") {
-            let _ = self.player_tx.send(PlayerCommand::SetLoopB);
+            let _ = self.playback.player_tx.send(PlayerCommand::SetLoopB);
         }
         if shortcuts::check_action(&cfg, ctx, "ClearLoop") {
-            let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+            let _ = self.playback.player_tx.send(PlayerCommand::ClearLoop);
         }
 
         // --- NAVIGATIE — alleen als geen widget toetsenbordfocus heeft ---
@@ -66,7 +72,7 @@ impl MusicPlayerApp {
 
             // 1. Eerst picker wissen (Gooi de openstaande picker echt uit het pad)
             if self.is_picker_active() {
-                self.filter_path.remove(self.filter_step); // Verwijder de "None" node
+                self.filters.filter_path.remove(self.filters.filter_step); // Verwijder de "None" node
 
                 // Herbereken zonder deze picker
                 self.recompute();
@@ -92,7 +98,7 @@ impl MusicPlayerApp {
             }
 
             // 3. Dan filterpath wissen
-            if !self.filter_path.is_empty() {
+            if !self.filters.filter_path.is_empty() {
                 self.reset_filters();
                 return;
             }
@@ -106,10 +112,10 @@ impl MusicPlayerApp {
             let _ = std::fs::remove_file("library_cache.bin");
             self.library = None;
             self.filtered_library = None;
-            self.cached_filtered = None;
-            self.filter_path.clear();
-            self.filter_step = 0;
-            self._status_message = format!("Scannen: {}", fresh_config.music_directory);
+            self.filters.cached_filtered = None;
+            self.filters.filter_path.clear();
+            self.filters.filter_step = 0;
+            self.playback._status_message = format!("Scannen: {}", fresh_config.music_directory);
             let tx = self.scanner_tx.clone();
             std::thread::spawn(move || {
                 crate::scanner::load_or_scan_library(
@@ -137,8 +143,8 @@ impl MusicPlayerApp {
 
         // --- F6: RECONNECT AUDIO ---
         if shortcuts::check_action(&cfg, ctx, "ReconnectAudio") {
-            let _ = self.player_tx.send(PlayerCommand::ReconnectAudio);
-            self.now_playing = Some("Audio verbinding herstellen...".to_string());
+            let _ = self.playback.player_tx.send(PlayerCommand::ReconnectAudio);
+            self.playback.now_playing = Some("Audio verbinding herstellen...".to_string());
         }
 
         // --- HELP ---
@@ -146,10 +152,10 @@ impl MusicPlayerApp {
             self.show_help = !self.show_help;
         }
         if shortcuts::check_action(&cfg, ctx, "QueueToggle") {
-            self.show_queue = !self.show_queue;
+            self.playback.show_queue = !self.playback.show_queue;
         }
         if shortcuts::check_action(&cfg, ctx, "CompactToggle") {
-            self.compact_mode = !self.compact_mode;
+            self.playback.compact_mode = !self.playback.compact_mode;
         }
 
         // --- 0: WAVEFORM EDITOR ---
@@ -169,7 +175,7 @@ impl MusicPlayerApp {
                             loop_b_secs: b,
                         };
                         crate::loops::add_loop(&mut self.saved_loops, saved);
-                        self._status_message =
+                        self.playback._status_message =
                             format!("Loop opgeslagen! ({} totaal)", self.saved_loops.len());
                     }
                 }
@@ -184,7 +190,7 @@ impl MusicPlayerApp {
                 let track_path = self
                     .active_library()
                     .and_then(|lib| self.get_current_track_path(lib))
-                    .or_else(|| self.now_playing_path.clone());
+                    .or_else(|| self.playback.now_playing_path.clone());
 
                 if let Some(path) = track_path {
                     // Alleen herdecode als het een ander bestand is
@@ -199,8 +205,8 @@ impl MusicPlayerApp {
                                     duration_secs,
                                     zoom: 50.0,
                                     scroll_offset: 0.0,
-                                    loop_a_secs: self.loop_a,
-                                    loop_b_secs: self.loop_b,
+                                    loop_a_secs: self.playback.loop_a,
+                                    loop_b_secs: self.playback.loop_b,
                                     error: None,
                                 };
                             }
@@ -250,8 +256,8 @@ impl MusicPlayerApp {
         // --- B: RECENT ALBUMS ---
         if shortcuts::check_action(&cfg, ctx, "RecentAlbums") {
             // Toggle: bij tweede B terug naar bibliotheek
-            if !self.recent_albums.is_empty() {
-                self.recent_albums.clear();
+            if !self.filters.recent_albums.is_empty() {
+                self.filters.recent_albums.clear();
                 self.current_level = NavLevel::Artist;
                 self.selected_artist = 0;
                 self.scroll_to_selection = true;
@@ -267,7 +273,7 @@ impl MusicPlayerApp {
                 return;
             }
             // Gebruik selection-filter: maak een gefilterde library van alleen geselecteerde tracks
-            if let Some(lib) = &self.cached_filtered {
+            if let Some(lib) = &self.filters.cached_filtered {
                 let selection_lib =
                     MusicPlayerApp::build_selection_library(lib, &self.selected_tracks);
                 if !selection_lib.artists.is_empty() {
@@ -284,33 +290,38 @@ impl MusicPlayerApp {
         }
 
         // --- Recent albums navigation ---
-        if !self.recent_albums.is_empty() {
+        if !self.filters.recent_albums.is_empty() {
             if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                if self.selected_recent + 1 < self.recent_albums.len() {
-                    self.selected_recent += 1;
+                if self.filters.selected_recent + 1 < self.filters.recent_albums.len() {
+                    self.filters.selected_recent += 1;
                     self.scroll_to_selection = true;
                 }
             }
             if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                if self.selected_recent > 0 {
-                    self.selected_recent -= 1;
+                if self.filters.selected_recent > 0 {
+                    self.filters.selected_recent -= 1;
                     self.scroll_to_selection = true;
                 }
             }
             if shortcuts::check_action(&cfg, ctx, "Select") {
-                if let Some((_, album)) = self.recent_albums.get(self.selected_recent) {
+                if let Some((_, album)) =
+                    self.filters.recent_albums.get(self.filters.selected_recent)
+                {
                     let mut queue = Vec::new();
                     for disk in &album.disks {
                         for track in &disk.tracks {
                             queue.push(track.path.clone());
                         }
                     }
-                    let _ = self.player_tx.send(PlayerCommand::ReplaceQueue(queue));
+                    let _ = self
+                        .playback
+                        .player_tx
+                        .send(PlayerCommand::ReplaceQueue(queue));
                 }
             }
             // Escape verlaat recent albums
             if shortcuts::check_action(&cfg, ctx, "Escape") {
-                self.recent_albums.clear();
+                self.filters.recent_albums.clear();
                 self.current_level = NavLevel::Artist;
                 self.selected_artist = 0;
                 self.scroll_to_selection = true;
@@ -472,36 +483,43 @@ impl MusicPlayerApp {
 
         // --- PICKER NAVIGATION ---
         // Alleen actief als we op een picker staan (None-waarde node)
-        if let Some(node) = self.filter_path.get(self.filter_step) {
+        if let Some(node) = self.filters.filter_path.get(self.filters.filter_step) {
             match node {
                 FilterNode::Genre(_) if self.is_picker_active() => {
-                    let len = self.genres.len();
+                    let len = self.filters.genres.len();
                     if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                        if self.selected_genre + 1 < len {
-                            self.selected_genre += 1;
+                        if self.filters.selected_genre + 1 < len {
+                            self.filters.selected_genre += 1;
                             self.scroll_to_selection = true;
                         }
                     }
                     if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                        if self.selected_genre > 0 {
-                            self.selected_genre -= 1;
+                        if self.filters.selected_genre > 0 {
+                            self.filters.selected_genre -= 1;
                             self.scroll_to_selection = true;
                         }
                     }
                     if shortcuts::check_action(&cfg, ctx, "Select")
                         || shortcuts::check_action(&cfg, ctx, "NavigateRight")
                     {
-                        if let Some(genre_name) =
-                            self.genres.get(self.selected_genre).map(|(n, _)| n.clone())
+                        if let Some(genre_name) = self
+                            .filters
+                            .genres
+                            .get(self.filters.selected_genre)
+                            .map(|(n, _)| n.clone())
                         {
                             self.select_genre(&genre_name);
                         }
                     }
                     // M op genre: alle tracks van dit genre markeren
                     if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                        if let Some((genre_name, _)) = self.genres.get(self.selected_genre).cloned()
+                        if let Some((genre_name, _)) = self
+                            .filters
+                            .genres
+                            .get(self.filters.selected_genre)
+                            .cloned()
                         {
-                            if let Some(ref lib) = self.cached_filtered {
+                            if let Some(ref lib) = self.filters.cached_filtered {
                                 let genre_lib = crate::search::filter_by_genre(lib, &genre_name);
                                 let paths: Vec<String> = genre_lib
                                     .artists
@@ -534,30 +552,34 @@ impl MusicPlayerApp {
                     return;
                 }
                 FilterNode::Year(_) if self.is_picker_active() => {
-                    let len = self.years.len();
+                    let len = self.filters.years.len();
                     if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                        if self.selected_year + 1 < len {
-                            self.selected_year += 1;
+                        if self.filters.selected_year + 1 < len {
+                            self.filters.selected_year += 1;
                             self.scroll_to_selection = true;
                         }
                     }
                     if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                        if self.selected_year > 0 {
-                            self.selected_year -= 1;
+                        if self.filters.selected_year > 0 {
+                            self.filters.selected_year -= 1;
                             self.scroll_to_selection = true;
                         }
                     }
                     if shortcuts::check_action(&cfg, ctx, "Select")
                         || shortcuts::check_action(&cfg, ctx, "NavigateRight")
                     {
-                        if let Some((year_opt, _)) = self.years.get(self.selected_year) {
+                        if let Some((year_opt, _)) =
+                            self.filters.years.get(self.filters.selected_year)
+                        {
                             self.select_year(year_opt.unwrap_or(0));
                         }
                     }
                     // M op jaar: alle tracks van dit jaar markeren
                     if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                        if let Some((year_opt, _)) = self.years.get(self.selected_year).cloned() {
-                            if let Some(ref lib) = self.cached_filtered {
+                        if let Some((year_opt, _)) =
+                            self.filters.years.get(self.filters.selected_year).cloned()
+                        {
+                            if let Some(ref lib) = self.filters.cached_filtered {
                                 let year_lib =
                                     crate::search::filter_by_year(lib, year_opt.unwrap_or(0));
                                 let paths: Vec<String> = year_lib
@@ -591,32 +613,40 @@ impl MusicPlayerApp {
                     return;
                 }
                 FilterNode::Composer(_) if self.is_picker_active() => {
-                    let len = self.composers.len();
+                    let len = self.filters.composers.len();
                     if shortcuts::check_action(&cfg, ctx, "NavigateDown") {
-                        if self.selected_composer + 1 < len {
-                            self.selected_composer += 1;
+                        if self.filters.selected_composer + 1 < len {
+                            self.filters.selected_composer += 1;
                             self.scroll_to_selection = true;
                         }
                     }
                     if shortcuts::check_action(&cfg, ctx, "NavigateUp") {
-                        if self.selected_composer > 0 {
-                            self.selected_composer -= 1;
+                        if self.filters.selected_composer > 0 {
+                            self.filters.selected_composer -= 1;
                             self.scroll_to_selection = true;
                         }
                     }
                     if shortcuts::check_action(&cfg, ctx, "Select")
                         || shortcuts::check_action(&cfg, ctx, "NavigateRight")
                     {
-                        if let Some((name, _)) = self.composers.get(self.selected_composer).cloned()
+                        if let Some((name, _)) = self
+                            .filters
+                            .composers
+                            .get(self.filters.selected_composer)
+                            .cloned()
                         {
                             self.select_composer(&name);
                         }
                     }
                     // M op componist: alle tracks van dit componist markeren
                     if shortcuts::check_action(&cfg, ctx, "MarkTrack") {
-                        if let Some((name, _)) = self.composers.get(self.selected_composer).cloned()
+                        if let Some((name, _)) = self
+                            .filters
+                            .composers
+                            .get(self.filters.selected_composer)
+                            .cloned()
                         {
-                            if let Some(ref lib) = self.cached_filtered {
+                            if let Some(ref lib) = self.filters.cached_filtered {
                                 let comp_lib = crate::search::filter_by_composer(lib, &name);
                                 let paths: Vec<String> = comp_lib
                                     .artists
@@ -656,7 +686,7 @@ impl MusicPlayerApp {
         let Some(lib) = self
             .filtered_library
             .as_ref()
-            .or(self.cached_filtered.as_ref())
+            .or(self.filters.cached_filtered.as_ref())
             .or(self.library.as_ref())
         else {
             return;
@@ -696,7 +726,7 @@ impl MusicPlayerApp {
 
         // --- F2: NOW PLAYING NAVIGATIE ---
         if shortcuts::check_action(&cfg, ctx, "NowPlaying") {
-            if let Some(ref target) = self.now_playing_path {
+            if let Some(ref target) = self.playback.now_playing_path {
                 if let Some(ref lib) = self.library {
                     for (ai, artist) in lib.artists.iter().enumerate() {
                         for (ali, album) in artist.albums.iter().enumerate() {
@@ -733,7 +763,7 @@ impl MusicPlayerApp {
             let tracks = self
                 .filtered_library
                 .as_ref()
-                .or(self.cached_filtered.as_ref())
+                .or(self.filters.cached_filtered.as_ref())
                 .or(self.library.as_ref())
                 .map(|l| self.get_tracks_at_level(l, &self.current_level))
                 .unwrap_or_default();

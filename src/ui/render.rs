@@ -12,32 +12,32 @@ use super::app::MusicPlayerApp;
 impl eframe::App for MusicPlayerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // --- Verwerk Now Playing events ---
-        while let Ok(event) = self.player_event_rx.try_recv() {
+        while let Ok(event) = self.playback.player_event_rx.try_recv() {
             match event {
                 PlayerEvent::NowPlaying(path) => {
                     if let Some(file_name) = Path::new(&path).file_name() {
-                        self.now_playing = Some(file_name.to_string_lossy().into_owned());
+                        self.playback.now_playing = Some(file_name.to_string_lossy().into_owned());
                     }
-                    self.now_playing_path = Some(path);
-                    self.now_playing_position = 0.0;
-                    self.status_error = None; // Wis foutmelding bij nieuwe track
+                    self.playback.now_playing_path = Some(path);
+                    self.playback.now_playing_position = 0.0;
+                    self.playback.status_error = None; // Wis foutmelding bij nieuwe track
                 }
                 PlayerEvent::PositionUpdate(pos, dur) => {
-                    self.now_playing_position = pos;
-                    self.now_playing_duration = dur;
+                    self.playback.now_playing_position = pos;
+                    self.playback.now_playing_duration = dur;
                 }
                 PlayerEvent::RepeatModeChanged(mode) => {
-                    self.repeat_mode = mode;
+                    self.playback.repeat_mode = mode;
                 }
                 PlayerEvent::ShuffleModeChanged(on) => {
-                    self.shuffle_on = on;
+                    self.playback.shuffle_on = on;
                 }
                 PlayerEvent::QueueChanged(queue) => {
-                    self.queue = queue;
+                    self.playback.queue = queue;
                 }
                 PlayerEvent::LoopChanged(a, b) => {
-                    self.loop_a = a;
-                    self.loop_b = b;
+                    self.playback.loop_a = a;
+                    self.playback.loop_b = b;
                     // Sync ook de waveform state als het venster open is
                     if self.show_waveform {
                         self.waveform_state.loop_a_secs = a;
@@ -45,7 +45,7 @@ impl eframe::App for MusicPlayerApp {
                     }
                 }
                 PlayerEvent::PlaybackError(msg) => {
-                    self.status_error = Some(msg);
+                    self.playback.status_error = Some(msg);
                 }
             }
         }
@@ -77,8 +77,8 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- WACHTRIJ PANEEL ---
-        if self.show_queue {
-            let tx = self.player_tx.clone();
+        if self.playback.show_queue {
+            let tx = self.playback.player_tx.clone();
             egui::SidePanel::right("queue_panel")
                 .default_width(300.0)
                 .resizable(true)
@@ -87,7 +87,7 @@ impl eframe::App for MusicPlayerApp {
                     ui.separator();
 
                     // Huidig nummer
-                    if let Some(ref track) = self.now_playing {
+                    if let Some(ref track) = self.playback.now_playing {
                         ui.label(
                             RichText::new(format!("▶ {}", track))
                                 .size(14.0)
@@ -98,13 +98,13 @@ impl eframe::App for MusicPlayerApp {
                     }
 
                     // Overige tracks in queue
-                    if self.queue.is_empty() {
+                    if self.playback.queue.is_empty() {
                         ui.label("Geen nummers in wachtrij.");
                     } else {
                         egui::ScrollArea::vertical()
                             .max_height(ui.available_height() - 40.0)
                             .show(ui, |ui| {
-                                for (i, path) in self.queue.iter().enumerate() {
+                                for (i, path) in self.playback.queue.iter().enumerate() {
                                     let file_name = std::path::Path::new(path)
                                         .file_name()
                                         .map(|n| n.to_string_lossy().to_string())
@@ -346,10 +346,10 @@ impl eframe::App for MusicPlayerApp {
                     }
                 }
                 ScannerMessage::Progress(text) => {
-                    self._status_message = text;
+                    self.playback._status_message = text;
                 }
                 ScannerMessage::ScanComplete => {
-                    self._status_message = "Klaar!".to_string();
+                    self.playback._status_message = "Klaar!".to_string();
                 }
             }
         }
@@ -361,7 +361,9 @@ impl eframe::App for MusicPlayerApp {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Bibliotheek indexeren...").size(24.0));
                         ui.add_space(10.0);
-                        ui.label(RichText::new(&self._status_message).color(Color32::GRAY));
+                        ui.label(
+                            RichText::new(&self.playback._status_message).color(Color32::GRAY),
+                        );
                     });
                 });
             });
@@ -370,9 +372,9 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- NOW PLAYING BALK ---
-        if self.now_playing.is_some()
-            || self.status_error.is_some()
-            || !self._status_message.is_empty()
+        if self.playback.now_playing.is_some()
+            || self.playback.status_error.is_some()
+            || !self.playback._status_message.is_empty()
         {
             egui::TopBottomPanel::bottom("now_playing_panel").show(ctx, |ui| {
                 ui.add_space(6.0);
@@ -384,15 +386,17 @@ impl eframe::App for MusicPlayerApp {
                             .color(Color32::from_rgb(100, 200, 100))
                             .size(18.0),
                     );
-                    if let Some(track) = &self.now_playing {
+                    if let Some(track) = &self.playback.now_playing {
                         ui.label(RichText::new(track).size(16.0).strong());
                     }
 
                     // Status message (groen, rechts)
-                    if !self._status_message.is_empty() && self._status_message != "Klaar!" {
+                    if !self.playback._status_message.is_empty()
+                        && self.playback._status_message != "Klaar!"
+                    {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(format!("✓ {}", self._status_message))
+                                RichText::new(format!("✓ {}", self.playback._status_message))
                                     .size(12.0)
                                     .color(Color32::from_rgb(100, 200, 100)),
                             );
@@ -403,7 +407,7 @@ impl eframe::App for MusicPlayerApp {
                 ui.add_space(4.0);
 
                 // Foutmelding (rood, tijdelijk)
-                if let Some(ref err) = self.status_error {
+                if let Some(ref err) = self.playback.status_error {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(format!("⚠ {}", err))
@@ -415,19 +419,20 @@ impl eframe::App for MusicPlayerApp {
                 }
 
                 // Voortgangsbalk + tijd
-                if self.now_playing_duration > 0.0 {
-                    let pos_mins = (self.now_playing_position / 60.0) as u32;
-                    let pos_secs = self.now_playing_position as u32 % 60;
-                    let dur_mins = (self.now_playing_duration / 60.0) as u32;
-                    let dur_secs = self.now_playing_duration as u32 % 60;
+                if self.playback.now_playing_duration > 0.0 {
+                    let pos_mins = (self.playback.now_playing_position / 60.0) as u32;
+                    let pos_secs = self.playback.now_playing_position as u32 % 60;
+                    let dur_mins = (self.playback.now_playing_duration / 60.0) as u32;
+                    let dur_secs = self.playback.now_playing_duration as u32 % 60;
                     let time_text = format!(
                         "{}:{:02}  /  {}:{:02}",
                         pos_mins, pos_secs, dur_mins, dur_secs
                     );
 
                     ui.horizontal(|ui| {
-                        let fraction =
-                            (self.now_playing_position / self.now_playing_duration).clamp(0.0, 1.0);
+                        let fraction = (self.playback.now_playing_position
+                            / self.playback.now_playing_duration)
+                            .clamp(0.0, 1.0);
                         let bar = egui::ProgressBar::new(fraction)
                             .show_percentage()
                             .desired_width(ui.available_width() - 180.0);
@@ -435,7 +440,7 @@ impl eframe::App for MusicPlayerApp {
                         ui.label(RichText::new(time_text).size(12.0).color(Color32::GRAY));
 
                         // Volume indicator
-                        let vol_percent = (self.volume * 100.0) as u32;
+                        let vol_percent = (self.playback.volume * 100.0) as u32;
                         ui.label(
                             RichText::new(format!("🔊 {}%", vol_percent))
                                 .size(12.0)
@@ -443,7 +448,7 @@ impl eframe::App for MusicPlayerApp {
                         );
 
                         // Herhaalmodus indicator
-                        let repeat_text = match self.repeat_mode {
+                        let repeat_text = match self.playback.repeat_mode {
                             RepeatMode::None => "",
                             RepeatMode::One => "🔂 1",
                             RepeatMode::All => "🔁 All",
@@ -457,7 +462,7 @@ impl eframe::App for MusicPlayerApp {
                         }
 
                         // Shuffle indicator
-                        if self.shuffle_on {
+                        if self.playback.shuffle_on {
                             ui.label(
                                 RichText::new("🔀")
                                     .size(12.0)
@@ -466,7 +471,7 @@ impl eframe::App for MusicPlayerApp {
                         }
 
                         // A-B loop indicator
-                        if let (Some(a), Some(b)) = (self.loop_a, self.loop_b) {
+                        if let (Some(a), Some(b)) = (self.playback.loop_a, self.playback.loop_b) {
                             let a_mins = (a / 60.0) as u32;
                             let a_secs = a as u32 % 60;
                             let b_mins = (b / 60.0) as u32;
@@ -490,11 +495,12 @@ impl eframe::App for MusicPlayerApp {
         // --- WAVEFORM EDITOR WINDOW ---
         if self.show_waveform {
             let waveform_path = self.waveform_state.path.clone();
-            let player_position = if self.now_playing_path.as_deref() == waveform_path.as_deref() {
-                Some(self.now_playing_position)
-            } else {
-                None
-            };
+            let player_position =
+                if self.playback.now_playing_path.as_deref() == waveform_path.as_deref() {
+                    Some(self.playback.now_playing_position)
+                } else {
+                    None
+                };
 
             egui::Window::new("🌊 Waveform Editor")
                 .id(egui::Id::new("waveform_window"))
@@ -556,17 +562,17 @@ impl eframe::App for MusicPlayerApp {
                             self.waveform_state.loop_b_secs,
                         ) {
                             (Some(a), Some(b)) => {
-                                let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
-                                let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
                             }
                             (None, None) => {
-                                let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+                                let _ = self.playback.player_tx.send(PlayerCommand::ClearLoop);
                             }
                             (Some(a), None) => {
-                                let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
                             }
                             (None, Some(b)) => {
-                                let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
                             }
                         }
                     }
@@ -580,9 +586,12 @@ impl eframe::App for MusicPlayerApp {
                             (Some(a), Some(b)) if b > a => (seek_pos.clamp(a, b), b),
                             _ => (seek_pos, self.waveform_state.duration_secs),
                         };
-                        let _ = self.player_tx.send(PlayerCommand::SeekTo(start));
-                        let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(start));
-                        let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(end));
+                        let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(start));
+                        let _ = self
+                            .playback
+                            .player_tx
+                            .send(PlayerCommand::SetLoopAAt(start));
+                        let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(end));
                     }
 
                     ui.separator();
@@ -599,10 +608,17 @@ impl eframe::App for MusicPlayerApp {
                                     if let Some(ref path) = self.waveform_state.path {
                                         // Stuur naar main player met A-B loop
                                         let _ = self
+                                            .playback
                                             .player_tx
                                             .send(PlayerCommand::ReplaceQueue(vec![path.clone()]));
-                                        let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
-                                        let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                                        let _ = self
+                                            .playback
+                                            .player_tx
+                                            .send(PlayerCommand::SetLoopAAt(a));
+                                        let _ = self
+                                            .playback
+                                            .player_tx
+                                            .send(PlayerCommand::SetLoopBAt(b));
                                     }
                                 }
                             }
@@ -630,7 +646,7 @@ impl eframe::App for MusicPlayerApp {
                                                 loop_b_secs: b,
                                             };
                                             crate::loops::add_loop(&mut self.saved_loops, saved);
-                                            self._status_message = format!(
+                                            self.playback._status_message = format!(
                                                 "Loop opgeslagen! ({} totaal)",
                                                 self.saved_loops.len()
                                             );
@@ -650,9 +666,9 @@ impl eframe::App for MusicPlayerApp {
                         ui.separator();
 
                         // Stop via main player (oude A-B loop)
-                        if self.loop_a.is_some() || self.loop_b.is_some() {
+                        if self.playback.loop_a.is_some() || self.playback.loop_b.is_some() {
                             if ui.button("⏹ Clear Loop").clicked() {
-                                let _ = self.player_tx.send(PlayerCommand::ClearLoop);
+                                let _ = self.playback.player_tx.send(PlayerCommand::ClearLoop);
                             }
                         }
 
@@ -766,7 +782,7 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // Compacte modus: verberg bibliotheek, alleen now-playing balk
-        if self.compact_mode {
+        if self.playback.compact_mode {
             ctx.request_repaint();
             return;
         }
@@ -804,7 +820,11 @@ impl eframe::App for MusicPlayerApp {
                         //     .or(self.cached_filtered.as_ref())
                         //     .or(self.library.as_ref());
                         //
-                        let base_lib = self.cached_filtered.as_ref().or(self.library.as_ref());
+                        let base_lib = self
+                            .filters
+                            .cached_filtered
+                            .as_ref()
+                            .or(self.library.as_ref());
 
                         if let Some(base_lib) = base_lib {
                             if self.search_query.trim().is_empty() {
@@ -835,7 +855,7 @@ impl eframe::App for MusicPlayerApp {
         let current_lib = self
             .filtered_library
             .as_ref()
-            .or(self.cached_filtered.as_ref())
+            .or(self.filters.cached_filtered.as_ref())
             .or(self.library.as_ref());
         let Some(current_lib) = current_lib else {
             egui::CentralPanel::default().show(ctx, |ui| {
@@ -923,7 +943,7 @@ impl eframe::App for MusicPlayerApp {
         // --- PICKER VIEWS ---
 
         if self.is_picker_active() {
-            if let Some(node) = self.filter_path.get(self.filter_step) {
+            if let Some(node) = self.filters.filter_path.get(self.filters.filter_step) {
                 // Genre picker
                 if let FilterNode::Genre(_) = node {
                     let genre_sel_count = self.selected_tracks.len();
@@ -942,14 +962,14 @@ impl eframe::App for MusicPlayerApp {
                         ui.separator();
                         ScrollArea::vertical().show(ui, |ui| {
                             let mut genre_to_select: Option<String> = None;
-                            for (i, (genre, count)) in self.genres.iter().enumerate() {
+                            for (i, (genre, count)) in self.filters.genres.iter().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.with_layout(
                                         egui::Layout::centered_and_justified(
                                             egui::Direction::TopDown,
                                         ),
                                         |ui| {
-                                            let selected = i == self.selected_genre;
+                                            let selected = i == self.filters.selected_genre;
                                             let resp = ui.selectable_label(
                                                 selected,
                                                 RichText::new(format!("{} ({})", genre, count))
@@ -1001,7 +1021,7 @@ impl eframe::App for MusicPlayerApp {
                         ui.separator();
                         ScrollArea::vertical().show(ui, |ui| {
                             let mut year_to_select: Option<u32> = None;
-                            for (i, (year_opt, count)) in self.years.iter().enumerate() {
+                            for (i, (year_opt, count)) in self.filters.years.iter().enumerate() {
                                 let label = match year_opt {
                                     Some(y) => format!("{} ({})", y, count),
                                     None => format!("Onbekend ({})", count),
@@ -1012,7 +1032,7 @@ impl eframe::App for MusicPlayerApp {
                                             egui::Direction::TopDown,
                                         ),
                                         |ui| {
-                                            let selected = i == self.selected_year;
+                                            let selected = i == self.filters.selected_year;
                                             let resp = ui.selectable_label(
                                                 selected,
                                                 RichText::new(label).size(16.0),
@@ -1063,14 +1083,14 @@ impl eframe::App for MusicPlayerApp {
                         ui.separator();
                         ScrollArea::vertical().show(ui, |ui| {
                             let mut composer_to_select: Option<String> = None;
-                            for (i, (name, count)) in self.composers.iter().enumerate() {
+                            for (i, (name, count)) in self.filters.composers.iter().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.with_layout(
                                         egui::Layout::centered_and_justified(
                                             egui::Direction::TopDown,
                                         ),
                                         |ui| {
-                                            let selected = i == self.selected_composer;
+                                            let selected = i == self.filters.selected_composer;
                                             let resp = ui.selectable_label(
                                                 selected,
                                                 RichText::new(format!("{} ({})", name, count))
