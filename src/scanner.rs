@@ -369,7 +369,11 @@ pub fn load_or_scan_library(
                 let mut max_time = 0;
                 for (disk_name, tracks) in disks_map {
                     let mut sorted_tracks = tracks.clone();
-                    sorted_tracks.sort_by(|a, b| natord::compare(&a.title, &b.title));
+                    sorted_tracks.sort_by(|a, b| {
+                        a.track_number
+                            .cmp(&b.track_number)
+                            .then_with(|| natord::compare(&a.title, &b.title))
+                    });
 
                     for track in &sorted_tracks {
                         if let Ok(meta) = std::fs::metadata(&track.path) {
@@ -396,6 +400,9 @@ pub fn load_or_scan_library(
                     });
                 }
                 album.added_timestamp = max_time;
+                album
+                    .disks
+                    .sort_by(|a, b| natord::compare(&a.name, &b.name));
                 // Cover koppelen
                 if let Some(first_disk) = album.disks.first() {
                     if let Some(first_track) = first_disk.tracks.first() {

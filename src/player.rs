@@ -104,39 +104,36 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 }
                 PlayerCommand::Rewind => {
                     if let Some(s) = &sink {
-                        let pos = s.get_pos();
-                        let new_pos = pos.saturating_sub(Duration::from_secs(2));
-                        let _ = s.try_seek(new_pos);
-                        // Stuur de GEVRAAGDE positie (s.get_pos() is onbetrouwbaar als gepauzeerd)
-                        let dur = current_track_duration
-                            .map(|d| d.as_secs_f32())
-                            .unwrap_or(0.0);
-                        let _ =
-                            event_tx.send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), dur));
-                    }
-                }
-                PlayerCommand::Forward => {
-                    if let Some(s) = &sink {
-                        let pos = s.get_pos();
-                        let new_pos = pos + Duration::from_secs(2);
-                        let did_seek = if let Some(dur) = current_track_duration {
-                            if new_pos < dur {
-                                let _ = s.try_seek(new_pos);
-                                true
-                            } else {
-                                false
-                            }
-                        } else {
+                        if !s.empty() {
+                            let pos = s.get_pos();
+                            let new_pos = pos.saturating_sub(Duration::from_secs(2));
                             let _ = s.try_seek(new_pos);
-                            true
-                        };
-                        // Stuur de GEVRAAGDE positie
-                        if did_seek {
                             let dur = current_track_duration
                                 .map(|d| d.as_secs_f32())
                                 .unwrap_or(0.0);
                             let _ = event_tx
                                 .send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), dur));
+                        }
+                    }
+                }
+                PlayerCommand::Forward => {
+                    if let Some(s) = &sink {
+                        if !s.empty() {
+                            let pos = s.get_pos();
+                            let new_pos = pos + Duration::from_secs(2);
+                            if let Some(dur) = current_track_duration {
+                                if new_pos < dur {
+                                    let _ = s.try_seek(new_pos);
+                                    let _ = event_tx.send(PlayerEvent::PositionUpdate(
+                                        new_pos.as_secs_f32(),
+                                        dur.as_secs_f32(),
+                                    ));
+                                }
+                            } else {
+                                let _ = s.try_seek(new_pos);
+                                let _ = event_tx
+                                    .send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), 0.0));
+                            }
                         }
                     }
                 }
@@ -164,25 +161,28 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 }
                 PlayerCommand::SetLoopA => {
                     if let Some(s) = &sink {
-                        loop_a = Some(s.get_pos());
-                        let a = loop_a.map(|d| d.as_secs_f32());
-                        let b = loop_b.map(|d| d.as_secs_f32());
-                        let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
+                        if !s.empty() {
+                            loop_a = Some(s.get_pos());
+                            let a = loop_a.map(|d| d.as_secs_f32());
+                            let b = loop_b.map(|d| d.as_secs_f32());
+                            let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
+                        }
                     }
                 }
                 PlayerCommand::SetLoopB => {
                     if let Some(s) = &sink {
-                        loop_b = Some(s.get_pos());
-                        // Als B voor A ligt, wissel ze om
-                        if let (Some(a), Some(b)) = (loop_a, loop_b) {
-                            if b < a {
-                                loop_a = Some(b);
-                                loop_b = Some(a);
+                        if !s.empty() {
+                            loop_b = Some(s.get_pos());
+                            if let (Some(a), Some(b)) = (loop_a, loop_b) {
+                                if b < a {
+                                    loop_a = Some(b);
+                                    loop_b = Some(a);
+                                }
                             }
+                            let a = loop_a.map(|d| d.as_secs_f32());
+                            let b = loop_b.map(|d| d.as_secs_f32());
+                            let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
                         }
-                        let a = loop_a.map(|d| d.as_secs_f32());
-                        let b = loop_b.map(|d| d.as_secs_f32());
-                        let _ = event_tx.send(PlayerEvent::LoopChanged(a, b));
                     }
                 }
                 PlayerCommand::SetLoopAAt(secs) => {
@@ -234,14 +234,16 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 }
                 PlayerCommand::SeekTo(pos) => {
                     if let Some(s) = &sink {
-                        let seek_pos = Duration::from_secs_f32(pos);
-                        pending_seek = Some(seek_pos);
-                        if let Some(dur) = current_track_duration {
-                            if seek_pos < dur {
+                        if !s.empty() {
+                            let seek_pos = Duration::from_secs_f32(pos);
+                            pending_seek = Some(seek_pos);
+                            if let Some(dur) = current_track_duration {
+                                if seek_pos < dur {
+                                    let _ = s.try_seek(seek_pos);
+                                }
+                            } else {
                                 let _ = s.try_seek(seek_pos);
                             }
-                        } else {
-                            let _ = s.try_seek(seek_pos);
                         }
                     }
                     // Stuur de GEVRAAGDE positie (s.get_pos() is onbetrouwbaar als gepauzeerd)
