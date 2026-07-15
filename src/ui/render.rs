@@ -4,7 +4,6 @@ use crate::scanner::ScannerMessage;
 use crate::search::filter_library;
 use crate::ui::shortcuts;
 use crate::ui::types::{FilterNode, NavLevel, ViewMode};
-use crate::waveform_player::WaveformCommand;
 use eframe::egui::{self, Color32, Image, Key, RichText, ScrollArea};
 use std::path::Path;
 
@@ -12,27 +11,6 @@ use super::app::MusicPlayerApp;
 
 impl eframe::App for MusicPlayerApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // --- Verwerk Waveform player events ---
-        while let Ok(event) = self.waveform_event_rx.try_recv() {
-            match event {
-                crate::waveform_player::WaveformEvent::Playing => {
-                    self.waveform_is_playing = true;
-                }
-                crate::waveform_player::WaveformEvent::Stopped => {
-                    self.waveform_is_playing = false;
-                    self.waveform_play_position = 0.0;
-                }
-                crate::waveform_player::WaveformEvent::Error(msg) => {
-                    self.waveform_is_playing = false;
-                    self.status_error = Some(msg);
-                }
-                crate::waveform_player::WaveformEvent::Position(pos, dur) => {
-                    self.waveform_play_position = pos;
-                    self.waveform_play_duration = dur;
-                }
-            }
-        }
-
         // --- Verwerk Now Playing events ---
         while let Ok(event) = self.player_event_rx.try_recv() {
             match event {
@@ -43,13 +21,6 @@ impl eframe::App for MusicPlayerApp {
                     self.now_playing_path = Some(path);
                     self.now_playing_position = 0.0;
                     self.status_error = None; // Wis foutmelding bij nieuwe track
-
-                    // Pending loop van waveform editor: seek + stel A-B in
-                    if let Some((a, b)) = self.waveform_pending_loop.take() {
-                        let _ = self.player_tx.send(PlayerCommand::SeekTo(a));
-                        let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
-                        let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
-                    }
                 }
                 PlayerEvent::PositionUpdate(pos, dur) => {
                     self.now_playing_position = pos;
@@ -616,93 +587,22 @@ impl eframe::App for MusicPlayerApp {
 
                     ui.separator();
 
-                    // Pitch/Tempo controls
-                    ui.horizontal(|ui| {
-                        ui.label("Pitch:");
-                        let old_pitch = self.waveform_state.pitch_semitones;
-                        let mut pitch = old_pitch;
-                        ui.add(
-                            egui::Slider::new(&mut pitch, -12.0..=12.0)
-                                .text("semitones")
-                                .step_by(0.5),
-                        );
-                        if (pitch - old_pitch).abs() > 0.01 {
-                            self.waveform_state.pitch_semitones = pitch;
-                            if self.waveform_is_playing {
-                                let _ = self.waveform_cmd_tx.send(WaveformCommand::SetPitch(pitch));
-                            }
-                        }
-                        if ui.button("⟲").clicked() {
-                            self.waveform_state.pitch_semitones = 0.0;
-                            if self.waveform_is_playing {
-                                let _ = self.waveform_cmd_tx.send(WaveformCommand::SetPitch(0.0));
-                            }
-                        }
-
-                        ui.separator();
-
-                        ui.label("Tempo:");
-                        let old_tempo = self.waveform_state.tempo;
-                        let mut tempo = old_tempo;
-                        ui.add(
-                            egui::Slider::new(&mut tempo, 0.25..=2.0)
-                                .text("x")
-                                .step_by(0.05),
-                        );
-                        if (tempo - old_tempo).abs() > 0.005 {
-                            self.waveform_state.tempo = tempo;
-                            if self.waveform_is_playing {
-                                let _ = self.waveform_cmd_tx.send(WaveformCommand::SetTempo(tempo));
-                            }
-                        }
-                        if ui.button("⟲").clicked() {
-                            self.waveform_state.tempo = 1.0;
-                            if self.waveform_is_playing {
-                                let _ = self.waveform_cmd_tx.send(WaveformCommand::SetTempo(1.0));
-                            }
-                        }
-
-                        // Waveform playback status
-                        if self.waveform_is_playing {
-                            let p = self.waveform_play_position;
-                            let d = self.waveform_play_duration;
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "▶ {:02}:{:02} / {:02}:{:02}",
-                                    (p / 60.0) as u32,
-                                    p as u32 % 60,
-                                    (d / 60.0) as u32,
-                                    d as u32 % 60,
-                                ))
-                                .size(12.0)
-                                .color(Color32::from_rgb(100, 200, 100)),
-                            );
-                        }
-                    });
-
-                    ui.separator();
-
                     // Loop controls + zoom
                     ui.horizontal(|ui| {
-                        // Play Loop via waveform player (met rubato!)
+                        // Play Loop via main player
                         if let (Some(a), Some(b)) = (
                             self.waveform_state.loop_a_secs,
                             self.waveform_state.loop_b_secs,
                         ) {
                             if b > a {
-                                if self.waveform_is_playing {
-                                    if ui.button("⏹ Stop").clicked() {
-                                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Stop);
-                                    }
-                                } else if ui.button("▶ Play Loop (rubato)").clicked() {
+                                if ui.button("▶ Play Loop").clicked() {
                                     if let Some(ref path) = self.waveform_state.path {
-                                        let _ = self.waveform_cmd_tx.send(WaveformCommand::Play {
-                                            path: path.clone(),
-                                            start_sec: a,
-                                            end_sec: b,
-                                            pitch_semitones: self.waveform_state.pitch_semitones,
-                                            tempo: self.waveform_state.tempo,
-                                        });
+                                        // Stuur naar main player met A-B loop
+                                        let _ = self
+                                            .player_tx
+                                            .send(PlayerCommand::ReplaceQueue(vec![path.clone()]));
+                                        let _ = self.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                                        let _ = self.player_tx.send(PlayerCommand::SetLoopBAt(b));
                                     }
                                 }
                             }
@@ -728,10 +628,6 @@ impl eframe::App for MusicPlayerApp {
                                                 label,
                                                 loop_a_secs: a,
                                                 loop_b_secs: b,
-                                                pitch_semitones: self
-                                                    .waveform_state
-                                                    .pitch_semitones,
-                                                tempo: self.waveform_state.tempo,
                                             };
                                             crate::loops::add_loop(&mut self.saved_loops, saved);
                                             self._status_message = format!(
@@ -777,8 +673,6 @@ impl eframe::App for MusicPlayerApp {
                         // Sluit-knop rechts
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.button("Sluit (0)").clicked() {
-                                self.waveform_state.pitch_semitones = 0.0;
-                                self.waveform_state.tempo = 1.0;
                                 self.show_waveform = false;
                             }
                         });
@@ -805,34 +699,34 @@ impl eframe::App for MusicPlayerApp {
                                     // Naam
                                     ui.label(RichText::new(&saved.label).size(14.0).strong());
 
-                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        // Delete knop
-                                        if ui.button("❌").clicked() {
-                                            delete_idx = Some(i);
-                                        }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            // Delete knop
+                                            if ui.button("❌").clicked() {
+                                                delete_idx = Some(i);
+                                            }
 
-                                        // Load knop
-                                        if ui.button("▶ Open").clicked() {
-                                            load_loop = Some(i);
-                                        }
+                                            // Load knop
+                                            if ui.button("▶ Open").clicked() {
+                                                load_loop = Some(i);
+                                            }
 
-                                        // Info
-                                        let a_mins = (saved.loop_a_secs / 60.0) as u32;
-                                        let a_secs = saved.loop_a_secs as u32 % 60;
-                                        let b_mins = (saved.loop_b_secs / 60.0) as u32;
-                                        let b_secs = saved.loop_b_secs as u32 % 60;
-                                        let pitch = saved.pitch_semitones;
-                                        let tempo = saved.tempo;
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "[{:02}:{:02} → {:02}:{:02}]  pitch: {:+.1}  tempo: {:.0}%",
-                                                a_mins, a_secs, b_mins, b_secs,
-                                                pitch, tempo * 100.0
-                                            ))
-                                            .size(11.0)
-                                            .color(Color32::GRAY),
-                                        );
-                                    });
+                                            // Info
+                                            let a_mins = (saved.loop_a_secs / 60.0) as u32;
+                                            let a_secs = saved.loop_a_secs as u32 % 60;
+                                            let b_mins = (saved.loop_b_secs / 60.0) as u32;
+                                            let b_secs = saved.loop_b_secs as u32 % 60;
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "[{:02}:{:02} → {:02}:{:02}]",
+                                                    a_mins, a_secs, b_mins, b_secs,
+                                                ))
+                                                .size(11.0)
+                                                .color(Color32::GRAY),
+                                            );
+                                        },
+                                    );
                                 });
                                 ui.separator();
                             }
@@ -858,13 +752,7 @@ impl eframe::App for MusicPlayerApp {
                                             scroll_offset: 0.0,
                                             loop_a_secs: Some(saved.loop_a_secs),
                                             loop_b_secs: Some(saved.loop_b_secs),
-                                            pitch_semitones: saved.pitch_semitones,
-                                            tempo: saved.tempo,
                                             error: None,
-                                            dragging_loop_region: false,
-                                            dragging_playhead: false,
-                                            playhead_drag_secs: None,
-                                            playhead_frames_after_drag: 0,
                                         };
                                     }
                                     Err(e) => {

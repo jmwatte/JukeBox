@@ -8,8 +8,6 @@ pub struct SavedLoop {
     pub label: String,
     pub loop_a_secs: f32,
     pub loop_b_secs: f32,
-    pub pitch_semitones: f32,
-    pub tempo: f32,
 }
 
 const LOOPS_FILE: &str = "loops.json";
@@ -70,8 +68,6 @@ mod tests {
             label: label.to_string(),
             loop_a_secs: 10.0,
             loop_b_secs: 20.0,
-            pitch_semitones: 0.0,
-            tempo: 1.0,
         }
     }
 
@@ -119,7 +115,5 @@ mod tests {
         assert_eq!(l.label, "test");
         assert_eq!(l.loop_a_secs, 10.0);
         assert_eq!(l.loop_b_secs, 20.0);
-        assert_eq!(l.pitch_semitones, 0.0);
-        assert_eq!(l.tempo, 1.0);
     }
 }

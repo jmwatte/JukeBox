@@ -167,8 +167,6 @@ impl MusicPlayerApp {
                             label,
                             loop_a_secs: a,
                             loop_b_secs: b,
-                            pitch_semitones: self.waveform_state.pitch_semitones,
-                            tempo: self.waveform_state.tempo,
                         };
                         crate::loops::add_loop(&mut self.saved_loops, saved);
                         self._status_message =
@@ -203,13 +201,7 @@ impl MusicPlayerApp {
                                     scroll_offset: 0.0,
                                     loop_a_secs: self.loop_a,
                                     loop_b_secs: self.loop_b,
-                                    pitch_semitones: 0.0,
-                                    tempo: 1.0,
                                     error: None,
-                                    dragging_loop_region: false,
-                                    dragging_playhead: false,
-                                    playhead_drag_secs: None,
-                                    playhead_frames_after_drag: 0,
                                 };
                             }
                             Err(e) => {
@@ -222,13 +214,7 @@ impl MusicPlayerApp {
                                     scroll_offset: 0.0,
                                     loop_a_secs: None,
                                     loop_b_secs: None,
-                                    pitch_semitones: 0.0,
-                                    tempo: 1.0,
                                     error: Some(e),
-                                    dragging_loop_region: false,
-                                    dragging_playhead: false,
-                                    playhead_drag_secs: None,
-                                    playhead_frames_after_drag: 0,
                                 };
                             }
                         }

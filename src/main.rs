@@ -8,7 +8,6 @@ mod scanner;
 mod search;
 mod ui;
 mod waveform;
-mod waveform_player;
 use crossbeam_channel::unbounded;
 
 fn main() -> Result<(), eframe::Error> {
@@ -17,9 +16,6 @@ fn main() -> Result<(), eframe::Error> {
     // Kanalen voor communicatie met de audio-speler
     let (player_tx, player_rx) = unbounded();
     let (player_event_tx, player_event_rx) = unbounded();
-
-    // Start waveform audio-thread (aparte thread voor waveform editor met rubato)
-    let (waveform_cmd_tx, waveform_event_rx) = waveform_player::start_waveform_thread();
 
     // Kanalen voor de scanner
     let (scanner_tx, scanner_rx) = unbounded();
@@ -70,8 +66,6 @@ fn main() -> Result<(), eframe::Error> {
                 player_event_rx,
                 scanner_tx,
                 scanner_rx,
-                waveform_cmd_tx,
-                waveform_event_rx,
             )))
         }),
     )

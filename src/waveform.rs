@@ -17,13 +17,7 @@ pub struct WaveformState {
     pub scroll_offset: f32, // scroll offset in seconds
     pub loop_a_secs: Option<f32>,
     pub loop_b_secs: Option<f32>,
-    pub pitch_semitones: f32,
-    pub tempo: f32,
     pub error: Option<String>,
-    pub dragging_loop_region: bool,
-    pub dragging_playhead: bool,
-    pub playhead_drag_secs: Option<f32>,
-    pub playhead_frames_after_drag: u32,
 }
 
 impl Default for WaveformState {
@@ -37,13 +31,7 @@ impl Default for WaveformState {
             scroll_offset: 0.0,
             loop_a_secs: None,
             loop_b_secs: None,
-            pitch_semitones: 0.0,
-            tempo: 1.0,
             error: None,
-            dragging_loop_region: false,
-            dragging_playhead: false,
-            playhead_drag_secs: None,
-            playhead_frames_after_drag: 0,
         }
     }
 }
@@ -388,24 +376,8 @@ pub fn render_waveform(
         }
     }
 
-    // Huidige positie-indicator + interactie (playhead verslepen)
-    // Tijdens drag én tot 3 frames na loslaten: toon versleepte positie.
-    // Zo krijgt de player-thread de tijd om PositionUpdate te sturen.
-    let render_pos = if state.playhead_frames_after_drag > 0 {
-        state.playhead_drag_secs.or(now_playing_position)
-    } else {
-        now_playing_position
-    };
-
-    // Aftellen: na 3 frames wissen we de drag-positie
-    if state.playhead_frames_after_drag > 0 {
-        state.playhead_frames_after_drag -= 1;
-        if state.playhead_frames_after_drag == 0 {
-            state.playhead_drag_secs = None;
-        }
-    }
-
-    if let Some(pos) = render_pos {
+    // Huidige positie-indicator (playhead)
+    if let Some(pos) = now_playing_position {
         if pos >= start_sec && pos <= end_sec {
             let pos_x = rect.left() + (pos - start_sec) * state.zoom;
 
@@ -418,7 +390,7 @@ pub fn render_waveform(
                 (2.0, egui::Color32::from_rgb(255, 200, 50)),
             );
 
-            // --- Driehoekjes boven en onder voor grip ---
+            // --- Driehoekjes boven en onder ---
             let tri_size = 7.0;
             let tri_height = 10.0;
             painter.add(egui::Shape::convex_polygon(
@@ -439,52 +411,6 @@ pub fn render_waveform(
                 egui::Color32::from_rgb(255, 200, 50),
                 egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 150, 20)),
             ));
-
-            // --- Playhead drag detectie ---
-            if let Some(_actual_pos) = now_playing_position {
-                let strip_half = 10.0;
-                if response.drag_started() {
-                    if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                        let dx = (mouse_pos.x - pos_x).abs();
-                        let dy_top = (mouse_pos.y - rect.top()).abs();
-                        let dy_bot = (mouse_pos.y - rect.bottom()).abs();
-                        let in_strip = dx <= strip_half;
-                        let in_triangles =
-                            dx <= tri_size && (dy_top <= tri_height || dy_bot <= tri_height);
-                        state.dragging_playhead = in_strip || in_triangles;
-                    }
-                }
-                if response.drag_stopped() {
-                    state.dragging_playhead = false;
-                    // Blijf nog 3 frames op de versleepte positie
-                    // zodat de PositionUpdate van de player kan arriveren
-                    if state.playhead_drag_secs.is_some() {
-                        state.playhead_frames_after_drag = 3;
-                    }
-                }
-            } else {
-                state.dragging_playhead = false;
-                state.playhead_drag_secs = None;
-                state.playhead_frames_after_drag = 0;
-            }
-        } else {
-            state.dragging_playhead = false;
-            state.playhead_drag_secs = None;
-            state.playhead_frames_after_drag = 0;
-        }
-    } else {
-        state.dragging_playhead = false;
-        state.playhead_drag_secs = None;
-        state.playhead_frames_after_drag = 0;
-    }
-
-    // Playhead verslepen (render positie updaten, geen seek command tijdens drag)
-    if state.dragging_playhead && response.dragged_by(egui::PointerButton::Primary) {
-        if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-            let seek_pos = ((mouse_pos.x - rect.left()) / state.zoom + start_sec)
-                .clamp(0.0, state.duration_secs);
-            state.playhead_drag_secs = Some(seek_pos);
-            state.playhead_frames_after_drag = 3; // reset teller
         }
     }
 
@@ -492,13 +418,6 @@ pub fn render_waveform(
     if response.clicked() {
         if let Some(sec) = mouse_sec {
             seek_action = Some(sec.clamp(0.0, state.duration_secs));
-        }
-    }
-
-    // Playhead drag losgelaten: seek naar de versleepte positie
-    if response.drag_stopped() && state.dragging_playhead {
-        if let Some(sec) = state.playhead_drag_secs {
-            seek_action = Some(sec);
         }
     }
 
@@ -553,47 +472,8 @@ pub fn render_waveform(
         });
     }
 
-    // --- Loop-regio slepen: verplaats de hele A-B loop ---
-    // (alleen als playhead niet wordt versleept)
-    if !state.dragging_playhead {
-        if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
-            if b > a {
-                if response.drag_started() {
-                    if let Some(mouse_pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-                        let mouse_sec = (mouse_pos.x - rect.left()) / state.zoom + start_sec;
-                        state.dragging_loop_region = mouse_sec >= a && mouse_sec <= b;
-                    }
-                }
-                if response.drag_stopped() {
-                    state.dragging_loop_region = false;
-                }
-            } else {
-                state.dragging_loop_region = false;
-            }
-        } else {
-            state.dragging_loop_region = false;
-        }
-    }
-
-    // Versleep de hele loop (behoud lengte)
-    if state.dragging_loop_region && response.dragged_by(egui::PointerButton::Primary) {
-        let drag_delta = response.drag_delta();
-        let delta_secs = drag_delta.x / state.zoom;
-        if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
-            let len = b - a;
-            let new_a = (a + delta_secs).clamp(0.0, state.duration_secs - len);
-            state.loop_a_secs = Some(new_a);
-            state.loop_b_secs = Some(new_a + len);
-            loop_changed = true;
-        }
-    }
-
-    // Slepen op waveform (scrol) — alleen als we niet op marker, playhead of loop-regio slepen
-    if response.dragged_by(egui::PointerButton::Primary)
-        && !loop_changed
-        && !state.dragging_playhead
-        && !state.dragging_loop_region
-    {
+    // Slepen op waveform (scrol)
+    if response.dragged_by(egui::PointerButton::Primary) && !loop_changed {
         let drag_delta = response.drag_delta();
         state.scroll_offset -= drag_delta.x / state.zoom;
         state.scroll_offset = state.scroll_offset.max(0.0);
