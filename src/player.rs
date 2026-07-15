@@ -1,4 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
@@ -368,19 +370,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     }
 }
 
-/// Eenvoudige Fisher-Yates shuffle met SystemTime als seed
+/// Fisher-Yates shuffle via `rand` crate
 fn shuffle_vec<T>(vec: &mut Vec<T>) {
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let mut rng = seed;
-    let len = vec.len();
-    for i in (1..len).rev() {
-        rng = rng
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1442695040888963407);
-        let j = (rng % (i as u128 + 1)) as usize;
-        vec.swap(i, j);
-    }
+    vec.shuffle(&mut thread_rng());
 }

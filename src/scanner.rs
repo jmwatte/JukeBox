@@ -29,22 +29,26 @@ struct CacheData {
     library: Library,
 }
 
-/// Sla een Library direct naar de cache, zonder een volledige herscan.
-/// Dit is handig nadat tags in-memory zijn aangepast.
-/// OPMERKING: dir_modified wordt op 0 gezet, dus volgende startup zal opnieuw scannen.
-pub fn save_cache(library: &Library) {
+/// Sla een Library direct naar de cache, zodat een herstart sneller laden kan.
+/// `music_dir` wordt gebruikt om de wijzigingstijd vast te leggen voor cache-validatie.
+pub fn save_cache(library: &Library, music_dir: &str) {
     if let Ok(file) = std::fs::File::create(CACHE_FILE) {
         let writer = std::io::BufWriter::new(file);
         let data = CacheData {
             version: CACHE_VERSION,
-            dir_modified: 0,
+            dir_modified: std::fs::metadata(music_dir)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
             library: library.clone(),
         };
         let _ = bincode::serialize_into(writer, &data);
     }
 }
 
-pub async fn load_or_scan_library(
+pub fn load_or_scan_library(
     dir: String,
     audio_exts: Vec<String>,
     cover_names: Vec<String>,

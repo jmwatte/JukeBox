@@ -682,6 +682,7 @@ impl MusicPlayerApp {
         }
     }
 
+    #[allow(dead_code)]
     pub fn enter_selection_mode(&mut self) {
         // Selection mode gebruikt de geselecteerde tracks direct
     }
@@ -744,6 +745,7 @@ impl MusicPlayerApp {
     }
 
     /// Navigeer naar het huidig spelende nummer in de bibliotheek
+    #[allow(dead_code)]
     pub fn navigate_to_now_playing(&mut self, lib: &Library) {
         let target = match &self.now_playing_path {
             Some(p) => p.clone(),
@@ -810,6 +812,7 @@ impl MusicPlayerApp {
     }
 
     /// Tel geselecteerde tracks (voor UI weergave)
+    #[allow(dead_code)]
     pub fn selected_count(&self) -> usize {
         self.selected_tracks.len()
     }

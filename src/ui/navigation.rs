@@ -112,18 +112,13 @@ impl MusicPlayerApp {
             self._status_message = format!("Scannen: {}", fresh_config.music_directory);
             let tx = self.scanner_tx.clone();
             std::thread::spawn(move || {
-                if let Ok(rt) = tokio::runtime::Runtime::new() {
-                    rt.block_on(async {
-                        crate::scanner::load_or_scan_library(
-                            fresh_config.music_directory,
-                            fresh_config.audio_extensions,
-                            fresh_config.cover_names,
-                            fresh_config.cover_extensions,
-                            tx,
-                        )
-                        .await;
-                    });
-                }
+                crate::scanner::load_or_scan_library(
+                    fresh_config.music_directory,
+                    fresh_config.audio_extensions,
+                    fresh_config.cover_names,
+                    fresh_config.cover_extensions,
+                    tx,
+                );
             });
             return;
         }
@@ -134,7 +129,7 @@ impl MusicPlayerApp {
                 let paths: Vec<String> = self.selected_tracks.iter().cloned().collect();
                 if let Some(ref mut lib) = self.library {
                     crate::scanner::rescan_tracks(&paths, lib);
-                    crate::scanner::save_cache(lib);
+                    crate::scanner::save_cache(lib, &self.config.music_directory);
                     self.recompute();
                 }
             }

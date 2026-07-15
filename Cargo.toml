@@ -35,7 +35,6 @@ toml = "0.8"
 walkdir = "2.5" # Voor het efficiënt en recursief doorzoeken van de bibliotheek
 
 # --- Concurrency, Caching & State Management ---
-tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "fs"] } # Async runtime
 crossbeam-channel = "0.5" # Lock-free kanalen om state (zoals huidig nummer) naar de GUI te sturen
 lru = "0.12" # Least-Recently-Used cache om RAM-gebruik van albumhoezen in toom te houden
 

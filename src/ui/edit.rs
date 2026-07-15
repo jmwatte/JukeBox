@@ -269,7 +269,7 @@ impl MusicPlayerApp {
         self.show_track_details = false;
         self.recompute();
         if let Some(ref lib) = self.library {
-            crate::scanner::save_cache(lib);
+            crate::scanner::save_cache(lib, &self.config.music_directory);
         }
     }
 

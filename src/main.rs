@@ -1,5 +1,4 @@
 //#![windows_subsystem = "windows"]
-#![allow(dead_code)]
 
 mod config;
 mod loops;
@@ -39,17 +38,13 @@ fn main() -> Result<(), eframe::Error> {
     let scanner_tx_bg = scanner_tx.clone();
 
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            scanner::load_or_scan_library(
-                music_dir,
-                audio_exts,
-                cover_names,
-                cover_exts,
-                scanner_tx_bg,
-            )
-            .await;
-        });
+        scanner::load_or_scan_library(
+            music_dir,
+            audio_exts,
+            cover_names,
+            cover_exts,
+            scanner_tx_bg,
+        );
     });
 
     let options = eframe::NativeOptions {

@@ -36,6 +36,7 @@ impl FilterNode {
     }
 
     /// Picker-header voor de weergave
+    #[allow(dead_code)]
     pub fn picker_name(&self) -> &str {
         match self {
             FilterNode::Genre(_) => "Genres",
