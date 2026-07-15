@@ -82,16 +82,17 @@ pub fn load_or_scan_library(
                 }
                 Ok(cache) => {
                     if cache.version != CACHE_VERSION {
-                        println!(
+                        log::info!(
                             "Cache versie {} != verwachte {} — opnieuw scannen.",
-                            cache.version, CACHE_VERSION
+                            cache.version,
+                            CACHE_VERSION
                         );
                     } else {
-                        println!("Muziekmap gewijzigd sinds cache — opnieuw scannen.");
+                        log::info!("Muziekmap gewijzigd sinds cache — opnieuw scannen.");
                     }
                 }
                 Err(e) => {
-                    println!("Cache corrupt ({:?}) — opnieuw scannen.", e);
+                    log::warn!("Cache corrupt ({:?}) — opnieuw scannen.", e);
                 }
             }
         }

@@ -54,12 +54,12 @@ impl Config {
             match fs::read_to_string(config_path) {
                 Ok(config_str) => match toml::from_str(&config_str) {
                     Ok(config) => return config,
-                    Err(e) => eprintln!(
+                    Err(e) => log::warn!(
                         "Fout bij parsen van config.toml: {}. Gebruik standaardwaarden.",
                         e
                     ),
                 },
-                Err(e) => eprintln!(
+                Err(e) => log::warn!(
                     "Kon config.toml niet lezen: {}. Gebruik standaardwaarden.",
                     e
                 ),
@@ -69,7 +69,7 @@ impl Config {
             let default_config = Self::default();
             let toml_str = toml::to_string(&default_config).unwrap();
             if let Err(e) = fs::write(config_path, toml_str) {
-                eprintln!("Kon standaard config.toml niet schrijven: {}", e);
+                log::warn!("Kon standaard config.toml niet schrijven: {}", e);
             }
             default_config
         }

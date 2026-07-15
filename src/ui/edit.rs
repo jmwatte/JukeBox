@@ -240,7 +240,7 @@ impl MusicPlayerApp {
                 }
                 Err(e) => {
                     error_count += 1;
-                    println!("LOFTY SAVE ERROR voor {:?}: {}", path, e);
+                    log::error!("LOFTY SAVE ERROR voor {:?}: {}", path, e);
                 }
             }
         }

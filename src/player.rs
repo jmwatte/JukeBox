@@ -65,7 +65,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
         if let Ok(new_sink) = Sink::try_new(&handle) {
             _stream_data = Some((stream, handle));
             sink = Some(new_sink);
-            println!("Audio device connected.");
+            log::info!("Audio device connected.");
         }
     }
 
@@ -251,7 +251,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     let _ = event_tx.send(PlayerEvent::PositionUpdate(pos, dur));
                 }
                 PlayerCommand::ReconnectAudio => {
-                    println!("Reconnecting audio device...");
+                    log::info!("Reconnecting audio device...");
 
                     // Drop de oude verbinding door de Options op None te zetten
                     sink = None;
@@ -262,12 +262,12 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         if let Ok(new_sink) = Sink::try_new(&handle) {
                             _stream_data = Some((stream, handle));
                             sink = Some(new_sink);
-                            println!("Audio device reconnected.");
+                            log::info!("Audio device reconnected.");
                         } else {
-                            eprintln!("Failed to create new sink.");
+                            log::error!("Failed to create new sink.");
                         }
                     } else {
-                        eprintln!("Failed to connect to new audio device.");
+                        log::error!("Failed to connect to new audio device.");
                     }
                 }
             }

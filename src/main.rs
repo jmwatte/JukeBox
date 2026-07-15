@@ -11,6 +11,8 @@ mod waveform;
 use crossbeam_channel::unbounded;
 
 fn main() -> Result<(), eframe::Error> {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    log::info!("JukeBox gestart");
     let app_config = config::Config::load_or_create();
 
     // Kanalen voor communicatie met de audio-speler
