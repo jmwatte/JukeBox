@@ -365,8 +365,8 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
             }
         }
 
-        // Korte pauze om CPU te besparen
-        std::thread::sleep(Duration::from_millis(100));
+        // Korte pauze om CPU te besparen — 30ms voor vloeiende positie-updates
+        std::thread::sleep(Duration::from_millis(30));
     }
 }
 
