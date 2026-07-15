@@ -307,3 +307,255 @@ pub fn filter_by_composer(library: &Library, composer: &str) -> Library {
         artists: filtered_artists,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(title: &str, artist: &str, genre: Option<&str>, year: Option<u32>) -> Track {
+        Track {
+            path: format!("dummy/{}/{}.flac", artist, title),
+            title: title.to_string(),
+            artist: Some(artist.to_string()),
+            album_artist: None,
+            track_number: 0,
+            disc_number: 0,
+            duration_secs: 180,
+            genre: genre.map(|s| s.to_string()),
+            year,
+            composer: None,
+        }
+    }
+
+    fn sample_library() -> Library {
+        Library {
+            artists: vec![
+                Artist {
+                    name: "Artist A".into(),
+                    albums: vec![
+                        Album {
+                            title: "Album One".into(),
+                            cover_path: None,
+                            disks: vec![Disk {
+                                name: "Default".into(),
+                                tracks: vec![
+                                    track("Song Alpha", "Artist A", Some("Rock"), Some(1999)),
+                                    track("Song Beta", "Artist A", Some("Jazz"), Some(2001)),
+                                ],
+                            }],
+                            added_timestamp: 0,
+                        },
+                        Album {
+                            title: "Album Two".into(),
+                            cover_path: None,
+                            disks: vec![Disk {
+                                name: "Default".into(),
+                                tracks: vec![track("Song Gamma", "Artist A", None, None)],
+                            }],
+                            added_timestamp: 0,
+                        },
+                    ],
+                },
+                Artist {
+                    name: "Artist B".into(),
+                    albums: vec![Album {
+                        title: "Solo Album".into(),
+                        cover_path: None,
+                        disks: vec![Disk {
+                            name: "Default".into(),
+                            tracks: vec![track(
+                                "Only Song",
+                                "Artist B",
+                                Some("Classical"),
+                                Some(2010),
+                            )],
+                        }],
+                        added_timestamp: 0,
+                    }],
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn filter_library_empty_query_returns_full() {
+        let lib = sample_library();
+        let result = filter_library(&lib, "");
+        assert_eq!(result.artists.len(), 2);
+    }
+
+    #[test]
+    fn filter_library_by_title() {
+        let lib = sample_library();
+        let result = filter_library(&lib, "Alpha");
+        assert_eq!(result.artists.len(), 1);
+        assert_eq!(
+            result.artists[0].albums[0].disks[0].tracks[0].title,
+            "Song Alpha"
+        );
+    }
+
+    #[test]
+    fn filter_library_by_artist() {
+        let lib = sample_library();
+        let result = filter_library(&lib, "Artist B");
+        assert_eq!(result.artists.len(), 1);
+        assert_eq!(result.artists[0].name, "Artist B");
+    }
+
+    #[test]
+    fn filter_library_by_album() {
+        let lib = sample_library();
+        let result = filter_library(&lib, "Album Two");
+        assert_eq!(result.artists.len(), 1);
+        assert_eq!(result.artists[0].albums[0].title, "Album Two");
+    }
+
+    #[test]
+    fn filter_library_case_insensitive() {
+        let lib = sample_library();
+        let result = filter_library(&lib, "alpha");
+        assert_eq!(result.artists.len(), 1);
+    }
+
+    #[test]
+    fn filter_library_no_match() {
+        let lib = sample_library();
+        let result = filter_library(&lib, "ZZZZ");
+        assert!(result.artists.is_empty());
+    }
+
+    #[test]
+    fn collect_genres_basic() {
+        let lib = sample_library();
+        let genres = collect_genres(&lib);
+        assert!(genres.iter().any(|(g, _)| g == "Rock"));
+        assert!(genres.iter().any(|(g, _)| g == "Jazz"));
+        assert!(genres.iter().any(|(g, _)| g == "Classical"));
+    }
+
+    #[test]
+    fn collect_genres_with_unknown() {
+        let lib = sample_library();
+        let genres = collect_genres(&lib);
+        assert!(genres.iter().any(|(g, _)| g == "Unknown"));
+    }
+
+    #[test]
+    fn filter_by_genre_rock() {
+        let lib = sample_library();
+        let result = filter_by_genre(&lib, "Rock");
+        // Alleen Album One heeft een Rock-track (Song Alpha)
+        assert_eq!(result.artists[0].albums.len(), 1);
+        assert_eq!(result.artists[0].albums[0].title, "Album One");
+        assert_eq!(
+            result.artists[0].albums[0].disks[0].tracks[0].title,
+            "Song Alpha"
+        );
+    }
+
+    #[test]
+    fn filter_by_genre_unknown() {
+        let lib = sample_library();
+        let result = filter_by_genre(&lib, "Unknown");
+        assert_eq!(result.artists.len(), 1);
+    }
+
+    #[test]
+    fn collect_years_basic() {
+        let lib = sample_library();
+        let years = collect_years(&lib);
+        assert!(years.contains(&(Some(1999), 1)));
+        assert!(years.contains(&(Some(2001), 1)));
+        assert!(years.contains(&(Some(2010), 1)));
+    }
+
+    #[test]
+    fn collect_years_has_unknown() {
+        let lib = sample_library();
+        let years = collect_years(&lib);
+        assert!(years.contains(&(None, 1)));
+    }
+
+    #[test]
+    fn test_filter_by_year() {
+        let lib = sample_library();
+        let result = filter_by_year(&lib, 1999);
+        assert_eq!(result.artists[0].albums[0].disks[0].tracks.len(), 1);
+    }
+
+    #[test]
+    fn test_filter_by_year_unknown() {
+        let lib = sample_library();
+        let result = filter_by_year(&lib, 0);
+        assert_eq!(result.artists[0].albums[0].disks[0].tracks.len(), 1);
+    }
+
+    #[test]
+    fn test_filter_by_composer() {
+        let mut t = track("CT", "A", Some("Rock"), Some(2020));
+        t.composer = Some("Bach".to_string());
+        let lib = Library {
+            artists: vec![Artist {
+                name: "A".into(),
+                albums: vec![Album {
+                    title: "B".into(),
+                    cover_path: None,
+                    disks: vec![Disk {
+                        name: "Default".into(),
+                        tracks: vec![t],
+                    }],
+                    added_timestamp: 0,
+                }],
+            }],
+        };
+        let result = filter_by_composer(&lib, "bach");
+        assert_eq!(result.artists[0].albums[0].disks[0].tracks.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_composers() {
+        let mut t = track("CT", "A", Some("Rock"), Some(2020));
+        t.composer = Some("Mozart".to_string());
+        let lib = Library {
+            artists: vec![Artist {
+                name: "A".into(),
+                albums: vec![Album {
+                    title: "B".into(),
+                    cover_path: None,
+                    disks: vec![Disk {
+                        name: "Default".into(),
+                        tracks: vec![t],
+                    }],
+                    added_timestamp: 0,
+                }],
+            }],
+        };
+        let composers = collect_composers(&lib);
+        assert_eq!(composers, vec![("Mozart".to_string(), 1)]);
+    }
+
+    #[test]
+    fn split_genres_semicolon() {
+        let result = split_genres("Rock;Jazz;Blues");
+        assert_eq!(result, vec!["Rock", "Jazz", "Blues"]);
+    }
+
+    #[test]
+    fn split_genres_slash() {
+        let result = split_genres("Pop/Rock");
+        assert_eq!(result, vec!["Pop", "Rock"]);
+    }
+
+    #[test]
+    fn split_genres_empty() {
+        let result = split_genres("");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn split_genres_trims() {
+        let result = split_genres(" Rock ;  Jazz ");
+        assert_eq!(result, vec!["Rock", "Jazz"]);
+    }
+}

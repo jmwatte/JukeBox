@@ -59,3 +59,67 @@ pub fn generate_label(track_path: &str, loops: &[SavedLoop]) -> String {
         format!("{} - Loop {}", file_stem, count + 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_loop(track_path: &str, label: &str) -> SavedLoop {
+        SavedLoop {
+            track_path: track_path.to_string(),
+            label: label.to_string(),
+            loop_a_secs: 10.0,
+            loop_b_secs: 20.0,
+            pitch_semitones: 0.0,
+            tempo: 1.0,
+        }
+    }
+
+    #[test]
+    fn generate_label_first_loop() {
+        let label = generate_label("/music/test/song.flac", &[]);
+        assert_eq!(label, "song - Loop 1");
+    }
+
+    #[test]
+    fn generate_label_without_path() {
+        let label = generate_label("", &[]);
+        // Leeg pad → file_stem() geeft None → "Onbekend"
+        assert_eq!(label, "Onbekend - Loop 1");
+    }
+
+    #[test]
+    fn generate_label_second_loop() {
+        let loops = vec![sample_loop("/music/test/song.flac", "song - Loop 1")];
+        let label = generate_label("/music/test/song.flac", &loops);
+        assert_eq!(label, "song - Loop 2");
+    }
+
+    #[test]
+    fn generate_label_third_loop() {
+        let loops = vec![
+            sample_loop("/music/test/song.flac", "song - Loop 1"),
+            sample_loop("/music/test/song.flac", "song - Loop 2"),
+        ];
+        let label = generate_label("/music/test/song.flac", &loops);
+        assert_eq!(label, "song - Loop 3");
+    }
+
+    #[test]
+    fn generate_label_other_track_unaffected() {
+        let loops = vec![sample_loop("/other/file.mp3", "other - Loop 1")];
+        let label = generate_label("/music/test/song.flac", &loops);
+        assert_eq!(label, "song - Loop 1");
+    }
+
+    #[test]
+    fn saved_loop_struct() {
+        let l = sample_loop("/track.flac", "test");
+        assert_eq!(l.track_path, "/track.flac");
+        assert_eq!(l.label, "test");
+        assert_eq!(l.loop_a_secs, 10.0);
+        assert_eq!(l.loop_b_secs, 20.0);
+        assert_eq!(l.pitch_semitones, 0.0);
+        assert_eq!(l.tempo, 1.0);
+    }
+}
