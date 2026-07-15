@@ -245,6 +245,10 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "RandomAlbum")
                     ));
                     ui.label(format!(
+                        "• {} : Zoeken in bibliotheek",
+                        shortcuts::get_key_display(s, "SearchMode")
+                    ));
+                    ui.label(format!(
                         "• {} : Bladeren per genre",
                         shortcuts::get_key_display(s, "GenreBrowse")
                     ));
@@ -291,6 +295,14 @@ impl eframe::App for MusicPlayerApp {
                     ui.label(format!(
                         "• {} : Herstel audio verbinding",
                         shortcuts::get_key_display(s, "ReconnectAudio")
+                    ));
+                    ui.label(format!(
+                        "• {} : Open waveform editor",
+                        shortcuts::get_key_display(s, "WaveformOpen")
+                    ));
+                    ui.label(format!(
+                        "• {} : Save loop in waveform",
+                        shortcuts::get_key_display(s, "WaveformSaveLoop")
                     ));
                     ui.label(format!(
                         "• {} : Toon / verberg dit helpvenster",
