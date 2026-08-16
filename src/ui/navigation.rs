@@ -1137,8 +1137,11 @@ impl MusicPlayerApp {
                 if b > a && has_track {
                     if let Some(ref path) = self.waveform_state.path {
                         if playing_this_track {
-                            // Speelt al: spring direct terug naar A (snel)
+                            // Track speelt of staat op pauze: spring terug naar A
+                            // en speel (hervat) — als de track al uit was, herstart
+                            // de player de laatste track.
                             let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(a));
+                            let _ = self.playback.player_tx.send(PlayerCommand::Play);
                         } else {
                             // Laad de track en start bij loop-punt A
                             let _ = self

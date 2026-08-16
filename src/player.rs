@@ -14,6 +14,9 @@ pub enum RepeatMode {
 
 pub enum PlayerCommand {
     PlayPause,
+    /// Speel (hervat) onvoorwaardelijk; herstart de laatste track als er
+    /// niets meer in de wachtrij staat (bijv. na afloop van een nummer).
+    Play,
 
     Skip,
     Rewind,
@@ -63,6 +66,9 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     // (Play Loop / Enter) moet de seek herhaald worden tot de track actief is.
     // (pos, resterende pogingen)
     let mut pending_start_seek: Option<(Duration, u32)> = None;
+    // Waar bij een net vervangen queue de seek nog moet worden toegepast
+    // (voorkomt dat een SeekTo aan de oude, weg-te-gooien bron hangt).
+    let mut queue_pending_replace = false;
 
     // Eerste verbinding bij het opstarten (INLINE, geen closure!)
     if let Ok(handle) = rodio::DeviceSinkBuilder::open_default_sink() {
@@ -78,7 +84,17 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
             match cmd {
                 PlayerCommand::PlayPause => {
                     if let Some(s) = &sink {
-                        if s.is_paused() {
+                        if s.empty() {
+                            // Niets speelt (meer): herstart de laatste track
+                            // i.p.v. in een dode pauze te blijven hangen.
+                            if internal_queue.is_empty() {
+                                if let Some(ref track) = last_track {
+                                    internal_queue.push(track.clone());
+                                    let _ = event_tx
+                                        .send(PlayerEvent::QueueChanged(internal_queue.clone()));
+                                }
+                            }
+                        } else if s.is_paused() {
                             // Hervat: speel eerst af zodat rodio's interne thread
                             // wakker wordt, pas daarna seek naar pending positie.
                             s.play();
@@ -96,6 +112,31 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         } else {
                             s.pause();
                             pending_seek = None; // pauzeren wist pending seek
+                        }
+                    }
+                }
+
+                PlayerCommand::Play => {
+                    if let Some(s) = &sink {
+                        if s.empty() {
+                            // Niets speelt (meer): herstart de laatste track.
+                            if internal_queue.is_empty() {
+                                if let Some(ref track) = last_track {
+                                    internal_queue.push(track.clone());
+                                    let _ = event_tx
+                                        .send(PlayerEvent::QueueChanged(internal_queue.clone()));
+                                }
+                            }
+                        } else if s.is_paused() {
+                            s.play();
+                            if let Some(seek) = pending_seek.take() {
+                                let _ = s.try_seek(seek);
+                                let dur = current_track_duration
+                                    .map(|d| d.as_secs_f32())
+                                    .unwrap_or(0.0);
+                                let _ = event_tx
+                                    .send(PlayerEvent::PositionUpdate(seek.as_secs_f32(), dur));
+                            }
                         }
                     }
                 }
@@ -247,6 +288,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     // Een verse queue start zonder bewaarde start-seek; alleen een
                     // SeekTo ná deze ReplaceQueue (Play Loop / Enter) zet hem weer.
                     pending_start_seek = None;
+                    queue_pending_replace = true;
                     let _ = event_tx.send(PlayerEvent::LoopChanged(None, None));
                     original_queue = files.clone();
                     internal_queue = files;
@@ -254,8 +296,13 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         shuffle_vec(&mut internal_queue);
                     }
                     if let Some(s) = &sink {
-                        s.clear(); // Leeg de rodio wachtrij zodat hij niet doorspeelt
-                        s.skip_one(); // Forceer direct naar de nieuwe lijst
+                        // Géén s.clear(): die kan de audio-thread blokkeren
+                        // (sleep_until_end wacht op samples die er niet komen als
+                        // de bron gepauzeerd is of het apparaat wegvalt).
+                        // Hervatten + overslaan volstaat: de oude bron verdwijnt
+                        // bij de volgende mixcyclus en de nieuwe track start dan.
+                        s.play();
+                        s.skip_one();
                     }
                     let _ = event_tx.send(PlayerEvent::QueueChanged(internal_queue.clone()));
                 }
@@ -271,8 +318,15 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::SeekTo(pos) => {
                     let seek_pos = Duration::from_secs_f32(pos);
                     if let Some(s) = &sink {
-                        if !s.empty() {
-                            pending_seek = Some(seek_pos);
+                        let sink_ready = !s.empty() && !queue_pending_replace;
+                        if sink_ready {
+                            // Normale seek tijdens afspelen/pauze.
+                            // Alleen bij pauze onthouden voor hervatten; bij
+                            // afspelen zou een blijvende pending_seek de playhead
+                            // op de gezochte plek laten bevriezen.
+                            if s.is_paused() {
+                                pending_seek = Some(seek_pos);
+                            }
                             if let Some(dur) = current_track_duration {
                                 if seek_pos < dur {
                                     let _ = s.try_seek(seek_pos);
@@ -281,9 +335,9 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                                 let _ = s.try_seek(seek_pos);
                             }
                         } else {
-                            // Sink is (nog) leeg — rodio laat de seek vallen.
-                            // Bewaar hem en pas toe zodra de track speelt
-                            // (belangrijk voor Play Loop / Enter: starten op A).
+                            // Sink is leeg of de queue is net vervangen — rodio
+                            // zou de seek nu laten vallen. Bewaar hem en pas toe
+                            // zodra de nieuwe track speelt (Play Loop / Enter).
                             pending_start_seek = Some((seek_pos, 33));
                         }
                     }
@@ -316,6 +370,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
         // 2. Beheer de weergave
         if let Some(s) = &sink {
             if s.empty() {
+                // De sink is leeg: een eventuele ReplaceQueue is nu verwerkt
+                // (de oude bron is geskipt). Een SeekTo van vóór het laden
+                // is al bewaard in pending_start_seek.
+                queue_pending_replace = false;
+
                 // Herhaalmodus: vul queue opnieuw als deze leeg is
                 if internal_queue.is_empty() {
                     match repeat_mode {
