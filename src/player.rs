@@ -1,9 +1,8 @@
 use crossbeam_channel::{Receiver, Sender};
-use rand::seq::SliceRandom;
 use rand::rng;
-use rodio::{Decoder, OutputStream, Sink, Source};
+use rand::seq::SliceRandom;
+use rodio::{Decoder, Player, Source};
 use std::fs::File;
-use std::io::BufReader;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -47,8 +46,8 @@ pub enum PlayerEvent {
 
 pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEvent>) {
     // We stoppen de stream en sink in Options zodat we ze kunnen droppen en opnieuw maken
-    let mut _stream_data: Option<(OutputStream, rodio::OutputStreamHandle)> = None;
-    let mut sink: Option<Sink> = None;
+    let mut _stream_data: Option<rodio::MixerDeviceSink> = None;
+    let mut sink: Option<Player> = None;
     let mut internal_queue: Vec<String> = Vec::new();
     let mut current_track_duration: Option<Duration> = None;
     let mut repeat_mode = RepeatMode::None;
@@ -61,12 +60,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut pending_seek: Option<Duration> = None;
 
     // Eerste verbinding bij het opstarten (INLINE, geen closure!)
-    if let Ok((stream, handle)) = OutputStream::try_default() {
-        if let Ok(new_sink) = Sink::try_new(&handle) {
-            _stream_data = Some((stream, handle));
-            sink = Some(new_sink);
-            log::info!("Audio device connected.");
-        }
+    if let Ok(handle) = rodio::DeviceSinkBuilder::open_default_sink() {
+        let new_player = Player::connect_new(handle.mixer());
+        _stream_data = Some(handle);
+        sink = Some(new_player);
+        log::info!("Audio device connected.");
     }
 
     loop {
@@ -289,14 +287,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     _stream_data = None;
 
                     // Maak een nieuwe verbinding (INLINE)
-                    if let Ok((stream, handle)) = OutputStream::try_default() {
-                        if let Ok(new_sink) = Sink::try_new(&handle) {
-                            _stream_data = Some((stream, handle));
-                            sink = Some(new_sink);
-                            log::info!("Audio device reconnected.");
-                        } else {
-                            log::error!("Failed to create new sink.");
-                        }
+                    if let Ok(handle) = rodio::DeviceSinkBuilder::open_default_sink() {
+                        let new_player = Player::connect_new(handle.mixer());
+                        _stream_data = Some(handle);
+                        sink = Some(new_player);
+                        log::info!("Audio device reconnected.");
                     } else {
                         log::error!("Failed to connect to new audio device.");
                     }
@@ -332,7 +327,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 if !internal_queue.is_empty() {
                     let next_file = internal_queue.remove(0);
                     match File::open(&next_file) {
-                        Ok(f) => match Decoder::new(BufReader::new(f)) {
+                        Ok(f) => match Decoder::try_from(f) {
                             Ok(decoder) => {
                                 current_track_duration = decoder.total_duration();
                                 last_track = Some(next_file.clone());

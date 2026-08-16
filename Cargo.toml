@@ -20,7 +20,8 @@ image = { version = "0.25", features = ["jpeg", "png"] } # Ondersteuning voor de
 
 # --- Audio Weergave & Decodering ---
 # rodio regelt de WASAPI output op Windows. symphonia-all zorgt voor pure Rust decodering.
-rodio = { version = "0.19", features = ["symphonia-all"] }
+# 0.21+ bevat de byte_len- en total_duration-fixes die voorheen via vendor/rodio gepatcht werden.
+rodio = { version = "0.22", features = ["symphonia-all"] }
 symphonia = "0.5"
 
 # --- Metadata (Tags uitlezen) ---
@@ -43,10 +44,5 @@ env_logger = "0.11"
 natord = "1.0"
 rayon = "1.8"
 rand = "0.10"
-
-# Lokale patch van rodio 0.19: zorgt dat symphonia kan seaken (byte_len).
-# Zonder deze patch faalt elke seek (FLAC/MP3/Ogg/WAV) met "Unseekable".
-[patch.crates-io]
-rodio = { path = "vendor/rodio" }
 
 [workspace]
