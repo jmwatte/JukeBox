@@ -1469,9 +1469,9 @@ impl MusicPlayerApp {
 
         ui.add_space(bar_height + 8.0);
         ui.vertical_centered(|ui| {
-            // ── Hoes van het huidige nummer ──
+            // ── Hoes van het huidige nummer (flexibel, past ook in een klein venster) ──
             let avail = ui.available_size();
-            let cover_box = (avail.x.min(avail.y - 120.0)).max(120.0).min(420.0);
+            let cover_box = (avail.x.min(avail.y - 100.0)).max(80.0).min(420.0);
             let cover_box = egui::vec2(cover_box, cover_box);
             let cover = self.find_cover_for_path(self.playback.now_playing_path.as_deref());
             if let Some(path) = cover {
@@ -1480,7 +1480,7 @@ impl MusicPlayerApp {
                     Image::new(Self::cover_uri(&path))
                         .fit_to_exact_size(cover_box)
                         .show_loading_spinner(false)
-                        .sense(egui::Sense::hover()),
+                        .sense(egui::Sense::click()),
                 );
                 if resp.double_clicked() {
                     let _ = self.playback.player_tx.send(PlayerCommand::PlayPause);
@@ -1502,20 +1502,18 @@ impl MusicPlayerApp {
             // ── Titel bovenop de voortgangsbalk ──
             let bar_w = ui.available_width().min(440.0);
             let bar_h = 30.0;
-            let (bar_rect, _) = ui.allocate_exact_size(
-                egui::vec2(bar_w, bar_h),
-                egui::Sense::hover(),
-            );
-            ui.painter().rect_filled(bar_rect, 4.0, Color32::from_gray(48));
+            let (bar_rect, _) =
+                ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(bar_rect, 4.0, Color32::from_gray(48));
             let pos = self.playback.now_playing_position;
             let dur = self.playback.now_playing_duration;
             if dur > 0.0 {
                 let fraction = (pos / dur).clamp(0.0, 1.0);
-                let fill = egui::Rect::from_min_size(
-                    bar_rect.min,
-                    egui::vec2(bar_w * fraction, bar_h),
-                );
-                ui.painter().rect_filled(fill, 4.0, Color32::from_rgb(45, 95, 145));
+                let fill =
+                    egui::Rect::from_min_size(bar_rect.min, egui::vec2(bar_w * fraction, bar_h));
+                ui.painter()
+                    .rect_filled(fill, 4.0, Color32::from_rgb(45, 95, 145));
             }
 
             // Titel gecentreerd op de balk (afgekapt als hij te lang is)
@@ -1529,10 +1527,7 @@ impl MusicPlayerApp {
             job.append(
                 &title,
                 0.0,
-                egui::TextFormat::simple(
-                    egui::FontId::proportional(15.0),
-                    Color32::WHITE,
-                ),
+                egui::TextFormat::simple(egui::FontId::proportional(15.0), Color32::WHITE),
             );
             let galley = ui.painter().layout_job(job);
             let text_pos = egui::pos2(
@@ -1547,18 +1542,6 @@ impl MusicPlayerApp {
             );
             ui.painter().galley(text_pos, galley, Color32::WHITE);
 
-            // Tijd onder de balk
-            if dur > 0.0 {
-                let time_text = format!(
-                    "{}:{:02}  /  {}:{:02}",
-                    (pos / 60.0) as u32,
-                    pos as u32 % 60,
-                    (dur / 60.0) as u32,
-                    dur as u32 % 60
-                );
-                ui.label(RichText::new(time_text).size(12.0).color(Color32::GRAY));
-            }
-
             // ── Foutmelding ──
             if let Some(ref err) = self.playback.status_error {
                 ui.add_space(4.0);
@@ -1568,23 +1551,16 @@ impl MusicPlayerApp {
                         .color(Color32::from_rgb(255, 100, 100)),
                 );
             }
-
-            ui.add_space(16.0);
-
-            // ── Hint ──
-            ui.label(
-                RichText::new(
-                    "F11 terug · F12 altijd bovenop · dubbelklik hoes = pauze · sleep ◢ om te resizen",
-                )
-                .size(11.0)
-                .color(Color32::from_gray(110)),
-            );
         });
 
-        // ── Resize-handle rechtsonder (borderless venster) ──
+        // ── Resize-handle rechtsonder (altijd zichtbaar, bovenop de inhoud) ──
+        let handle_size = 24.0;
         let handle_rect = egui::Rect::from_min_size(
-            egui::pos2(ui.max_rect().right() - 20.0, ui.max_rect().bottom() - 20.0),
-            egui::vec2(20.0, 20.0),
+            egui::pos2(
+                ui.max_rect().right() - handle_size,
+                ui.max_rect().bottom() - handle_size,
+            ),
+            egui::vec2(handle_size, handle_size),
         );
         let handle_resp = ui.interact(
             handle_rect,
@@ -1596,12 +1572,21 @@ impl MusicPlayerApp {
                 egui::ResizeDirection::SouthEast,
             ));
         }
-        ui.painter().text(
+        // Teken in de foreground-laag zodat de inhoud de handle nooit bedekt.
+        let fg = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("compact_resize_fg"),
+        ));
+        fg.text(
             handle_rect.center(),
             egui::Align2::CENTER_CENTER,
             "◢",
-            egui::FontId::proportional(14.0),
-            Color32::from_gray(130),
+            egui::FontId::proportional(15.0),
+            if handle_resp.hovered() || handle_resp.dragged() {
+                Color32::WHITE
+            } else {
+                Color32::from_gray(140)
+            },
         );
     }
 
