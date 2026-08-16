@@ -1,0 +1,2 @@
+#include <winres.h>
+IDI_MAIN_ICON ICON "assets/jukeboks.ico"

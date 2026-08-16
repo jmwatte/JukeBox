@@ -1,4 +1,4 @@
-# 🎵 JukeBox — Toetsenbord-gestuurde Muziekspeler
+# 🎵 JukeBoks — Toetsenbord-gestuurde Muziekspeler
 
 Een minimalistische, snelle muziekspeler voor Windows, gebouwd in Rust met egui.
 Ontworpen voor toetsenbordbediening, met een hiërarchische bibliotheekweergave

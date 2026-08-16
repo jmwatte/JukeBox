@@ -12,7 +12,7 @@ use crossbeam_channel::unbounded;
 
 fn main() -> Result<(), eframe::Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    log::info!("JukeBox gestart");
+    log::info!("JukeBoks gestart");
     let app_config = config::Config::load_or_create();
 
     // Kanalen voor communicatie met de audio-speler
@@ -58,7 +58,7 @@ fn main() -> Result<(), eframe::Error> {
     };
 
     eframe::run_native(
-        "JukeBox",
+        "JukeBoks",
         options,
         Box::new(move |_cc| {
             egui_extras::install_image_loaders(&_cc.egui_ctx);

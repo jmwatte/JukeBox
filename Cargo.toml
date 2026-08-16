@@ -1,5 +1,5 @@
 [package]
-name = "ai-music-player"
+name = "jukeboks"
 version = "0.1.0"
 edition = "2021"
 authors = ["JMWatte"]
@@ -44,5 +44,9 @@ env_logger = "0.11"
 natord = "1.0"
 rayon = "1.8"
 rand = "0.10"
+
+[build-dependencies]
+# Embed de app-icoon (jukeboks.ico) in de Windows executable.
+embed-resource = "3.0"
 
 [workspace]
