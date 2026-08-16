@@ -18,6 +18,9 @@ pub struct WaveformState {
     pub loop_a_secs: Option<f32>,
     pub loop_b_secs: Option<f32>,
     pub error: Option<String>,
+    /// Breedte van het waveform-paneel (px) van de laatste frame, nodig om de
+    /// view op een loop te kunnen centreren via toetsenbord.
+    pub panel_width: f32,
 }
 
 impl Default for WaveformState {
@@ -32,7 +35,134 @@ impl Default for WaveformState {
             loop_a_secs: None,
             loop_b_secs: None,
             error: None,
+            panel_width: 800.0,
         }
+    }
+}
+
+/// Toetsenbord-bewerkingen voor de A-B loop. Elke functie geeft `true` terug
+/// als de loop daadwerkelijk veranderd is (dan moet de player gesynchroniseerd
+/// worden). De stappen volgen LoopMachine: markers 0,05s, playhead 0,20s.
+impl WaveformState {
+    /// Verschuif marker A met `delta` seconden (±0,05s), beperkt tot de track
+    /// en zodanig dat A < B blijft.
+    pub fn nudge_a(&mut self, delta: f32) -> bool {
+        let Some(a) = self.loop_a_secs else {
+            return false;
+        };
+        let step = delta.abs();
+        let mut new_a = (a + delta).clamp(0.0, self.duration_secs);
+        if let Some(b) = self.loop_b_secs {
+            if new_a >= b {
+                new_a = (b - step).max(0.0);
+            }
+        }
+        self.loop_a_secs = Some(new_a);
+        (new_a - a).abs() > 0.0001
+    }
+
+    /// Verschuif marker B met `delta` seconden (±0,05s), beperkt tot de track
+    /// en zodanig dat A < B blijft.
+    pub fn nudge_b(&mut self, delta: f32) -> bool {
+        let Some(b) = self.loop_b_secs else {
+            return false;
+        };
+        let step = delta.abs();
+        let mut new_b = (b + delta).clamp(0.0, self.duration_secs);
+        if let Some(a) = self.loop_a_secs {
+            if new_b <= a {
+                new_b = (a + step).min(self.duration_secs);
+            }
+        }
+        self.loop_b_secs = Some(new_b);
+        (new_b - b).abs() > 0.0001
+    }
+
+    /// Verplaats de hele loop één eigen lengte naar links (lengte blijft gelijk).
+    pub fn shift_loop_left(&mut self) -> bool {
+        let (Some(a), Some(b)) = (self.loop_a_secs, self.loop_b_secs) else {
+            return false;
+        };
+        if b <= a {
+            return false;
+        }
+        let len = b - a;
+        let new_a = (a - len).max(0.0);
+        self.loop_a_secs = Some(new_a);
+        self.loop_b_secs = Some(new_a + len);
+        (new_a - a).abs() > 0.0001
+    }
+
+    /// Verplaats de hele loop één eigen lengte naar rechts (lengte blijft gelijk).
+    pub fn shift_loop_right(&mut self) -> bool {
+        let (Some(a), Some(b)) = (self.loop_a_secs, self.loop_b_secs) else {
+            return false;
+        };
+        if b <= a {
+            return false;
+        }
+        let len = b - a;
+        let new_b = (b + len).min(self.duration_secs);
+        self.loop_a_secs = Some(new_b - len);
+        self.loop_b_secs = Some(new_b);
+        (new_b - b).abs() > 0.0001
+    }
+
+    /// Verdubbel de looplengte naar rechts (A blijft staan).
+    pub fn double_loop(&mut self) -> bool {
+        let (Some(a), Some(b)) = (self.loop_a_secs, self.loop_b_secs) else {
+            return false;
+        };
+        if b <= a {
+            return false;
+        }
+        let new_b = (a + (b - a) * 2.0).min(self.duration_secs);
+        self.loop_b_secs = Some(new_b);
+        (new_b - b).abs() > 0.0001
+    }
+
+    /// Halveer de looplengte naar rechts (A blijft staan).
+    pub fn halve_loop(&mut self) -> bool {
+        let (Some(a), Some(b)) = (self.loop_a_secs, self.loop_b_secs) else {
+            return false;
+        };
+        if b <= a {
+            return false;
+        }
+        let new_b = a + (b - a) / 2.0;
+        if new_b <= a {
+            return false;
+        }
+        self.loop_b_secs = Some(new_b);
+        true
+    }
+
+    /// Centreer de viewport op de A-B loop: zoom zodanig dat de loop + marge
+    /// past en scroll naar het midden van de loop.
+    pub fn center_view_on_loop(&mut self) {
+        let (Some(a), Some(b)) = (self.loop_a_secs, self.loop_b_secs) else {
+            return;
+        };
+        if b <= a || self.panel_width <= 0.0 || self.duration_secs <= 0.0 {
+            return;
+        }
+        let loop_width = b - a;
+        let target_zoom = (self.panel_width * 0.6 / loop_width).clamp(5.0, 5000.0);
+        self.zoom = target_zoom;
+        let visible_secs = self.panel_width / self.zoom;
+        let mid = (a + b) / 2.0;
+        let max_scroll = (self.duration_secs - visible_secs).max(0.0);
+        self.scroll_offset = (mid - visible_secs / 2.0).clamp(0.0, max_scroll);
+    }
+
+    /// Centreer de viewport op een positie (seconden), zonder zoom te wijzigen.
+    pub fn center_view_on_pos(&mut self, pos_secs: f32) {
+        if self.panel_width <= 0.0 || self.zoom <= 0.0 {
+            return;
+        }
+        let visible_secs = self.panel_width / self.zoom;
+        let max_scroll = (self.duration_secs - visible_secs).max(0.0);
+        self.scroll_offset = (pos_secs - visible_secs / 2.0).clamp(0.0, max_scroll);
     }
 }
 
@@ -150,6 +280,9 @@ pub fn render_waveform(
     now_playing_position: Option<f32>,
 ) -> (bool, Option<f32>) {
     let width = ui.available_width().max(100.0);
+    // Onthoud de breedte zodat de view via toetsenbord op de loop gecentreerd
+    // kan worden (center_view_on_loop/center_view_on_pos).
+    state.panel_width = width;
     let height = 200.0;
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::click_and_drag());
@@ -480,4 +613,155 @@ pub fn render_waveform(
     }
 
     (loop_changed, seek_action)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WaveformState met een fictieve loop van 10.0–20.0s in een track van 60s.
+    fn state_with_loop() -> WaveformState {
+        WaveformState {
+            path: Some("test.flac".to_string()),
+            samples: vec![0.0; 1000],
+            sample_rate: 44100,
+            duration_secs: 60.0,
+            zoom: 50.0,
+            scroll_offset: 0.0,
+            loop_a_secs: Some(10.0),
+            loop_b_secs: Some(20.0),
+            error: None,
+            panel_width: 800.0,
+        }
+    }
+
+    #[test]
+    fn nudge_a_moves_marker_within_bounds() {
+        let mut s = state_with_loop();
+        assert!(s.nudge_a(0.05));
+        assert_eq!(s.loop_a_secs, Some(10.05));
+        assert!(s.nudge_a(-0.05));
+        assert_eq!(s.loop_a_secs, Some(10.0));
+    }
+
+    #[test]
+    fn nudge_a_cannot_cross_b() {
+        let mut s = state_with_loop();
+        // 250 stappen van +0,05s → 10.0 + 12.5s, maar B (20.0s) blokkeert op 19.95
+        for _ in 0..250 {
+            s.nudge_a(0.05);
+        }
+        let a = s.loop_a_secs.unwrap();
+        assert!(a < s.loop_b_secs.unwrap());
+        assert!((a - 19.95).abs() < 0.001, "A={a}");
+    }
+
+    #[test]
+    fn nudge_b_cannot_cross_a() {
+        let mut s = state_with_loop();
+        // 250 stappen van -0,05s → 20.0 - 12.5s, maar A (10.0s) blokkeert op 10.05
+        for _ in 0..250 {
+            s.nudge_b(-0.05);
+        }
+        let b = s.loop_b_secs.unwrap();
+        assert!(b > s.loop_a_secs.unwrap());
+        assert!((b - 10.05).abs() < 0.001, "B={b}");
+    }
+
+    #[test]
+    fn nudge_a_clamps_at_zero() {
+        let mut s = state_with_loop();
+        s.loop_a_secs = Some(0.03);
+        assert!(s.nudge_a(-0.05));
+        assert_eq!(s.loop_a_secs, Some(0.0));
+    }
+
+    #[test]
+    fn nudge_without_loop_returns_false() {
+        let mut s = WaveformState::default();
+        s.duration_secs = 60.0;
+        assert!(!s.nudge_a(0.05));
+        assert!(!s.nudge_b(0.05));
+    }
+
+    #[test]
+    fn shift_loop_left_moves_by_its_length() {
+        let mut s = state_with_loop();
+        assert!(s.shift_loop_left());
+        assert_eq!(s.loop_a_secs, Some(0.0)); // 10 - 10
+        assert_eq!(s.loop_b_secs, Some(10.0));
+        // Nog een keer: mag niet onder 0, dus geen verandering meer
+        assert!(!s.shift_loop_left());
+        assert_eq!(s.loop_a_secs, Some(0.0));
+    }
+
+    #[test]
+    fn shift_loop_right_moves_by_its_length() {
+        let mut s = state_with_loop();
+        assert!(s.shift_loop_right());
+        assert_eq!(s.loop_a_secs, Some(20.0));
+        assert_eq!(s.loop_b_secs, Some(30.0));
+        // Aan het einde: gedeeltelijk verschoven als de track ophoudt
+        s.loop_a_secs = Some(50.0);
+        s.loop_b_secs = Some(55.0);
+        assert!(s.shift_loop_right());
+        assert_eq!(s.loop_a_secs, Some(55.0));
+        assert_eq!(s.loop_b_secs, Some(60.0));
+    }
+
+    #[test]
+    fn double_loop_keeps_a() {
+        let mut s = state_with_loop();
+        assert!(s.double_loop());
+        assert_eq!(s.loop_a_secs, Some(10.0));
+        assert_eq!(s.loop_b_secs, Some(30.0));
+        // Beperkt door de trackduur
+        let mut s2 = state_with_loop();
+        s2.duration_secs = 25.0;
+        assert!(s2.double_loop());
+        assert_eq!(s2.loop_b_secs, Some(25.0));
+    }
+
+    #[test]
+    fn halve_loop_keeps_a() {
+        let mut s = state_with_loop();
+        assert!(s.halve_loop());
+        assert_eq!(s.loop_a_secs, Some(10.0));
+        assert_eq!(s.loop_b_secs, Some(15.0));
+    }
+
+    #[test]
+    fn center_view_on_loop_zooms_and_scrolls() {
+        let mut s = state_with_loop();
+        s.panel_width = 600.0;
+        s.center_view_on_loop();
+        // Zoom: 600 * 0.6 / 10 = 36 px/s
+        assert!((s.zoom - 36.0).abs() < 0.01);
+        // Midden van de loop (15s) gecentreerd: visible = 600/36 ≈ 16,67s
+        let visible = 600.0 / s.zoom;
+        let expected_scroll = (15.0 - visible / 2.0).clamp(0.0, 60.0 - visible);
+        assert!((s.scroll_offset - expected_scroll).abs() < 0.01);
+    }
+
+    #[test]
+    fn center_view_on_loop_requires_valid_loop() {
+        let mut s = WaveformState::default();
+        s.duration_secs = 60.0;
+        s.panel_width = 600.0;
+        // Geen loop → niets doen (geen panic, zoom ongewijzigd)
+        s.center_view_on_loop();
+        assert_eq!(s.zoom, 50.0);
+        assert_eq!(s.scroll_offset, 0.0);
+    }
+
+    #[test]
+    fn center_view_on_pos_scrolls() {
+        let mut s = WaveformState::default();
+        s.duration_secs = 60.0;
+        s.panel_width = 600.0;
+        s.zoom = 50.0;
+        s.center_view_on_pos(30.0);
+        // visible = 12s, scroll = 30 - 6 = 24
+        assert!((s.scroll_offset - 24.0).abs() < 0.01);
+    }
 }

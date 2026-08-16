@@ -721,6 +721,15 @@ impl eframe::App for MusicPlayerApp {
                             }
                         });
                     });
+
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Toetsen: J/L = markers A/B (Shift = +0,05s) · Shift+←/→ = loop verplaatsen · Ctrl+D/Ctrl+Shift+D = lengte · C = centreren · Enter = herstart · ←/→ = playhead · ↑/↓ = ±2s · Ctrl+R = reset",
+                        )
+                        .size(11.0)
+                        .color(egui::Color32::from_gray(130)),
+                    );
                 });
         }
 
@@ -797,6 +806,7 @@ impl eframe::App for MusicPlayerApp {
                                             loop_a_secs: Some(saved.loop_a_secs),
                                             loop_b_secs: Some(saved.loop_b_secs),
                                             error: None,
+                                            panel_width: 800.0,
                                         };
                                     }
                                     Err(e) => {

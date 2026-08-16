@@ -148,6 +148,25 @@ huidig afgespeelde nummer.
 - **Scroll:** zoom in/uit op de waveform
 - **Pitch/Tempo:** schuifregelaars voor pitch (semitones) en tempo
 
+### Loop bewerken met het toetsenbord
+
+Zolang de waveform-editor open is, hebben deze toetsen voorrang op de
+bibliotheek-navigatie (na sluiten met `0` werkt alles weer normaal):
+
+| Toets | Actie |
+|---|---|
+| `J` / `Shift+J` | Marker A −/+ 0,05 s |
+| `L` / `Shift+L` | Marker B −/+ 0,05 s |
+| `Shift+←` / `Shift+→` | Hele loop verplaatsen (op eigen lengte) |
+| `Ctrl+D` / `Ctrl+Shift+D` | Loop lengte verdubbelen / halveren (A blijft staan) |
+| `←` / `→` | Playhead −/+ 0,2 s |
+| `↑` / `↓` | Spoelen ±2 s |
+| `C` | Weergave centreren op de loop |
+| `Enter` | Loop herstarten (seek naar A en afspelen) |
+| `Ctrl+R` | Zoom/scroll resetten |
+| `[` / `]` / `\` | Loop A / B zetten · loop wissen (altijd actief) |
+| `Ctrl+S` | Loop opslaan |
+
 ### Loops opslaan
 
 1. Zet A-B markers in de waveform.

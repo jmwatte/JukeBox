@@ -66,6 +66,13 @@ impl MusicPlayerApp {
             return;
         }
 
+        // --- WAVEFORM EDITOR TOETSEN (alleen actief zolang het venster open is) ---
+        // Zolang het venster open is, hebben de bewerkingstoetsen (J/L/C/←/→/…)
+        // voorrang op de bibliotheek-navigatie; na sluiten werkt alles weer normaal.
+        if self.handle_waveform_editor_keys(ctx) {
+            return;
+        }
+
         // --- ESCAPE ---
         if shortcuts::check_action(&cfg, ctx, "Escape") {
             self.selected_tracks.clear();
@@ -223,6 +230,7 @@ impl MusicPlayerApp {
                                     loop_a_secs: self.playback.loop_a,
                                     loop_b_secs: self.playback.loop_b,
                                     error: None,
+                                    panel_width: 800.0,
                                 };
                             }
                             Err(e) => {
@@ -236,6 +244,7 @@ impl MusicPlayerApp {
                                     loop_a_secs: None,
                                     loop_b_secs: None,
                                     error: Some(e),
+                                    panel_width: 800.0,
                                 };
                             }
                         }
@@ -954,5 +963,248 @@ impl MusicPlayerApp {
             }
             return;
         }
+    }
+
+    /// Stuur de huidige A-B loop uit de waveform-editor naar de audio-thread.
+    fn sync_waveform_loop_to_player(&mut self) {
+        match (
+            self.waveform_state.loop_a_secs,
+            self.waveform_state.loop_b_secs,
+        ) {
+            (Some(a), Some(b)) => {
+                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
+            }
+            (None, None) => {
+                let _ = self.playback.player_tx.send(PlayerCommand::ClearLoop);
+            }
+            (Some(a), None) => {
+                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
+            }
+            (None, Some(b)) => {
+                let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
+            }
+        }
+    }
+
+    /// Toetsenbord-bewerking van de A-B loop in de waveform-editor (geïnspireerd
+    /// op LoopMachine). Geeft `true` terug als een toets is verwerkt; dan stopt
+    /// de normale navigatie voor deze frame.
+    ///
+    /// Toetsen: J/Shift+J = marker A ±0,05s · L/Shift+L = marker B ±0,05s ·
+    /// Shift+←/→ = hele loop verplaatsen · Ctrl+D/Ctrl+Shift+D = lengte verdubbelen/
+    /// halveren · ←/→ = playhead ±0,2s · ↑/↓ = ±2s spoelen · C = centreren op loop ·
+    /// Enter = loop herstarten · Ctrl+R = zoom/scroll resetten.
+    fn handle_waveform_editor_keys(&mut self, ctx: &egui::Context) -> bool {
+        if !self.show_waveform {
+            return false;
+        }
+
+        // Modifier-bewuste toetschecks (zonder modifiers = alleen die toets).
+        let plain = |k: egui::Key| {
+            ctx.input(|i| {
+                i.key_pressed(k) && !i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt
+            })
+        };
+        let shift = |k: egui::Key| {
+            ctx.input(|i| {
+                i.key_pressed(k) && i.modifiers.shift && !i.modifiers.ctrl && !i.modifiers.alt
+            })
+        };
+        let ctrl = |k: egui::Key| {
+            ctx.input(|i| {
+                i.key_pressed(k) && i.modifiers.ctrl && !i.modifiers.shift && !i.modifiers.alt
+            })
+        };
+        let ctrl_shift = |k: egui::Key| {
+            ctx.input(|i| {
+                i.key_pressed(k) && i.modifiers.ctrl && i.modifiers.shift && !i.modifiers.alt
+            })
+        };
+
+        let has_track =
+            self.waveform_state.path.is_some() && !self.waveform_state.samples.is_empty();
+        // Spelen/zoeken kan alleen als de waveform-track ook daadwerkelijk in de
+        // main player speelt (de waveform-editor delegeert playback aan de player).
+        let playing_this_track = self.playback.now_playing_path.is_some()
+            && self.playback.now_playing_path == self.waveform_state.path;
+
+        let seek = |app: &mut MusicPlayerApp, pos: f32| {
+            let pos = pos.clamp(0.0, app.waveform_state.duration_secs);
+            let _ = app.playback.player_tx.send(PlayerCommand::SeekTo(pos));
+            app.waveform_state.center_view_on_pos(pos);
+        };
+
+        // ── Marker A: J / Shift+J (0,05s) ──
+        if plain(egui::Key::J) {
+            if self.waveform_state.nudge_a(-0.05) {
+                self.sync_waveform_loop_to_player();
+                self.playback._status_message = format!(
+                    "Loop A: {:.2}s",
+                    self.waveform_state.loop_a_secs.unwrap_or(0.0)
+                );
+            }
+            return true;
+        }
+        if shift(egui::Key::J) {
+            if self.waveform_state.nudge_a(0.05) {
+                self.sync_waveform_loop_to_player();
+                self.playback._status_message = format!(
+                    "Loop A: {:.2}s",
+                    self.waveform_state.loop_a_secs.unwrap_or(0.0)
+                );
+            }
+            return true;
+        }
+
+        // ── Marker B: L / Shift+L (0,05s) ──
+        if plain(egui::Key::L) {
+            if self.waveform_state.nudge_b(-0.05) {
+                self.sync_waveform_loop_to_player();
+                self.playback._status_message = format!(
+                    "Loop B: {:.2}s",
+                    self.waveform_state.loop_b_secs.unwrap_or(0.0)
+                );
+            }
+            return true;
+        }
+        if shift(egui::Key::L) {
+            if self.waveform_state.nudge_b(0.05) {
+                self.sync_waveform_loop_to_player();
+                self.playback._status_message = format!(
+                    "Loop B: {:.2}s",
+                    self.waveform_state.loop_b_secs.unwrap_or(0.0)
+                );
+            }
+            return true;
+        }
+
+        // ── Hele loop verplaatsen: Shift+← / Shift+→ (op eigen lengte) ──
+        if shift(egui::Key::ArrowLeft) {
+            if self.waveform_state.shift_loop_left() {
+                self.sync_waveform_loop_to_player();
+                if playing_this_track {
+                    if let Some(a) = self.waveform_state.loop_a_secs {
+                        seek(self, a);
+                    }
+                }
+                self.playback._status_message = "Loop naar links verplaatst".to_string();
+            }
+            return true;
+        }
+        if shift(egui::Key::ArrowRight) {
+            if self.waveform_state.shift_loop_right() {
+                self.sync_waveform_loop_to_player();
+                if playing_this_track {
+                    if let Some(a) = self.waveform_state.loop_a_secs {
+                        seek(self, a);
+                    }
+                }
+                self.playback._status_message = "Loop naar rechts verplaatst".to_string();
+            }
+            return true;
+        }
+
+        // ── Lengte verdubbelen / halveren: Ctrl+D / Ctrl+Shift+D ──
+        if ctrl(egui::Key::D) {
+            if self.waveform_state.double_loop() {
+                self.sync_waveform_loop_to_player();
+                self.playback._status_message = "Loop lengte verdubbeld".to_string();
+            }
+            return true;
+        }
+        if ctrl_shift(egui::Key::D) {
+            if self.waveform_state.halve_loop() {
+                self.sync_waveform_loop_to_player();
+                self.playback._status_message = "Loop lengte gehalveerd".to_string();
+            }
+            return true;
+        }
+
+        // ── View centreren op loop: C ──
+        if plain(egui::Key::C) {
+            self.waveform_state.center_view_on_loop();
+            self.playback._status_message = "Weergave gecentreerd op loop".to_string();
+            return true;
+        }
+
+        // ── Loop herstarten (seek naar A & spelen): Enter ──
+        if plain(egui::Key::Enter) {
+            if let (Some(a), Some(b)) = (
+                self.waveform_state.loop_a_secs,
+                self.waveform_state.loop_b_secs,
+            ) {
+                if b > a && has_track {
+                    if let Some(ref path) = self.waveform_state.path {
+                        let _ = self
+                            .playback
+                            .player_tx
+                            .send(PlayerCommand::ReplaceQueue(vec![path.clone()]));
+                        let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                        let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                        let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(a));
+                        self.waveform_state.center_view_on_pos(a);
+                        self.playback._status_message = format!("Loop herstart van {:.2}s", a);
+                    }
+                } else {
+                    self.playback._status_message = "Geen A-B loop om te herstarten".to_string();
+                }
+            }
+            return true;
+        }
+
+        // ── Playhead nudgen: ← / → (0,2s) ──
+        if plain(egui::Key::ArrowLeft) {
+            if playing_this_track {
+                let pos = self.playback.now_playing_position - 0.20;
+                seek(self, pos);
+            } else {
+                self.playback._status_message =
+                    "Speel de track eerst af (Space) om te spoelen".to_string();
+            }
+            return true;
+        }
+        if plain(egui::Key::ArrowRight) {
+            if playing_this_track {
+                let pos = self.playback.now_playing_position + 0.20;
+                seek(self, pos);
+            } else {
+                self.playback._status_message =
+                    "Speel de track eerst af (Space) om te spoelen".to_string();
+            }
+            return true;
+        }
+
+        // ── Spoelen: ↑ / ↓ (2s) ──
+        if plain(egui::Key::ArrowUp) {
+            if playing_this_track {
+                let pos = self.playback.now_playing_position + 2.0;
+                seek(self, pos);
+            } else {
+                self.playback._status_message =
+                    "Speel de track eerst af (Space) om te spoelen".to_string();
+            }
+            return true;
+        }
+        if plain(egui::Key::ArrowDown) {
+            if playing_this_track {
+                let pos = self.playback.now_playing_position - 2.0;
+                seek(self, pos);
+            } else {
+                self.playback._status_message =
+                    "Speel de track eerst af (Space) om te spoelen".to_string();
+            }
+            return true;
+        }
+
+        // ── Zoom/scroll resetten: Ctrl+R ──
+        if ctrl(egui::Key::R) {
+            self.waveform_state.zoom = 50.0;
+            self.waveform_state.scroll_offset = 0.0;
+            self.playback._status_message = "Zoom/scroll gereset".to_string();
+            return true;
+        }
+
+        false
     }
 }
