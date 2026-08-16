@@ -43,7 +43,7 @@ Notities:
 
 ## Fase 0 — Voorbereiding
 
-- [ ] `Cargo.lock` uit `.gitignore` halen en committen.
+- [x] `Cargo.lock` uit `.gitignore` halen en committen.
       Zolang de lock niet gecommit is, bouwt elke machine een andere dependency-tree en
       zijn upgrades niet reproduceerbaar testbaar of terug te draaien.
       Validatie: `cargo build` is na commit "up to date" zonder netwerk.
@@ -54,9 +54,9 @@ Notities:
 | # | Taak | Bestanden | Actie | Validatie | Commit |
 |---|---|---|---|---|---|
 | 1 | lru verwijderen | `Cargo.toml` | Crate wordt nergens gebruikt (dode dependency) — weghalen | `cargo build` | `Remove unused lru dependency` |
-| 2 | rand 0.8 → 0.10 | `src/player.rs`, `Cargo.toml` | Alleen `shuffle_vec`: `thread_rng()` → `rand::rng()`. Doe dit vóór of vlak na rodio (rodio 0.22 brengt rand 0.10 mee) | `cargo test` | `Migrate rand to 0.10` |
-| 3 | toml 0.8 → 1.1 | `src/config.rs`, `src/ui/render.rs`, `Cargo.toml` | Gebruik is alleen `toml::from_str`/`to_string` — kans is groot dat er nul code-wijzigingen nodig zijn | `cargo test` + config laadt | `Update toml to 1.1` |
-| 4 | lofty 0.22 → 0.25 | `src/scanner.rs`, `src/ui/edit.rs`, `src/ui/navigation.rs`, `Cargo.toml` | Slaat de yanked 0.23.x over. Gebruik: `Probe`, `ItemKey`/`ItemValue`, `TagType`, `TagExt`, `WriteOptions`. Compile-and-fix; let op `TagType`- en fout-API | `cargo test` + tags lezen/editen | `Update lofty to 0.25` |
+| 2 | rand 0.8 → 0.10 | `src/player.rs`, `src/ui/navigation.rs`, `Cargo.toml` | `thread_rng()` → `rng()`, `gen_range` → `random_range` (`RngExt`), `shuffle` via `SliceRandom`. Bleek ook gebruikt in `RandomAlbum` (navigation.rs) | `cargo test` | `Migrate rand to 0.10` |
+| 3 | toml 0.8 → 1.1 | `src/config.rs`, `src/ui/render.rs`, `Cargo.toml` | Gebruik is alleen `toml::from_str`/`to_string` — nul code-wijzigingen nodig geweest | `cargo test` + config laadt | `Update toml to 1.1` |
+| 4 | lofty 0.22 → 0.25 | `src/scanner.rs`, `src/ui/edit.rs`, `src/ui/navigation.rs`, `Cargo.toml` | `tag.get`/`remove_key` nemen `ItemKey` nu by value (was `&ItemKey`). `ItemKey::Unknown` is verwijderd in lofty 0.23 — de custom-key-fallbacks (`----:com.apple.itunes:genre`, `originalyear`, `toryear`) zijn verwijderd; `ORIGINALYEAR` (FLAC/OGG) wordt nu automatisch als `OriginalReleaseDate` gelezen | `cargo test` + tags lezen/editen | `Update lofty to 0.25` |
 
 ## Fase 2 — Audio-kern: rodio 0.19 → 0.22
 
