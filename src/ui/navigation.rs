@@ -695,11 +695,11 @@ impl MusicPlayerApp {
         // --- R: RANDOM ALBUM ---
         if shortcuts::check_action(&cfg, ctx, "RandomAlbum") {
             if !lib.artists.is_empty() {
-                use rand::Rng;
-                let mut rng = rand::thread_rng();
-                let random_artist = rng.gen_range(0..lib.artists.len());
+                use rand::RngExt;
+                let mut rng = rand::rng();
+                let random_artist = rng.random_range(0..lib.artists.len());
                 if !lib.artists[random_artist].albums.is_empty() {
-                    let random_album = rng.gen_range(0..lib.artists[random_artist].albums.len());
+                    let random_album = rng.random_range(0..lib.artists[random_artist].albums.len());
                     self.selected_artist = random_artist;
                     self.selected_album = random_album;
                     self.current_level = NavLevel::Album;

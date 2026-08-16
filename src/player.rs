@@ -1,6 +1,6 @@
 use crossbeam_channel::{Receiver, Sender};
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::rng;
 use rodio::{Decoder, OutputStream, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
@@ -403,7 +403,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
 
 /// Fisher-Yates shuffle via `rand` crate
 fn shuffle_vec<T>(vec: &mut Vec<T>) {
-    vec.shuffle(&mut thread_rng());
+    vec.shuffle(&mut rng());
 }
 
 #[cfg(test)]
