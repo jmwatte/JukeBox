@@ -405,3 +405,47 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
 fn shuffle_vec<T>(vec: &mut Vec<T>) {
     vec.shuffle(&mut thread_rng());
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Regressietest voor de rodio-patch (byte_len in ReadSeekSource).
+    ///
+    /// Symphonia's FLAC-reader kan niet seaken zonder `byte_len()`:
+    /// zonder de patch faalt elke seek met SeekErrorKind::Unseekable en
+    /// toonde de app ten onrechte "Spoelen wordt niet ondersteund".
+    #[test]
+    fn symphonia_flac_seek_works() {
+        // Kleine test-FLAC (1s sinus, gegenereerd met ffmpeg)
+        let bytes = include_bytes!("../assets/seek_test.flac");
+        let mut decoder = Decoder::new(Cursor::new(bytes.to_vec())).expect("FLAC decoderen");
+
+        let total = decoder
+            .total_duration()
+            .expect("totale duur moet bekend zijn voor FLAC");
+        assert!(total.as_secs() >= 1, "onverwachte totale duur: {:?}", total);
+
+        // Seek naar halverwege het nummer — dit faalde vóór de byte_len-patch.
+        let target = total / 2;
+        match Source::try_seek(&mut decoder, target) {
+            Ok(()) => {}
+            Err(e) => panic!("seek naar {:?} faalt: {:?}", target, e),
+        }
+
+        // Na de seek moeten er nog samples leesbaar zijn.
+        let mut read = 0usize;
+        for _ in 0..(total.as_secs_f32() * 8000.0) as usize {
+            if decoder.next().is_none() {
+                break;
+            }
+            read += 1;
+        }
+        assert!(
+            read > 1000,
+            "na seek werden slechts {} samples gelezen",
+            read
+        );
+    }
+}
