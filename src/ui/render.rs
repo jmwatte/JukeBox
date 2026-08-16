@@ -1467,11 +1467,18 @@ impl MusicPlayerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        ui.add_space(bar_height + 8.0);
+        ui.add_space(bar_height + 6.0);
         ui.vertical_centered(|ui| {
-            // ── Hoes van het huidige nummer (flexibel, past ook in een klein venster) ──
+            // ── Hoes van het huidige nummer ──
+            // De hoes vult alle beschikbare ruimte: vierkant, beperkt door de laagste
+            // van breedte en hoogte, minus de ruimte die de voortgangsbalk + tussenruimte
+            // onder de hoes nodig hebben. Zo blijven er geen lege zwarte stroken over.
             let avail = ui.available_size();
-            let cover_box = (avail.x.min(avail.y - 100.0)).max(80.0).min(420.0);
+            let bar_h = 30.0;
+            let spacing = 12.0;
+            let cover_box = (avail.x.min(avail.y - bar_h - spacing))
+                .max(60.0)
+                .min(420.0);
             let cover_box = egui::vec2(cover_box, cover_box);
             let cover = self.find_cover_for_path(self.playback.now_playing_path.as_deref());
             if let Some(path) = cover {
@@ -1497,11 +1504,10 @@ impl MusicPlayerApp {
                 );
             }
 
-            ui.add_space(12.0);
+            ui.add_space(spacing);
 
             // ── Titel bovenop de voortgangsbalk ──
             let bar_w = ui.available_width().min(440.0);
-            let bar_h = 30.0;
             let (bar_rect, _) =
                 ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
             ui.painter()
