@@ -803,8 +803,13 @@ impl eframe::App for MusicPlayerApp {
                 });
         }
 
-        // Compacte modus: verberg bibliotheek, alleen now-playing balk
+        // Compacte modus: minimalistische speler-view (geen bibliotheek).
+        // Vroeger stond hier alleen een `return`, waardoor het hele venster
+        // leeg (zwart) bleef — nu wordt een echte speler getoond.
         if self.playback.compact_mode {
+            egui::CentralPanel::default().show(ui, |ui| {
+                self.render_compact_player(ui);
+            });
             ctx.request_repaint();
             return;
         }
@@ -1410,6 +1415,166 @@ impl MusicPlayerApp {
                 });
             });
         }
+    }
+
+    /// Compacte modus (F11): minimalistische speler-view zonder bibliotheek.
+    fn render_compact_player(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(24.0);
+        ui.vertical_centered(|ui| {
+            // ── Track titel ──
+            let title = self
+                .playback
+                .now_playing
+                .clone()
+                .unwrap_or_else(|| "Geen nummer geladen".to_string());
+            ui.label(RichText::new(&title).size(26.0).strong());
+
+            // ── Foutmelding ──
+            if let Some(ref err) = self.playback.status_error {
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!("⚠ {}", err))
+                        .size(14.0)
+                        .color(Color32::from_rgb(255, 100, 100)),
+                );
+            }
+
+            ui.add_space(24.0);
+
+            // ── Voortgangsbalk + tijd ──
+            let pos = self.playback.now_playing_position;
+            let dur = self.playback.now_playing_duration;
+            if dur > 0.0 {
+                let fraction = (pos / dur).clamp(0.0, 1.0);
+                let bar = egui::ProgressBar::new(fraction)
+                    .show_percentage()
+                    .desired_width(520.0);
+                ui.add(bar);
+                let time_text = format!(
+                    "{}:{:02}  /  {}:{:02}",
+                    (pos / 60.0) as u32,
+                    pos as u32 % 60,
+                    (dur / 60.0) as u32,
+                    dur as u32 % 60
+                );
+                ui.label(RichText::new(time_text).size(14.0).color(Color32::GRAY));
+            }
+
+            ui.add_space(20.0);
+
+            // ── Bedieningsknoppen ──
+            let btn_size = egui::vec2(52.0, 52.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .add_sized(btn_size, egui::Button::new(RichText::new("⏮").size(24.0)))
+                    .on_hover_text("2 seconden terugspoelen")
+                    .clicked()
+                {
+                    let _ = self.playback.player_tx.send(PlayerCommand::Rewind);
+                }
+                if ui
+                    .add_sized(btn_size, egui::Button::new(RichText::new("⏯").size(24.0)))
+                    .on_hover_text("Pauzeren / Hervatten")
+                    .clicked()
+                {
+                    let _ = self.playback.player_tx.send(PlayerCommand::PlayPause);
+                }
+                if ui
+                    .add_sized(btn_size, egui::Button::new(RichText::new("⏭").size(24.0)))
+                    .on_hover_text("Volgend nummer")
+                    .clicked()
+                {
+                    let _ = self.playback.player_tx.send(PlayerCommand::Skip);
+                }
+                if ui
+                    .add_sized(btn_size, egui::Button::new(RichText::new("⏩").size(24.0)))
+                    .on_hover_text("2 seconden vooruitspoelen")
+                    .clicked()
+                {
+                    let _ = self.playback.player_tx.send(PlayerCommand::Forward);
+                }
+            });
+
+            ui.add_space(16.0);
+
+            // ── Volume + modi ──
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("🔉").size(18.0)).clicked() {
+                    self.playback.volume = (self.playback.volume - 0.1).max(0.0);
+                    let _ = self
+                        .playback
+                        .player_tx
+                        .send(PlayerCommand::SetVolume(self.playback.volume));
+                }
+                let vol_percent = (self.playback.volume * 100.0) as u32;
+                ui.label(
+                    RichText::new(format!("🔊 {}%", vol_percent))
+                        .size(14.0)
+                        .color(Color32::GRAY),
+                );
+                if ui.button(RichText::new("🔊+").size(18.0)).clicked() {
+                    self.playback.volume = (self.playback.volume + 0.1).min(1.0);
+                    let _ = self
+                        .playback
+                        .player_tx
+                        .send(PlayerCommand::SetVolume(self.playback.volume));
+                }
+
+                ui.separator();
+
+                let repeat_text = match self.playback.repeat_mode {
+                    RepeatMode::None => "Herhalen: uit",
+                    RepeatMode::One => "🔂 Herhalen: 1",
+                    RepeatMode::All => "🔁 Herhalen: alles",
+                };
+                if ui
+                    .button(RichText::new(repeat_text).size(14.0))
+                    .on_hover_text("Herhaalmodus wisselen (X)")
+                    .clicked()
+                {
+                    let _ = self.playback.player_tx.send(PlayerCommand::ToggleRepeat);
+                }
+
+                let shuffle_text = if self.playback.shuffle_on {
+                    "🔀 Shuffle: aan"
+                } else {
+                    "🔀 Shuffle: uit"
+                };
+                if ui
+                    .button(RichText::new(shuffle_text).size(14.0))
+                    .on_hover_text("Shuffle wisselen (F8)")
+                    .clicked()
+                {
+                    let _ = self.playback.player_tx.send(PlayerCommand::ToggleShuffle);
+                }
+
+                // A-B loop indicator
+                if let (Some(a), Some(b)) = (self.playback.loop_a, self.playback.loop_b) {
+                    ui.label(
+                        RichText::new(format!(
+                            "🔁 [{:02}:{:02} → {:02}:{:02}]",
+                            (a / 60.0) as u32,
+                            a as u32 % 60,
+                            (b / 60.0) as u32,
+                            b as u32 % 60
+                        ))
+                        .size(14.0)
+                        .color(Color32::from_rgb(255, 200, 100)),
+                    );
+                }
+            });
+
+            ui.add_space(40.0);
+
+            // ── Hint ──
+            ui.label(
+                RichText::new(
+                    "Toetsenbordbediening blijft actief — druk op F11 om de compacte modus te verlaten",
+                )
+                .size(12.0)
+                .color(Color32::GRAY),
+            );
+        });
     }
 
     fn render_tracklist_view_inline(
