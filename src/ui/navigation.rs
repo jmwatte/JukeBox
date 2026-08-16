@@ -62,7 +62,7 @@ impl MusicPlayerApp {
         }
 
         // --- NAVIGATIE — alleen als geen widget toetsenbordfocus heeft ---
-        if ctx.wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() {
             return;
         }
 

@@ -14,8 +14,8 @@ codegen-units = 1
 
 [dependencies]
 # --- GUI Framework (egui via eframe) ---
-eframe = "0.28" # Bevat egui.
-egui_extras = { version = "0.28", features = ["all_loaders"] } # Noodzakelijk om images te renderen
+eframe = "0.36" # Bevat egui.
+egui_extras = { version = "0.36", features = ["all_loaders"] } # Noodzakelijk om images te renderen
 image = { version = "0.25", features = ["jpeg", "png"] } # Ondersteuning voor de album covers
 
 # --- Audio Weergave & Decodering ---

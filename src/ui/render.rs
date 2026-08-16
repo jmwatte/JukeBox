@@ -10,7 +10,8 @@ use std::path::Path;
 use super::app::MusicPlayerApp;
 
 impl eframe::App for MusicPlayerApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         // --- Verwerk Now Playing events ---
         while let Ok(event) = self.playback.player_event_rx.try_recv() {
             match event {
@@ -51,7 +52,7 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- ZOEK FUNCTIE (/) ---
-        if !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Slash)) {
+        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Slash)) {
             self.is_search_active = true;
             self.search_query.clear();
             self.filtered_library = None;
@@ -59,7 +60,7 @@ impl eframe::App for MusicPlayerApp {
             self.selected_artist = 0;
         }
 
-        self.handle_keyboard_navigation(ctx);
+        self.handle_keyboard_navigation(&ctx);
         // --- TRACK DETAILS POPUP ---
         // if self.show_track_details {
         //     // self.show_track_details_popup(ctx);
@@ -67,10 +68,10 @@ impl eframe::App for MusicPlayerApp {
 
         // Optioneel: Maak een inschuifbaar zijpaneel dat alleen verschijnt als er iets geselecteerd is
         if !self.tracks_to_edit.is_empty() {
-            egui::SidePanel::right("batch_edit_panel")
-                .default_width(350.0) // Breedte van het paneel
+            egui::Panel::right("batch_edit_panel")
+                .default_size(350.0) // Breedte van het paneel
                 .resizable(true)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     // Hier roepen we de nieuwe functie aan!
                     self.show_batch_edit_panel(ui);
                 });
@@ -79,10 +80,10 @@ impl eframe::App for MusicPlayerApp {
         // --- WACHTRIJ PANEEL ---
         if self.playback.show_queue {
             let tx = self.playback.player_tx.clone();
-            egui::SidePanel::right("queue_panel")
-                .default_width(300.0)
+            egui::Panel::right("queue_panel")
+                .default_size(300.0)
                 .resizable(true)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     ui.heading("Wachtrij");
                     ui.separator();
 
@@ -139,7 +140,7 @@ impl eframe::App for MusicPlayerApp {
             egui::Window::new("Sneltoetsen & Help")
                 .collapsible(false)
                 .resizable(false)
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     // Configuratie fouten (indien aanwezig)
                     if !self.config_errors.is_empty() {
                         ui.label(
@@ -377,7 +378,7 @@ impl eframe::App for MusicPlayerApp {
 
         // --- Laadscherm tijdens scan ---
         if self.library.is_none() {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Bibliotheek indexeren...").size(24.0));
@@ -397,7 +398,7 @@ impl eframe::App for MusicPlayerApp {
             || self.playback.status_error.is_some()
             || !self.playback._status_message.is_empty()
         {
-            egui::TopBottomPanel::bottom("now_playing_panel").show(ctx, |ui| {
+            egui::Panel::bottom("now_playing_panel").show(ui, |ui| {
                 ui.add_space(6.0);
 
                 // Track info
@@ -528,7 +529,7 @@ impl eframe::App for MusicPlayerApp {
                 .collapsible(false)
                 .resizable(true)
                 .default_size([800.0, 350.0])
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     // Bestandsinfo
                     if let Some(ref path) = self.waveform_state.path {
                         let file_name = std::path::Path::new(path)
@@ -723,7 +724,7 @@ impl eframe::App for MusicPlayerApp {
                 .id(egui::Id::new("loop_library_window"))
                 .resizable(true)
                 .default_size([500.0, 400.0])
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     if self.saved_loops.is_empty() {
                         ui.label("Geen opgeslagen loops. Maak een A-B loop en klik 'Save Loop'.");
                     } else {
@@ -815,7 +816,7 @@ impl eframe::App for MusicPlayerApp {
                 .resizable(false)
                 .default_width(600.0)
                 .anchor(egui::Align2::CENTER_TOP, [0.0, 50.0])
-                .show(ctx, |ui| {
+                .show(&ctx, |ui| {
                     let response = ui.add(
                         egui::TextEdit::singleline(&mut self.search_query)
                             .hint_text("Typ om te zoeken... (Esc om te sluiten)")
@@ -879,7 +880,7 @@ impl eframe::App for MusicPlayerApp {
             .or(self.filters.cached_filtered.as_ref())
             .or(self.library.as_ref());
         let Some(current_lib) = current_lib else {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.label(egui::RichText::new("Bibliotheek scannen...").size(24.0));
                 });
@@ -893,7 +894,7 @@ impl eframe::App for MusicPlayerApp {
             && self.filtered_library.is_none()
             && !self.is_picker_active()
         {
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     ui.label(
@@ -928,7 +929,7 @@ impl eframe::App for MusicPlayerApp {
         // --- LEEGE ZOEKRESULTATEN ---
         if current_lib.artists.is_empty() && self.filtered_library.is_some() {
             let search_q = self.search_query.clone();
-            egui::CentralPanel::default().show(ctx, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
                     ui.label(
@@ -968,7 +969,7 @@ impl eframe::App for MusicPlayerApp {
                 // Genre picker
                 if let FilterNode::Genre(_) = node {
                     let genre_sel_count = self.selected_tracks.len();
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if genre_sel_count > 0 {
                                 ui.label(
@@ -1027,7 +1028,7 @@ impl eframe::App for MusicPlayerApp {
                 // Year picker
                 if let FilterNode::Year(_) = node {
                     let y_sel_count = self.selected_tracks.len();
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if y_sel_count > 0 {
                                 ui.label(
@@ -1089,7 +1090,7 @@ impl eframe::App for MusicPlayerApp {
                 // Composer picker
                 if let FilterNode::Composer(_) = node {
                     let c_sel_count = self.selected_tracks.len();
-                    egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         ui.horizontal(|ui| {
                             if c_sel_count > 0 {
                                 ui.label(
@@ -1159,7 +1160,7 @@ impl eframe::App for MusicPlayerApp {
         let mut sts = self.scroll_to_selection;
         let vm = self.view_mode.clone();
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if sel_count > 0 {
                     ui.label(
@@ -1215,7 +1216,7 @@ impl eframe::App for MusicPlayerApp {
                 ViewMode::AlbumCover if cl != NavLevel::Track => {
                     Self::render_cover_view_inline(
                         ui,
-                        ctx,
+                        &ctx,
                         current_lib,
                         &mut sa,
                         &mut sal,
@@ -1226,7 +1227,7 @@ impl eframe::App for MusicPlayerApp {
                 _ => {
                     Self::render_tracklist_view_inline(
                         ui,
-                        ctx,
+                        &ctx,
                         current_lib,
                         &mut sa,
                         &mut sal,
@@ -1541,10 +1542,8 @@ impl MusicPlayerApp {
                             let text =
                                 format!("{}{}{}{}", track_num_str, mark_str, track.title, dur_str);
 
-                            let label = egui::SelectableLabel::new(
-                                is_selected,
-                                RichText::new(&text).size(16.0),
-                            );
+                            let label = egui::Button::new(RichText::new(&text).size(16.0))
+                                .selected(is_selected);
                             let resp = ui.add_sized(egui::vec2(full_width, row_height), label);
 
                             if resp.clicked() {

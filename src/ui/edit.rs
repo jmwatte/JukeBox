@@ -457,11 +457,16 @@ impl MusicPlayerApp {
             );
 
             // ---- Left panel ----
-            let mut left_ui = ui.child_ui(left_rect, *ui.layout(), None);
+            let mut left_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(left_rect)
+                    .layout(*ui.layout())
+                    .id_salt("batch_edit_left_panel"),
+            );
             left_ui.vertical(|ui| {
                 ui.label(RichText::new("Bestanden:").strong().size(11.0));
                 ScrollArea::vertical()
-                    .id_source("batch_files_scroll")
+                    .id_salt("batch_files_scroll")
                     .show(ui, |ui| {
                         // We clonen de lijst om borrow conflicts te voorkomen tijdens iteratie en mutatie
                         let tracks_to_edit_clone = self.tracks_to_edit.clone();
@@ -521,7 +526,12 @@ impl MusicPlayerApp {
             }
 
             // ---- Right panel ----
-            let mut right_ui = ui.child_ui(right_rect, *ui.layout(), None);
+            let mut right_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(right_rect)
+                    .layout(*ui.layout())
+                    .id_salt("batch_edit_right_panel"),
+            );
             right_ui.vertical(|ui| {
                 let current_file = self
                     .editing_track_path
@@ -539,7 +549,7 @@ impl MusicPlayerApp {
                     .size(11.0),
                 );
                 ScrollArea::vertical()
-                    .id_source("raw_tags_scroll")
+                    .id_salt("raw_tags_scroll")
                     .show(ui, |ui| {
                         if self.editing_track_path.is_some() {
                             ui.label(RichText::new(&self.raw_tags_display).monospace().size(10.0));

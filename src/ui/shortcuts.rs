@@ -328,7 +328,10 @@ mod tests {
             events,
             ..Default::default()
         };
-        let _ = ctx.run(raw, |_| {});
+        let mut full_output = ctx.run_ui(raw, |_| {});
+        // In egui 0.36 panikt epaint als de Context gedropt wordt met onverwerkte
+        // textures; in tests verwerken we ze niet, dus clear ze expliciet.
+        full_output.textures_delta.clear();
         ctx
     }
 

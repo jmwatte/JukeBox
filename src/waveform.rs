@@ -449,7 +449,7 @@ pub fn render_waveform(
     // Zoom met muiswiel
     if response.hovered() {
         ui.ctx().input(|i| {
-            let scroll = i.raw_scroll_delta.y;
+            let scroll = i.smooth_scroll_delta.y;
             if scroll != 0.0 {
                 let mouse_x = i
                     .pointer
