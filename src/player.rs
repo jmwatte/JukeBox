@@ -107,12 +107,26 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         if !s.empty() {
                             let pos = s.get_pos();
                             let new_pos = pos.saturating_sub(Duration::from_secs(2));
-                            let _ = s.try_seek(new_pos);
-                            let dur = current_track_duration
-                                .map(|d| d.as_secs_f32())
-                                .unwrap_or(0.0);
-                            let _ = event_tx
-                                .send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), dur));
+                            match s.try_seek(new_pos) {
+                                Ok(()) => {
+                                    if pending_seek.is_some() {
+                                        pending_seek = Some(new_pos);
+                                    }
+                                    let dur = current_track_duration
+                                        .map(|d| d.as_secs_f32())
+                                        .unwrap_or(0.0);
+                                    let _ = event_tx.send(PlayerEvent::PositionUpdate(
+                                        new_pos.as_secs_f32(),
+                                        dur,
+                                    ));
+                                }
+                                Err(e) => {
+                                    log::warn!("Spoelen terug mislukt: {:?}", e);
+                                    let _ = event_tx.send(PlayerEvent::PlaybackError(
+                                        "Spoelen wordt niet ondersteund voor dit bestand.".into(),
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -121,18 +135,33 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         if !s.empty() {
                             let pos = s.get_pos();
                             let new_pos = pos + Duration::from_secs(2);
-                            if let Some(dur) = current_track_duration {
-                                if new_pos < dur {
-                                    let _ = s.try_seek(new_pos);
-                                    let _ = event_tx.send(PlayerEvent::PositionUpdate(
-                                        new_pos.as_secs_f32(),
-                                        dur.as_secs_f32(),
-                                    ));
-                                }
+                            let in_bounds = if let Some(dur) = current_track_duration {
+                                new_pos < dur
                             } else {
-                                let _ = s.try_seek(new_pos);
-                                let _ = event_tx
-                                    .send(PlayerEvent::PositionUpdate(new_pos.as_secs_f32(), 0.0));
+                                true
+                            };
+                            if in_bounds {
+                                match s.try_seek(new_pos) {
+                                    Ok(()) => {
+                                        if pending_seek.is_some() {
+                                            pending_seek = Some(new_pos);
+                                        }
+                                        let dur = current_track_duration
+                                            .map(|d| d.as_secs_f32())
+                                            .unwrap_or(0.0);
+                                        let _ = event_tx.send(PlayerEvent::PositionUpdate(
+                                            new_pos.as_secs_f32(),
+                                            dur,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        log::warn!("Spoelen vooruit mislukt: {:?}", e);
+                                        let _ = event_tx.send(PlayerEvent::PlaybackError(
+                                            "Spoelen wordt niet ondersteund voor dit bestand."
+                                                .into(),
+                                        ));
+                                    }
+                                }
                             }
                         }
                     }

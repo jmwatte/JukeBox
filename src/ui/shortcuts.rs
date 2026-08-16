@@ -71,6 +71,11 @@ pub fn get_key_display(config: &HashMap<String, String>, action: &str) -> String
 }
 
 /// Controleer of een bepaalde toets-representatie is ingedrukt.
+///
+/// Belangrijk: leestekens zoals `;` en `'` worden vóór de generieke letter-arm
+/// afgehandeld. egui mapt ze op specifieke `Key`-varianten (`Key::Semicolon`,
+/// `Key::Quote`, …); de `Event::Text`-fallback dekt toetsenbordindelingen waar
+/// het teken op een andere fysieke toets zit (bv. AZERTY).
 fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
     match key_str {
         // Speciale toetsen
@@ -100,6 +105,18 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         "F12" => ctx.input(|i| i.key_pressed(Key::F12)),
         // Cijfers
         "0" => ctx.input(|i| i.key_pressed(Key::Num0)),
+        // Leestekens (vóór de generieke letter-arm!)
+        ";" => punctuation(ctx, &[Key::Semicolon, Key::Comma], &[";", ","]),
+        "'" => punctuation(ctx, &[Key::Quote, Key::Period], &["'", "."]),
+        "=" => punctuation(ctx, &[Key::Equals, Key::Plus], &["=", "+"]),
+        "-" => punctuation(ctx, &[Key::Minus], &["-"]),
+        "/" => punctuation(ctx, &[Key::Slash], &["/"]),
+        "?" => punctuation(ctx, &[Key::Questionmark], &["?"]),
+        "[" => punctuation(ctx, &[Key::OpenBracket], &["["]),
+        "]" => punctuation(ctx, &[Key::CloseBracket], &["]"]),
+        "\\" => punctuation(ctx, &[Key::Backslash], &["\\"]),
+        "," => punctuation(ctx, &[Key::Comma], &[","]),
+        "." => punctuation(ctx, &[Key::Period], &["."]),
         // Shift+Letter combinaties (generiek)
         s if s.starts_with("Shift+") && s.len() == 7 => {
             let c = s.chars().nth(6).unwrap();
@@ -118,7 +135,7 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
                 false
             }
         }
-        // Lettertoets: een enkele letter (hoofdletter = key, kleine letter = text event)
+        // Lettertoetsen: een enkele letter
         s if s.len() == 1 => {
             let c = s.chars().next().unwrap();
             if c.is_ascii_uppercase() {
@@ -136,60 +153,21 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
                 })
             }
         }
-        // Tekens zoals "/" of "?" — via Event::Text
-        s if s == ";" => ctx.input(|i| {
-            i.key_pressed(Key::Semicolon)
-                || i.key_pressed(Key::Comma)
-                || i.events
-                    .iter()
-                    .any(|e| matches!(e, egui::Event::Text(t) if t == ";" || t == ","))
-        }),
-        s if s == "'" => ctx.input(|i| {
-            i.key_pressed(Key::Period)
-                || i.events
-                    .iter()
-                    .any(|e| matches!(e, egui::Event::Text(t) if t == "'" || t == "."))
-        }),
-        s if s == "=" => ctx.input(|i| {
-            i.key_pressed(Key::Plus)
-                || i.events
-                    .iter()
-                    .any(|e| matches!(e, egui::Event::Text(t) if t == "=" || t == "+"))
-        }),
-        s if s == "-" => ctx.input(|i| {
-            i.key_pressed(Key::Minus)
-                || i.events
-                    .iter()
-                    .any(|e| matches!(e, egui::Event::Text(t) if t == "-"))
-        }),
-        s if s == "/" => ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Text(t) if t == "/"))
-        }),
-        s if s == "?" => ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Text(t) if t == "?"))
-        }),
-        s if s == "[" => ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Text(t) if t == "["))
-        }),
-        s if s == "]" => ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Text(t) if t == "]"))
-        }),
-        s if s == "\\" => ctx.input(|i| {
-            i.key_pressed(Key::Backslash)
-                || i.events
-                    .iter()
-                    .any(|e| matches!(e, egui::Event::Text(t) if t == "\\"))
-        }),
         _ => false,
     }
+}
+
+/// Controleer een leesteken: via het bijbehorende `Key`-event óf via een
+/// `Event::Text`-event (voor toetsenbordindelingen waar het teken op een
+/// andere fysieke toets zit). `keys`/`texts` zijn fallbacks voor verwante
+/// tekens (bv. `;` en `,` op AZERTY).
+fn punctuation(ctx: &egui::Context, keys: &[Key], texts: &[&str]) -> bool {
+    ctx.input(|i| {
+        keys.iter().any(|k| i.key_pressed(*k))
+            || i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Text(t) if texts.iter().any(|x| x == t)))
+    })
 }
 
 /// Controleer of een toetswaarde bekend is in `key_pressed`.
@@ -335,5 +313,100 @@ fn char_to_key(c: char) -> Option<Key> {
         'Y' | 'y' => Some(Key::Y),
         'Z' | 'z' => Some(Key::Z),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eframe::egui::Event;
+
+    /// Draai een egui-frame met gesimuleerde toetsgebeurtenissen en geef de Context terug.
+    fn run_events(events: Vec<Event>) -> egui::Context {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |_| {});
+        ctx
+    }
+
+    fn key_event(key: Key) -> Event {
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }
+    }
+
+    fn text_event(text: &str) -> Event {
+        Event::Text(text.to_string())
+    }
+
+    /// Windows/winit stuurt voor een lettertoets ZOWEL een Key-event als een Text-event.
+    fn press(key: Key, text: &str) -> Vec<Event> {
+        vec![key_event(key), text_event(text)]
+    }
+
+    #[test]
+    fn semicolon_is_detected() {
+        // ';' wordt door egui-winit gemapt naar Key::Semicolon + Text ";"
+        let ctx = run_events(press(Key::Semicolon, ";"));
+        assert!(key_pressed(&ctx, ";"), "';' moet Rewind triggeren");
+    }
+
+    #[test]
+    fn semicolon_key_only_detected() {
+        // Ook zonder Text-event moet de Key alleen al werken
+        let ctx = run_events(vec![key_event(Key::Semicolon)]);
+        assert!(key_pressed(&ctx, ";"));
+    }
+
+    #[test]
+    fn apostrophe_is_detected() {
+        // ''' wordt door egui-winit gemapt naar Key::Quote + Text "'"
+        let ctx = run_events(press(Key::Quote, "'"));
+        assert!(key_pressed(&ctx, "'"), "''' moet Forward triggeren");
+    }
+
+    #[test]
+    fn key_only_event_for_quote_detected() {
+        // Sommige backends sturen alleen een Key-event: Key::Quote moet volstaan
+        let ctx = run_events(vec![key_event(Key::Quote)]);
+        assert!(key_pressed(&ctx, "'"), "Key::Quote moet Forward triggeren");
+    }
+
+    #[test]
+    fn period_is_fallback_for_forward() {
+        // De bestaande AZERTY-fallback: '.' wordt ook geaccepteerd voor '''
+        let ctx = run_events(press(Key::Period, "."));
+        assert!(key_pressed(&ctx, "'"));
+    }
+
+    #[test]
+    fn text_only_event_still_detected() {
+        // Sommige backends sturen alleen een Text-event
+        let ctx = run_events(vec![text_event("'")]);
+        assert!(key_pressed(&ctx, "'"));
+    }
+
+    #[test]
+    fn letter_a_does_not_trigger_rewind() {
+        // Regressie: vroeger viel ';' in de generieke letter-arm en checkte die
+        // Key::A — waardoor de A-toets Rewind triggert. Dat mag niet meer.
+        let ctx = run_events(press(Key::A, "a"));
+        assert!(!key_pressed(&ctx, ";"));
+        assert!(!key_pressed(&ctx, "'"));
+    }
+
+    #[test]
+    fn check_action_for_rewind() {
+        let mut shortcuts = HashMap::new();
+        shortcuts.insert("Rewind".to_string(), ";".to_string());
+        let ctx = run_events(press(Key::Semicolon, ";"));
+        assert!(check_action(&shortcuts, &ctx, "Rewind"));
     }
 }
