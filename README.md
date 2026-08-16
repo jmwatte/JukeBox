@@ -256,13 +256,12 @@ MIT
 
 | Component | Technologie |
 |---|---|
-| GUI | egui / eframe 0.28 |
-| Audio output | rodio 0.19 (WASAPI) |
+| GUI | egui / eframe 0.36 |
+| Audio output | rodio 0.22 (WASAPI) |
 | Audio decodering | symphonia 0.5 |
-| Metadata (tags) | lofty 0.22 |
-| Time-stretching | rubato 0.15 |
+| Metadata (tags) | lofty 0.25 |
 | Parallel scanning | rayon, walkdir |
-| Serialisatie | bincode, serde, toml |
+| Serialisatie | bincode 2.0, serde, toml |
 | Concurrency | crossbeam-channel |
 
 ### Projectstructuur
@@ -277,7 +276,6 @@ src/
 ├── player.rs            # Audio-thread (afspelen, queue, repeat, shuffle)
 ├── loops.rs             # Opgeslagen loops (opslaan/laden)
 ├── waveform.rs          # Waveform decoderen + renderen
-├── waveform_player.rs   # Aparte waveform audio-thread (rubato)
 └── ui/
     ├── mod.rs           # Module export
     ├── app.rs           # MusicPlayerApp struct (velden + logica)
@@ -285,7 +283,9 @@ src/
     ├── navigation.rs    # Toetsenbordnavigatie + shortcuts
     ├── shortcuts.rs     # Shortcut systeem (validatie, repair)
     ├── types.rs         # Types (NavLevel, ViewMode, FilterNode)
-    └── edit.rs          # Tag-editor (single + batch)
+    ├── edit.rs          # Tag-editor (single + batch)
+    ├── filters.rs       # Filter-hulpfuncties
+    └── playback.rs      # Playback-state types
 
 config.toml              # Gebruikersconfiguratie
 library_cache.bin        # Bibliotheekcache (automatisch gegenereerd)
