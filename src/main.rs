@@ -62,6 +62,10 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(move |_cc| {
             egui_extras::install_image_loaders(&_cc.egui_ctx);
+            // Voeg Windows-systeemlettertypen toe als fallback voor symbolen/emoji
+            // die niet in de gebundelde egui-lettertypen zitten (anders zie je
+            // "□"-blokjes, bijv. voor ⟲, ⏹, ◢).
+            install_fallback_fonts(&_cc.egui_ctx);
             Ok(Box::new(ui::MusicPlayerApp::new(
                 app_config,
                 player_tx,
@@ -71,4 +75,34 @@ fn main() -> Result<(), eframe::Error> {
             )))
         }),
     )
+}
+
+/// Voeg Windows-systeemlettertypen toe als fallback (alleen gebruikt voor glyphs
+/// die in géén eerder lettertype zitten, dus de gewone tekst verandert niet).
+fn install_fallback_fonts(ctx: &eframe::egui::Context) {
+    use eframe::egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
+    use eframe::egui::{FontData, FontFamily};
+
+    let candidates = [
+        ("C:\\Windows\\Fonts\\seguisym.ttf", "Segoe UI Symbol"),
+        ("C:\\Windows\\Fonts\\seguiemj.ttf", "Segoe UI Emoji"),
+    ];
+    for (path, name) in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            ctx.add_font(FontInsert::new(
+                name,
+                FontData::from_owned(bytes),
+                vec![
+                    InsertFontFamily {
+                        family: FontFamily::Proportional,
+                        priority: FontPriority::Lowest,
+                    },
+                    InsertFontFamily {
+                        family: FontFamily::Monospace,
+                        priority: FontPriority::Lowest,
+                    },
+                ],
+            ));
+        }
+    }
 }

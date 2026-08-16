@@ -605,21 +605,25 @@ impl eframe::App for MusicPlayerApp {
                         }
                     }
 
-                    // Click of drag-release: stuur Play command met loop-aware grenzen
+                    // Klik op de waveform: verplaats alleen de playhead. De A-B
+                    // loopmarkers blijven staan — vroeger schoof marker A mee naar
+                    // de klikpositie (SetLoopAAt(start)), wat niemand verwacht.
                     if let Some(seek_pos) = seek_to {
-                        let (start, end) = match (
+                        // Blijf binnen de A-B loop als die actief is, zodat de
+                        // playhead niet buiten de loop springt (en meteen terug-
+                        // klapt naar A door de loop-logica van de player).
+                        let seek_pos = match (
                             self.waveform_state.loop_a_secs,
                             self.waveform_state.loop_b_secs,
                         ) {
-                            (Some(a), Some(b)) if b > a => (seek_pos.clamp(a, b), b),
-                            _ => (seek_pos, self.waveform_state.duration_secs),
+                            (Some(a), Some(b)) if b > a => seek_pos.clamp(a, b),
+                            _ => seek_pos,
                         };
-                        let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(start));
+                        let seek_pos = seek_pos.clamp(0.0, self.waveform_state.duration_secs);
                         let _ = self
                             .playback
                             .player_tx
-                            .send(PlayerCommand::SetLoopAAt(start));
-                        let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(end));
+                            .send(PlayerCommand::SeekTo(seek_pos));
                     }
 
                     ui.separator();
