@@ -67,7 +67,7 @@ impl eframe::App for MusicPlayerApp {
         // }
 
         // Optioneel: Maak een inschuifbaar zijpaneel dat alleen verschijnt als er iets geselecteerd is
-        if !self.tracks_to_edit.is_empty() {
+        if !self.playback.compact_mode && !self.tracks_to_edit.is_empty() {
             egui::Panel::right("batch_edit_panel")
                 .default_size(350.0) // Breedte van het paneel
                 .resizable(true)
@@ -78,7 +78,7 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- WACHTRIJ PANEEL ---
-        if self.playback.show_queue {
+        if !self.playback.compact_mode && self.playback.show_queue {
             let tx = self.playback.player_tx.clone();
             egui::Panel::right("queue_panel")
                 .default_size(300.0)
@@ -394,9 +394,11 @@ impl eframe::App for MusicPlayerApp {
         }
 
         // --- NOW PLAYING BALK ---
-        if self.playback.now_playing.is_some()
-            || self.playback.status_error.is_some()
-            || !self.playback._status_message.is_empty()
+        // (niet in compacte modus: de compacte speler-view toont dezelfde info)
+        if !self.playback.compact_mode
+            && (self.playback.now_playing.is_some()
+                || self.playback.status_error.is_some()
+                || !self.playback._status_message.is_empty())
         {
             egui::Panel::bottom("now_playing_panel").show(ui, |ui| {
                 ui.add_space(6.0);
