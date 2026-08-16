@@ -24,7 +24,7 @@ rodio = { version = "0.19", features = ["symphonia-all"] }
 symphonia = "0.5"
 
 # --- Metadata (Tags uitlezen) ---
-lofty = "0.22" # Veel robuuster voor ID3/FLAC/MP4 tags dan symphonia's standaard tag reader
+lofty = "0.25" # Veel robuuster voor ID3/FLAC/MP4 tags dan symphonia's standaard tag reader
 
 # --- Configuratie (config.toml) ---
 serde = { version = "1.0", features = ["derive"] }

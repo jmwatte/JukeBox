@@ -383,16 +383,7 @@ pub fn load_or_scan_library(
                                         }
                                     }
 
-                                    // 5. Custom iTunes Genre tag
-                                    lofty::tag::ItemKey::Unknown(key)
-                                        if key.to_lowercase() == "----:com.apple.itunes:genre" =>
-                                    {
-                                        if let lofty::tag::ItemValue::Text(text) = item.value() {
-                                            all_genres.push(text.clone());
-                                        }
-                                    }
-
-                                    // 6. Jaartallen
+                                    // 5. Jaartallen
                                     lofty::tag::ItemKey::Year
                                     | lofty::tag::ItemKey::RecordingDate
                                     | lofty::tag::ItemKey::OriginalReleaseDate => {
@@ -406,22 +397,7 @@ pub fn load_or_scan_library(
                                         }
                                     }
 
-                                    // 7. Jaartal-fallbacks (custom keys)
-                                    lofty::tag::ItemKey::Unknown(key)
-                                        if key.to_lowercase() == "originalyear"
-                                            || key.to_lowercase() == "toryear" =>
-                                    {
-                                        if year.is_none() {
-                                            if let lofty::tag::ItemValue::Text(text) = item.value()
-                                            {
-                                                let year_str: String =
-                                                    text.chars().take(4).collect();
-                                                year = year_str.parse::<u32>().ok();
-                                            }
-                                        }
-                                    }
-
-                                    // 8. Componist
+                                    // 6. Componist
                                     lofty::tag::ItemKey::Composer => {
                                         if composer.is_none() {
                                             if let lofty::tag::ItemValue::Text(text) = item.value()
@@ -647,27 +623,9 @@ pub fn rescan_tracks(paths: &[String], library: &mut Library) {
                                 all_genres.push(text.clone());
                             }
                         }
-                        lofty::tag::ItemKey::Unknown(key)
-                            if key.to_lowercase() == "----:com.apple.itunes:genre" =>
-                        {
-                            if let lofty::tag::ItemValue::Text(text) = item.value() {
-                                all_genres.push(text.clone());
-                            }
-                        }
                         lofty::tag::ItemKey::Year
                         | lofty::tag::ItemKey::RecordingDate
                         | lofty::tag::ItemKey::OriginalReleaseDate => {
-                            if year.is_none() {
-                                if let lofty::tag::ItemValue::Text(text) = item.value() {
-                                    let year_str: String = text.chars().take(4).collect();
-                                    year = year_str.parse::<u32>().ok();
-                                }
-                            }
-                        }
-                        lofty::tag::ItemKey::Unknown(key)
-                            if key.to_lowercase() == "originalyear"
-                                || key.to_lowercase() == "toryear" =>
-                        {
                             if year.is_none() {
                                 if let lofty::tag::ItemValue::Text(text) = item.value() {
                                     let year_str: String = text.chars().take(4).collect();

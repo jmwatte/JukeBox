@@ -442,7 +442,7 @@ impl MusicPlayerApp {
                                             ItemKey::Year
                                                 | ItemKey::RecordingDate
                                                 | ItemKey::OriginalReleaseDate
-                                        ) || matches!(key, ItemKey::Unknown(k) if k.to_lowercase() == "originalyear" || k.to_lowercase() == "toryear") =>
+                                        ) =>
                                         {
                                             if found_year.is_none() {
                                                 if let ItemValue::Text(text) = item.value() {

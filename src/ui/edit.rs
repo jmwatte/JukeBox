@@ -65,7 +65,7 @@ impl MusicPlayerApp {
                             }
                         }
                     }
-                    tag.remove_key(&ItemKey::Genre);
+                    tag.remove_key(ItemKey::Genre);
                     for item in cleaned_items {
                         if matches!(item.key(), lofty::tag::ItemKey::Genre) {
                             tag.push(item);
@@ -105,7 +105,7 @@ impl MusicPlayerApp {
                                 ItemKey::Year
                                     | ItemKey::RecordingDate
                                     | ItemKey::OriginalReleaseDate
-                            ) || matches!(key, ItemKey::Unknown(k) if k.to_lowercase() == "originalyear" || k.to_lowercase() == "toryear") =>
+                            ) =>
                             {
                                 if existing_year.is_none() {
                                     if let ItemValue::Text(text) = item.value() {
@@ -140,17 +140,17 @@ impl MusicPlayerApp {
                         tag.set_album(a.clone());
                     }
                 }
-                if !self.update_genre && tag.get(&ItemKey::Genre).is_none() {
+                if !self.update_genre && tag.get(ItemKey::Genre).is_none() {
                     for g in &existing_genres {
                         tag.insert(TagItem::new(ItemKey::Genre, ItemValue::Text(g.clone())));
                     }
                 }
-                if !self.update_year && tag.get(&ItemKey::Year).is_none() {
+                if !self.update_year && tag.get(ItemKey::Year).is_none() {
                     if let Some(ref y) = existing_year {
                         tag.insert(TagItem::new(ItemKey::Year, ItemValue::Text(y.clone())));
                     }
                 }
-                if !self.update_composer && tag.get(&ItemKey::Composer).is_none() {
+                if !self.update_composer && tag.get(ItemKey::Composer).is_none() {
                     if let Some(ref c) = existing_composer {
                         tag.insert(TagItem::new(ItemKey::Composer, ItemValue::Text(c.clone())));
                     }
@@ -167,7 +167,7 @@ impl MusicPlayerApp {
                 }
 
                 if self.update_genre {
-                    tag.remove_key(&ItemKey::Genre);
+                    tag.remove_key(ItemKey::Genre);
                     for g in self.edit_genre.split(';') {
                         let trimmed = g.trim();
                         if !trimmed.is_empty() {
@@ -180,7 +180,7 @@ impl MusicPlayerApp {
                 }
 
                 if self.update_year {
-                    tag.remove_key(&ItemKey::Year);
+                    tag.remove_key(ItemKey::Year);
                     let trimmed = self.edit_year.trim();
                     if !trimmed.is_empty() {
                         tag.insert(TagItem::new(
@@ -191,7 +191,7 @@ impl MusicPlayerApp {
                 }
 
                 if self.update_composer {
-                    tag.remove_key(&ItemKey::Composer);
+                    tag.remove_key(ItemKey::Composer);
                     let trimmed = self.edit_composer.trim();
                     if !trimmed.is_empty() {
                         tag.insert(TagItem::new(
@@ -575,7 +575,7 @@ impl MusicPlayerApp {
                         }
                     }
                     "composer" => {
-                        if let Some(item) = tag.get(&ItemKey::Composer) {
+                        if let Some(item) = tag.get(ItemKey::Composer) {
                             if let ItemValue::Text(t) = item.value() {
                                 return Some(t.clone());
                             }
@@ -583,7 +583,7 @@ impl MusicPlayerApp {
                     }
                     "genre" => {
                         let genres: Vec<String> = tag
-                            .get(&ItemKey::Genre)
+                            .get(ItemKey::Genre)
                             .into_iter()
                             .filter_map(|i| {
                                 if let ItemValue::Text(t) = i.value() {
@@ -598,7 +598,7 @@ impl MusicPlayerApp {
                         }
                     }
                     "year" => {
-                        if let Some(year_item) = tag.get(&ItemKey::Year) {
+                        if let Some(year_item) = tag.get(ItemKey::Year) {
                             if let ItemValue::Text(t) = year_item.value() {
                                 return Some(t.clone());
                             }
