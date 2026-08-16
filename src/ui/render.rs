@@ -1471,7 +1471,7 @@ impl MusicPlayerApp {
         ui.vertical_centered(|ui| {
             // ── Hoes van het huidige nummer ──
             let avail = ui.available_size();
-            let cover_box = (avail.x.min(avail.y - 190.0)).max(160.0).min(420.0);
+            let cover_box = (avail.x.min(avail.y - 120.0)).max(120.0).min(420.0);
             let cover_box = egui::vec2(cover_box, cover_box);
             let cover = self.find_cover_for_path(self.playback.now_playing_path.as_deref());
             if let Some(path) = cover {
@@ -1499,18 +1499,65 @@ impl MusicPlayerApp {
 
             ui.add_space(12.0);
 
-            // ── Titel (met achtergrond) ──
+            // ── Titel bovenop de voortgangsbalk ──
+            let bar_w = ui.available_width().min(440.0);
+            let bar_h = 30.0;
+            let (bar_rect, _) = ui.allocate_exact_size(
+                egui::vec2(bar_w, bar_h),
+                egui::Sense::hover(),
+            );
+            ui.painter().rect_filled(bar_rect, 4.0, Color32::from_gray(48));
+            let pos = self.playback.now_playing_position;
+            let dur = self.playback.now_playing_duration;
+            if dur > 0.0 {
+                let fraction = (pos / dur).clamp(0.0, 1.0);
+                let fill = egui::Rect::from_min_size(
+                    bar_rect.min,
+                    egui::vec2(bar_w * fraction, bar_h),
+                );
+                ui.painter().rect_filled(fill, 4.0, Color32::from_rgb(45, 95, 145));
+            }
+
+            // Titel gecentreerd op de balk (afgekapt als hij te lang is)
             let title = self
                 .playback
                 .now_playing
                 .clone()
                 .unwrap_or_else(|| "Geen nummer geladen".to_string());
-            ui.label(
-                RichText::new(&title)
-                    .size(17.0)
-                    .strong()
-                    .background_color(Color32::from_gray(35)),
+            let mut job = egui::text::LayoutJob::default();
+            job.wrap = egui::text::TextWrapping::truncate_at_width(bar_w - 24.0);
+            job.append(
+                &title,
+                0.0,
+                egui::TextFormat::simple(
+                    egui::FontId::proportional(15.0),
+                    Color32::WHITE,
+                ),
             );
+            let galley = ui.painter().layout_job(job);
+            let text_pos = egui::pos2(
+                bar_rect.center().x - galley.size().x / 2.0,
+                bar_rect.center().y - galley.size().y / 2.0,
+            );
+            // Schaduw voor leesbaarheid, daarna de witte tekst
+            ui.painter().galley(
+                text_pos + egui::vec2(1.0, 1.0),
+                galley.clone(),
+                Color32::from_black_alpha(170),
+            );
+            ui.painter().galley(text_pos, galley, Color32::WHITE);
+
+            // Tijd onder de balk
+            if dur > 0.0 {
+                let time_text = format!(
+                    "{}:{:02}  /  {}:{:02}",
+                    (pos / 60.0) as u32,
+                    pos as u32 % 60,
+                    (dur / 60.0) as u32,
+                    dur as u32 % 60
+                );
+                ui.label(RichText::new(time_text).size(12.0).color(Color32::GRAY));
+            }
 
             // ── Foutmelding ──
             if let Some(ref err) = self.playback.status_error {
@@ -1522,125 +1569,40 @@ impl MusicPlayerApp {
                 );
             }
 
-            ui.add_space(10.0);
-
-            // ── Voortgangsbalk + tijd ──
-            let pos = self.playback.now_playing_position;
-            let dur = self.playback.now_playing_duration;
-            if dur > 0.0 {
-                let fraction = (pos / dur).clamp(0.0, 1.0);
-                let bar = egui::ProgressBar::new(fraction)
-                    .show_percentage()
-                    .desired_width(360.0);
-                ui.add(bar);
-                let time_text = format!(
-                    "{}:{:02}  /  {}:{:02}",
-                    (pos / 60.0) as u32,
-                    pos as u32 % 60,
-                    (dur / 60.0) as u32,
-                    dur as u32 % 60
-                );
-                ui.label(RichText::new(time_text).size(13.0).color(Color32::GRAY));
-            }
-
-            ui.add_space(12.0);
-
-            // ── Bedieningsknoppen ──
-            let btn_size = egui::vec2(48.0, 48.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .add_sized(btn_size, egui::Button::new(RichText::new("⏮").size(22.0)))
-                    .on_hover_text("2 seconden terugspoelen")
-                    .clicked()
-                {
-                    let _ = self.playback.player_tx.send(PlayerCommand::Rewind);
-                }
-                if ui
-                    .add_sized(btn_size, egui::Button::new(RichText::new("⏯").size(22.0)))
-                    .on_hover_text("Pauzeren / Hervatten")
-                    .clicked()
-                {
-                    let _ = self.playback.player_tx.send(PlayerCommand::PlayPause);
-                }
-                if ui
-                    .add_sized(btn_size, egui::Button::new(RichText::new("⏭").size(22.0)))
-                    .on_hover_text("Volgend nummer")
-                    .clicked()
-                {
-                    let _ = self.playback.player_tx.send(PlayerCommand::Skip);
-                }
-                if ui
-                    .add_sized(btn_size, egui::Button::new(RichText::new("⏩").size(22.0)))
-                    .on_hover_text("2 seconden vooruitspoelen")
-                    .clicked()
-                {
-                    let _ = self.playback.player_tx.send(PlayerCommand::Forward);
-                }
-            });
-
-            ui.add_space(10.0);
-
-            // ── Volume + modi (compact) ──
-            ui.horizontal(|ui| {
-                if ui.button(RichText::new("🔉").size(15.0)).clicked() {
-                    self.playback.volume = (self.playback.volume - 0.1).max(0.0);
-                    let _ = self
-                        .playback
-                        .player_tx
-                        .send(PlayerCommand::SetVolume(self.playback.volume));
-                }
-                let vol_percent = (self.playback.volume * 100.0) as u32;
-                ui.label(
-                    RichText::new(format!("{}%", vol_percent))
-                        .size(13.0)
-                        .color(Color32::GRAY),
-                );
-                if ui.button(RichText::new("🔊+").size(15.0)).clicked() {
-                    self.playback.volume = (self.playback.volume + 0.1).min(1.0);
-                    let _ = self
-                        .playback
-                        .player_tx
-                        .send(PlayerCommand::SetVolume(self.playback.volume));
-                }
-
-                ui.separator();
-
-                let repeat_text = match self.playback.repeat_mode {
-                    RepeatMode::None => "Herhalen: uit",
-                    RepeatMode::One => "🔂 1",
-                    RepeatMode::All => "🔁 All",
-                };
-                if ui
-                    .button(RichText::new(repeat_text).size(13.0))
-                    .on_hover_text("Herhaalmodus wisselen (X)")
-                    .clicked()
-                {
-                    let _ = self.playback.player_tx.send(PlayerCommand::ToggleRepeat);
-                }
-
-                let shuffle_text = if self.playback.shuffle_on {
-                    "🔀 aan"
-                } else {
-                    "🔀 uit"
-                };
-                if ui
-                    .button(RichText::new(shuffle_text).size(13.0))
-                    .on_hover_text("Shuffle wisselen (F8)")
-                    .clicked()
-                {
-                    let _ = self.playback.player_tx.send(PlayerCommand::ToggleShuffle);
-                }
-            });
-
-            ui.add_space(20.0);
+            ui.add_space(16.0);
 
             // ── Hint ──
             ui.label(
-                RichText::new("F11 terug · F12 altijd bovenop · dubbelklik hoes = pauze")
-                    .size(12.0)
-                    .color(Color32::from_gray(110)),
+                RichText::new(
+                    "F11 terug · F12 altijd bovenop · dubbelklik hoes = pauze · sleep ◢ om te resizen",
+                )
+                .size(11.0)
+                .color(Color32::from_gray(110)),
             );
         });
+
+        // ── Resize-handle rechtsonder (borderless venster) ──
+        let handle_rect = egui::Rect::from_min_size(
+            egui::pos2(ui.max_rect().right() - 20.0, ui.max_rect().bottom() - 20.0),
+            egui::vec2(20.0, 20.0),
+        );
+        let handle_resp = ui.interact(
+            handle_rect,
+            egui::Id::new("compact_resize_handle"),
+            egui::Sense::drag(),
+        );
+        if handle_resp.dragged() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(
+                egui::ResizeDirection::SouthEast,
+            ));
+        }
+        ui.painter().text(
+            handle_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "◢",
+            egui::FontId::proportional(14.0),
+            Color32::from_gray(130),
+        );
     }
 
     /// Zoek de albumhoes van het opgegeven trackpad in de actieve bibliotheek.

@@ -156,18 +156,11 @@ impl MusicPlayerApp {
         }
         if shortcuts::check_action(&cfg, ctx, "CompactToggle") {
             self.playback.compact_mode = !self.playback.compact_mode;
-            if self.playback.compact_mode {
-                // Onthoud de huidige grootte, verklein het venster en verwijder de OS-titelbalk.
-                self.window_size_before_compact =
-                    ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(460.0, 560.0)));
-            } else {
-                if let Some(size) = self.window_size_before_compact.take() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
-                }
-                ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
-            }
+            // OS-titelbalk aan/uit. Het venster blijft handmatig resizable via
+            // de eigen resize-handle rechtsonder in de minimalistische modus.
+            ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(
+                !self.playback.compact_mode,
+            ));
         }
         if shortcuts::check_action(&cfg, ctx, "AlwaysOnTop") {
             self.playback.always_on_top = !self.playback.always_on_top;

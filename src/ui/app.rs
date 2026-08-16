@@ -74,9 +74,6 @@ pub struct MusicPlayerApp {
     // Loop bibliotheek
     pub saved_loops: Vec<SavedLoop>,
     pub show_loop_library: bool,
-
-    /// Venstergrootte vóór de compacte modus (om te herstellen bij verlaten).
-    pub window_size_before_compact: Option<egui::Vec2>,
 }
 
 impl MusicPlayerApp {
@@ -139,7 +136,6 @@ impl MusicPlayerApp {
             waveform_state: crate::waveform::WaveformState::default(),
             saved_loops: crate::loops::load_loops(),
             show_loop_library: false,
-            window_size_before_compact: None,
         };
 
         // Valideer shortcuts bij opstarten
