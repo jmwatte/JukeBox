@@ -58,6 +58,27 @@ pub fn generate_label(track_path: &str, loops: &[SavedLoop]) -> String {
     }
 }
 
+/// Pas de paden in opgeslagen loops aan na een schijfletterwijziging.
+/// Geeft de bijgewerkte lijst terug (en slaat deze op) wanneer er iets wijzigde.
+pub fn remap_loops(old_root: &str, new_root: &str) -> Option<Vec<SavedLoop>> {
+    let mut loops = load_loops();
+    let mut changed = false;
+    for l in &mut loops {
+        let remapped = crate::scanner::remap_one_path(&l.track_path, old_root, new_root);
+        if remapped != l.track_path {
+            l.track_path = remapped;
+            changed = true;
+        }
+    }
+    if changed {
+        save_loops(&loops);
+        log::info!("Opgeslagen loops bijgewerkt naar nieuwe schijfletter.");
+        Some(loops)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

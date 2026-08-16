@@ -75,3 +75,24 @@ impl Config {
         }
     }
 }
+
+/// Werk de `music_directory` in config.toml bij (bijv. na een gewijzigde
+/// schijfletter) zodat de wijziging ook na een herstart blijft gelden.
+/// Geeft `true` terug als het bestand succesvol is bijgewerkt.
+pub fn update_music_directory(new_dir: &str) -> bool {
+    let config_path = Path::new("config.toml");
+    let Ok(config_str) = fs::read_to_string(config_path) else {
+        return false;
+    };
+    let Ok(mut config) = toml::from_str::<Config>(&config_str) else {
+        return false;
+    };
+    if config.music_directory == new_dir {
+        return true;
+    }
+    config.music_directory = new_dir.to_string();
+    match toml::to_string(&config) {
+        Ok(toml_str) => fs::write(config_path, toml_str).is_ok(),
+        Err(_) => false,
+    }
+}

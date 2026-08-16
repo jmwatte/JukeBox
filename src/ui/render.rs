@@ -363,6 +363,15 @@ impl eframe::App for MusicPlayerApp {
                 ScannerMessage::ScanComplete => {
                     self.playback._status_message = "Klaar!".to_string();
                 }
+                ScannerMessage::LoopsRemapped(loops) => {
+                    self.saved_loops = loops;
+                    self.playback._status_message =
+                        "Schijfletter gewijzigd — bibliotheek en loops opnieuw gekoppeld."
+                            .to_string();
+                }
+                ScannerMessage::MusicDirChanged(dir) => {
+                    self.config.music_directory = dir;
+                }
             }
         }
 

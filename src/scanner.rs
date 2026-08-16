@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use walkdir::WalkDir;
 
@@ -17,31 +17,131 @@ pub enum ScannerMessage {
     Progress(String),
     LibraryLoaded(Library),
     ScanComplete,
+    LoopsRemapped(Vec<crate::loops::SavedLoop>),
+    MusicDirChanged(String),
 }
 
-pub const CACHE_VERSION: u32 = 1;
+pub const CACHE_VERSION: u32 = 2;
 pub const CACHE_FILE: &str = "library_cache.bin";
 
 #[derive(Serialize, Deserialize)]
 struct CacheData {
     version: u32,
     dir_modified: u64, // UNIX timestamp van de muziekmap bij cache-aanmaak
+    // Map waaruit de cache is opgebouwd. Nodig om te herkennen dat alleen de
+    // schijfletter (of het pad) is gewijzigd, zodat de cache zonder rescan
+    // herbruikt kan worden.
+    music_dir: String,
     library: Library,
 }
 
+/// UNIX-timestamp van de "modified"-tijd van een map (0 als de map niet bestaat).
+fn dir_modified(dir: &str) -> u64 {
+    std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Vergelijk twee mappaden case-insensitief en zonder staart-backslash.
+/// Windows-paden zijn hoofdletterongevoelig, ook voor de schijfletter.
+fn dirs_match(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.trim_end_matches(|c| c == '\\' || c == '/').to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// Vervang in één pad het oude root-gedeelte door een nieuw root-gedeelte.
+/// Paden die niet onder `old_root` vallen blijven ongewijzigd.
+pub(crate) fn remap_one_path(path: &str, old_root: &str, new_root: &str) -> String {
+    match Path::new(path).strip_prefix(Path::new(old_root)) {
+        Ok(rel) => {
+            let mut new_path = PathBuf::from(new_root);
+            // Component per component toevoegen zodat de scheidingstekens
+            // consistent zijn met het platform (geen gemengde \ en /).
+            for comp in rel.components() {
+                new_path.push(comp.as_os_str());
+            }
+            new_path.to_string_lossy().into_owned()
+        }
+        Err(_) => path.to_string(),
+    }
+}
+
+/// Pas alle opgeslagen paden in de bibliotheek aan van `old_root` naar `new_root`.
+/// Wordt gebruikt wanneer alleen de schijfletter is gewijzigd: de inhoud is
+/// identiek, dus herscannen is onnodig.
+fn remap_library_paths(library: &mut Library, old_root: &str, new_root: &str) {
+    for artist in &mut library.artists {
+        for album in &mut artist.albums {
+            if let Some(ref mut cover) = album.cover_path {
+                *cover = remap_one_path(cover, old_root, new_root);
+            }
+            for disk in &mut album.disks {
+                for track in &mut disk.tracks {
+                    track.path = remap_one_path(&track.path, old_root, new_root);
+                }
+            }
+        }
+    }
+}
+
+/// Zoek de daadwerkelijk gebruikte muziekmap.
+/// Als de geconfigureerde map niet (meer) bestaat — bijv. omdat de USB-schijf een
+/// andere schijfletter heeft gekregen — wordt op alle mounted schijven gezocht naar
+/// een map met dezelfde relatieve naam (bijv. "H:\music" → "X:\music").
+fn find_effective_music_dir(configured: &str) -> String {
+    if Path::new(configured).exists() {
+        return configured.to_string();
+    }
+
+    // Relatief deel na de schijfletter: "H:\music" → "music"
+    let tail: Vec<Component> = Path::new(configured)
+        .components()
+        .skip_while(|c| matches!(c, Component::Prefix(_) | Component::RootDir))
+        .collect();
+    if tail.is_empty() {
+        return configured.to_string();
+    }
+
+    let mut found: Option<String> = None;
+    for letter in b'A'..=b'Z' {
+        let drive = format!("{}:\\", letter as char);
+        if !Path::new(&drive).exists() {
+            continue;
+        }
+        let mut candidate = PathBuf::from(&drive);
+        for comp in &tail {
+            candidate.push(comp.as_os_str());
+        }
+        if candidate.exists() {
+            if found.is_some() {
+                log::warn!(
+                    "Meerdere schijven met '{}' gevonden — eerste gebruikt.",
+                    tail.iter()
+                        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                        .collect::<Vec<_>>()
+                        .join("\\")
+                );
+                return found.unwrap();
+            }
+            found = Some(candidate.to_string_lossy().into_owned());
+        }
+    }
+    found.unwrap_or_else(|| configured.to_string())
+}
+
 /// Sla een Library direct naar de cache, zodat een herstart sneller laden kan.
-/// `music_dir` wordt gebruikt om de wijzigingstijd vast te leggen voor cache-validatie.
+/// `music_dir` wordt gebruikt om de wijzigingstijd vast te leggen voor cache-validatie
+/// en om later schijfletterwijzigingen te kunnen herkennen.
 pub fn save_cache(library: &Library, music_dir: &str) {
     if let Ok(file) = std::fs::File::create(CACHE_FILE) {
         let writer = std::io::BufWriter::new(file);
         let data = CacheData {
             version: CACHE_VERSION,
-            dir_modified: std::fs::metadata(music_dir)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            dir_modified: dir_modified(music_dir),
+            music_dir: music_dir.to_string(),
             library: library.clone(),
         };
         let _ = bincode::serialize_into(writer, &data);
@@ -55,13 +155,25 @@ pub fn load_or_scan_library(
     cover_exts: Vec<String>,
     tx: Sender<ScannerMessage>,
 ) {
+    // Als de geconfigureerde map niet bestaat (bijv. gewijzigde schijfletter),
+    // zoek dezelfde map op een andere schijf en werk de config bij.
+    let effective_dir = find_effective_music_dir(&dir);
+    if effective_dir != dir {
+        log::info!(
+            "Geconfigureerde map '{}' niet gevonden; '{}' gebruikt.",
+            dir,
+            effective_dir
+        );
+        if crate::config::update_music_directory(&effective_dir) {
+            log::info!("config.toml bijgewerkt naar '{}'.", effective_dir);
+        }
+        // Ook de in-memory config bijwerken, zodat later opgeslagen caches
+        // (bijv. na tag-wijzigingen) de juiste map registreren.
+        let _ = tx.send(ScannerMessage::MusicDirChanged(effective_dir.clone()));
+    }
+
     // Huidige modificatietijd van de muziekdirectory
-    let current_dir_modified = std::fs::metadata(&dir)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let current_dir_modified = dir_modified(&effective_dir);
 
     // 1. Probeer de cache in te laden
     if Path::new(CACHE_FILE).exists() {
@@ -69,8 +181,10 @@ pub fn load_or_scan_library(
         if let Ok(file) = File::open(CACHE_FILE) {
             let reader = BufReader::new(file);
             match bincode::deserialize_from::<_, CacheData>(reader) {
+                // Snelle weg: zelfde map, zelfde inhoud → cache direct gebruiken
                 Ok(cache)
                     if cache.version == CACHE_VERSION
+                        && dirs_match(&cache.music_dir, &effective_dir)
                         && cache.dir_modified == current_dir_modified =>
                 {
                     let library = cache.library;
@@ -79,6 +193,29 @@ pub fn load_or_scan_library(
                         let _ = tx.send(ScannerMessage::ScanComplete);
                         return;
                     }
+                }
+                // Schijfletter (of mappad) gewijzigd, maar inhoud identiek:
+                // cache hergebruiken en alleen de paden herschrijven — geen rescan nodig.
+                Ok(cache)
+                    if cache.version == CACHE_VERSION
+                        && !cache.music_dir.is_empty()
+                        && !dirs_match(&cache.music_dir, &effective_dir)
+                        && current_dir_modified != 0
+                        && cache.dir_modified == current_dir_modified =>
+                {
+                    let _ = tx.send(ScannerMessage::Progress(
+                        "Schijfletter gewijzigd — bibliotheek opnieuw koppelen...".into(),
+                    ));
+                    let mut library = cache.library;
+                    remap_library_paths(&mut library, &cache.music_dir, &effective_dir);
+                    save_cache(&library, &effective_dir);
+                    let _ = tx.send(ScannerMessage::LibraryLoaded(library));
+                    let _ = tx.send(ScannerMessage::ScanComplete);
+                    if let Some(loops) = crate::loops::remap_loops(&cache.music_dir, &effective_dir)
+                    {
+                        let _ = tx.send(ScannerMessage::LoopsRemapped(loops));
+                    }
+                    return;
                 }
                 Ok(cache) => {
                     if cache.version != CACHE_VERSION {
@@ -92,7 +229,7 @@ pub fn load_or_scan_library(
                     }
                 }
                 Err(e) => {
-                    log::warn!("Cache corrupt ({:?}) — opnieuw scannen.", e);
+                    log::warn!("Cache corrupt of verouderd ({:?}) — opnieuw scannen.", e);
                 }
             }
         }
@@ -112,7 +249,7 @@ pub fn load_or_scan_library(
     let album_covers = Mutex::new(HashMap::<String, String>::new());
 
     // NIEUW: par_bridge() maakt de WalkDir iterator parallel
-    WalkDir::new(&dir)
+    WalkDir::new(&effective_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .par_bridge()
@@ -149,7 +286,7 @@ pub fn load_or_scan_library(
 
             // Check audiobestand
             if audio_exts.contains(&ext) {
-                let base_dir = Path::new(&dir);
+                let base_dir = Path::new(&effective_dir);
                 if let Ok(rel_path) = path.strip_prefix(base_dir) {
                     let components: Vec<String> = rel_path
                         .components()
@@ -440,6 +577,7 @@ pub fn load_or_scan_library(
         let data = CacheData {
             version: CACHE_VERSION,
             dir_modified: current_dir_modified,
+            music_dir: effective_dir.clone(),
             library: library.clone(),
         };
         let _ = bincode::serialize_into(writer, &data);
@@ -593,5 +731,76 @@ pub fn rescan_tracks(paths: &[String], library: &mut Library) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remap_drive_letter() {
+        assert_eq!(
+            Path::new(&remap_one_path(
+                "H:/music/Artist/Album/song.flac",
+                "H:/music",
+                "L:/music"
+            )),
+            Path::new("L:/music/Artist/Album/song.flac")
+        );
+    }
+
+    #[test]
+    fn remap_nested_root() {
+        assert_eq!(
+            Path::new(&remap_one_path(
+                "H:/muziek/collectie/Artist/song.flac",
+                "H:/muziek/collectie",
+                "L:/muziek/collectie"
+            )),
+            Path::new("L:/muziek/collectie/Artist/song.flac")
+        );
+    }
+
+    #[test]
+    fn remap_leaves_foreign_paths_alone() {
+        assert_eq!(
+            remap_one_path("C:/other/song.flac", "H:/music", "L:/music"),
+            "C:/other/song.flac"
+        );
+    }
+
+    #[test]
+    fn remap_no_partial_prefix_match() {
+        // "H:/music2" moet niet herschreven worden naar "L:/music2/..."
+        assert_eq!(
+            remap_one_path("H:/music2/song.flac", "H:/music", "L:/music"),
+            "H:/music2/song.flac"
+        );
+    }
+
+    #[test]
+    fn dirs_match_ignores_case_and_trailing_slash() {
+        assert!(dirs_match("H:/music", "h:/music/"));
+        assert!(dirs_match("L:/music/", "L:/music"));
+        assert!(!dirs_match("H:/music", "L:/music"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remap_windows_backslash_paths() {
+        assert_eq!(
+            remap_one_path(
+                "H:\\music\\Artist\\Album\\song.flac",
+                "H:\\music",
+                "L:\\music"
+            ),
+            "L:\\music\\Artist\\Album\\song.flac"
+        );
+        // Schijflettercase wordt genegeerd
+        assert_eq!(
+            remap_one_path("h:\\music\\Artist\\song.flac", "H:\\music", "L:\\music"),
+            "L:\\music\\Artist\\song.flac"
+        );
     }
 }
