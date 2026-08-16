@@ -1319,17 +1319,22 @@ impl MusicPlayerApp {
                     let thumb_w = ((available_ui_width - padding * (columns as f32 + 1.0))
                         / columns as f32)
                         .max(150.0)
-                        .min(800.0); // Maximum flink verhoogd zodat ze de beschikbare real estate echt mogen pakken
+                        .min(800.0) // Maximum flink verhoogd zodat ze de beschikbare real estate echt mogen pakken
+                        .min(ui.available_height() - 40.0); // …maar nooit hoger dan het paneel (ruimte voor de titel)
 
                     let thumb_size = egui::vec2(thumb_w, thumb_w);
 
                     if num_albums == 1 {
-                        ui.centered_and_justified(|ui| {
+                        ui.vertical_centered(|ui| {
                             if let Some(path) = &albums[0].cover_path {
-                                let big_w = (available_ui_width * 0.6).max(200.0).min(800.0);
+                                let big_w = (available_ui_width * 0.6)
+                                    .max(200.0)
+                                    .min(800.0)
+                                    .min(ui.available_height() - 60.0); // ruimte voor de titel
                                 let resp = ui.add_sized(
                                     egui::vec2(big_w, big_w),
                                     Image::new(Self::cover_uri(path))
+                                        .fit_to_exact_size(egui::vec2(big_w, big_w))
                                         .show_loading_spinner(false)
                                         .sense(egui::Sense::click()),
                                 );
@@ -1353,6 +1358,7 @@ impl MusicPlayerApp {
                                             let resp = col_ui.add_sized(
                                                 thumb_size,
                                                 Image::new(Self::cover_uri(path))
+                                                    .fit_to_exact_size(thumb_size)
                                                     .show_loading_spinner(false)
                                                     .sense(egui::Sense::click()),
                                             );
@@ -1379,7 +1385,7 @@ impl MusicPlayerApp {
             }
         } else {
             ScrollArea::vertical().show(ui, |ui| {
-                ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
                     if let Some(album) = current_lib
                         .artists
                         .get(*selected_artist)
@@ -1387,10 +1393,15 @@ impl MusicPlayerApp {
                     {
                         if let Some(path) = &album.cover_path {
                             let available = ui.available_width();
-                            let size_w = (available * 0.5).max(200.0).min(1200.0);
+                            let size_w = (available * 0.5)
+                                .max(200.0)
+                                .min(1200.0)
+                                .min(ui.available_height() - 60.0); // ruimte voor de titel
                             let _ = ui.add_sized(
                                 egui::vec2(size_w, size_w),
-                                Image::new(Self::cover_uri(path)).show_loading_spinner(false),
+                                Image::new(Self::cover_uri(path))
+                                    .fit_to_exact_size(egui::vec2(size_w, size_w))
+                                    .show_loading_spinner(false),
                             );
                         }
                         ui.add_space(6.0);
@@ -1566,5 +1577,74 @@ impl MusicPlayerApp {
                 },
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Bootst de cover-view structuur na: CentralPanel → ScrollArea → vertical_centered
+    /// → vierkante add_sized box (geclampt op de beschikbare hoogte) met daarin een image.
+    /// Geeft de image-box en het zichtbare clipgebied terug.
+    fn measure_cover_box(screen: egui::Vec2) -> (egui::Rect, egui::Rect) {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            ..Default::default()
+        };
+        let mut result: Option<(egui::Rect, egui::Rect)> = None;
+        let mut output = ctx.run_ui(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let available_ui_width = ui.available_width();
+                    let big_w = (available_ui_width * 0.6)
+                        .max(200.0)
+                        .min(800.0)
+                        .min(ui.available_height() - 50.0);
+                    ui.vertical_centered(|ui| {
+                        let resp = ui.add_sized(
+                            egui::vec2(big_w, big_w),
+                            egui::Image::from_bytes(
+                                "bytes://no_results.png",
+                                include_bytes!("../../assets/no_results.png").as_ref(),
+                            )
+                            .fit_to_exact_size(egui::vec2(big_w, big_w)),
+                        );
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Test titel").size(20.0));
+                        result = Some((resp.rect, ui.clip_rect()));
+                    });
+                });
+            });
+        });
+        output.textures_delta.clear();
+        result.expect("de closure moet de metingen vullen")
+    }
+
+    /// De onderkant van de coverbox (èn de titel eronder) moet binnen het
+    /// zichtbare clipgebied vallen, en de box moet vierkant zijn.
+    #[test]
+    fn cover_box_fits_viewport_height() {
+        let (rect, clip) = measure_cover_box(egui::vec2(1200.0, 700.0));
+        // Vierkant: breedte == hoogte (binnen afronding).
+        assert!(
+            (rect.width() - rect.height()).abs() <= 1.0,
+            "coverbox moet vierkant zijn: {rect:?}"
+        );
+        // De hele box moet binnen het zichtbare clipgebied passen.
+        assert!(
+            rect.bottom() <= clip.bottom() + 1.0,
+            "onderkant van de hoes valt buiten het zichtbare gebied: box={:?}, clip={:?}",
+            rect,
+            clip
+        );
+        // Er moet ruimte overblijven voor de titel onder de hoes.
+        assert!(
+            clip.bottom() - rect.bottom() >= 20.0,
+            "geen ruimte meer voor de titel onder de hoes: box={:?}, clip={:?}",
+            rect,
+            clip
+        );
     }
 }
