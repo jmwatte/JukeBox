@@ -137,14 +137,15 @@ fn find_effective_music_dir(configured: &str) -> String {
 /// en om later schijfletterwijzigingen te kunnen herkennen.
 pub fn save_cache(library: &Library, music_dir: &str) {
     if let Ok(file) = std::fs::File::create(CACHE_FILE) {
-        let writer = std::io::BufWriter::new(file);
+        let mut writer = std::io::BufWriter::new(file);
         let data = CacheData {
             version: CACHE_VERSION,
             dir_modified: dir_modified(music_dir),
             music_dir: music_dir.to_string(),
             library: library.clone(),
         };
-        let _ = bincode::serialize_into(writer, &data);
+        let _ =
+            bincode::serde::encode_into_std_write(&data, &mut writer, bincode::config::legacy());
     }
 }
 
@@ -179,8 +180,11 @@ pub fn load_or_scan_library(
     if Path::new(CACHE_FILE).exists() {
         let _ = tx.send(ScannerMessage::Progress("Cache laden...".into()));
         if let Ok(file) = File::open(CACHE_FILE) {
-            let reader = BufReader::new(file);
-            match bincode::deserialize_from::<_, CacheData>(reader) {
+            let mut reader = BufReader::new(file);
+            match bincode::serde::decode_from_std_read::<CacheData, _, _>(
+                &mut reader,
+                bincode::config::legacy(),
+            ) {
                 // Snelle weg: zelfde map, zelfde inhoud → cache direct gebruiken
                 Ok(cache)
                     if cache.version == CACHE_VERSION
@@ -549,14 +553,15 @@ pub fn load_or_scan_library(
     // 4. Sla de cache op
     let _ = tx.send(ScannerMessage::Progress("Bibliotheek opslaan... ".into()));
     if let Ok(file) = File::create(CACHE_FILE) {
-        let writer = BufWriter::new(file);
+        let mut writer = BufWriter::new(file);
         let data = CacheData {
             version: CACHE_VERSION,
             dir_modified: current_dir_modified,
             music_dir: effective_dir.clone(),
             library: library.clone(),
         };
-        let _ = bincode::serialize_into(writer, &data);
+        let _ =
+            bincode::serde::encode_into_std_write(&data, &mut writer, bincode::config::legacy());
     }
 
     // 5. Stuur het eindresultaat
