@@ -605,11 +605,27 @@ pub fn render_waveform(
         });
     }
 
-    // Slepen op waveform (scrol)
-    if response.dragged_by(egui::PointerButton::Primary) && !loop_changed {
-        let drag_delta = response.drag_delta();
-        state.scroll_offset -= drag_delta.x / state.zoom;
-        state.scroll_offset = state.scroll_offset.max(0.0);
+    // Slepen op de waveform: met Ctrl verplaats je de hele loop (beide markers),
+    // zonder Ctrl scrol je door de track.
+    if response.dragged_by(egui::PointerButton::Primary) {
+        let ctrl_held = ui.ctx().input(|i| i.modifiers.ctrl);
+        if ctrl_held {
+            if let (Some(a), Some(b)) = (state.loop_a_secs, state.loop_b_secs) {
+                if b > a {
+                    let len = b - a;
+                    let delta_secs = response.drag_delta().x / state.zoom;
+                    let max_a = (state.duration_secs - len).max(0.0);
+                    let new_a = (a + delta_secs).clamp(0.0, max_a);
+                    state.loop_a_secs = Some(new_a);
+                    state.loop_b_secs = Some(new_a + len);
+                    loop_changed = true;
+                }
+            }
+        } else if !loop_changed {
+            let drag_delta = response.drag_delta();
+            state.scroll_offset -= drag_delta.x / state.zoom;
+            state.scroll_offset = state.scroll_offset.max(0.0);
+        }
     }
 
     (loop_changed, seek_action)

@@ -141,9 +141,10 @@ huidig afgespeelde nummer.
 
 - **A-B loop markers:** dubbelklik om A te zetten, Shift+dubbelklik voor B
 - **Sleep A-B markers:** versleep de groene (A) en rode (B) lijnen
-- **Sleep de hele loop:** klik in het blauwe A-B gebied en sleep
+- **Ctrl+sleep op de waveform:** verplaats de hele loop (beide markers tegelijk)
 - **Verplaats playhead:** sleep de gele driehoekjes boven/onder
-- **Klik om te seeken:** klik ergens op de waveform
+- **Klik om te seeken:** klik ergens op de waveform (alleen de playhead
+  beweegt; de loopmarkers blijven staan)
 - **Rechterklik:** wis de A-B loop
 - **Scroll:** zoom in/uit op de waveform
 - **Pitch/Tempo:** schuifregelaars voor pitch (semitones) en tempo

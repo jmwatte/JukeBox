@@ -1136,13 +1136,19 @@ impl MusicPlayerApp {
             ) {
                 if b > a && has_track {
                     if let Some(ref path) = self.waveform_state.path {
-                        let _ = self
-                            .playback
-                            .player_tx
-                            .send(PlayerCommand::ReplaceQueue(vec![path.clone()]));
-                        let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
-                        let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
-                        let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(a));
+                        if playing_this_track {
+                            // Speelt al: spring direct terug naar A (snel)
+                            let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(a));
+                        } else {
+                            // Laad de track en start bij loop-punt A
+                            let _ = self
+                                .playback
+                                .player_tx
+                                .send(PlayerCommand::ReplaceQueue(vec![path.clone()]));
+                            let _ = self.playback.player_tx.send(PlayerCommand::SetLoopAAt(a));
+                            let _ = self.playback.player_tx.send(PlayerCommand::SetLoopBAt(b));
+                            let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(a));
+                        }
                         self.waveform_state.center_view_on_pos(a);
                         self.playback._status_message = format!("Loop herstart van {:.2}s", a);
                     }

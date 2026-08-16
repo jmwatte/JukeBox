@@ -58,6 +58,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
     let mut last_track: Option<String> = None;
     // Houdt de laatste seek positie bij, nodig voor hervatten vanuit pauze
     let mut pending_seek: Option<Duration> = None;
+    // Seek die pas mag worden toegepast als een (nieuwe) track speelt — rodio
+    // laat een try_seek vallen zolang de sink leeg is, dus na ReplaceQueue
+    // (Play Loop / Enter) moet de seek herhaald worden tot de track actief is.
+    // (pos, resterende pogingen)
+    let mut pending_start_seek: Option<(Duration, u32)> = None;
 
     // Eerste verbinding bij het opstarten (INLINE, geen closure!)
     if let Ok(handle) = rodio::DeviceSinkBuilder::open_default_sink() {
@@ -184,6 +189,7 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 }
                 PlayerCommand::ClearQueue => {
                     internal_queue.clear();
+                    pending_start_seek = None;
                     let _ = event_tx.send(PlayerEvent::QueueChanged(Vec::new()));
                 }
                 PlayerCommand::SetLoopA => {
@@ -238,6 +244,9 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                 PlayerCommand::ReplaceQueue(files) => {
                     loop_a = None;
                     loop_b = None;
+                    // Een verse queue start zonder bewaarde start-seek; alleen een
+                    // SeekTo ná deze ReplaceQueue (Play Loop / Enter) zet hem weer.
+                    pending_start_seek = None;
                     let _ = event_tx.send(PlayerEvent::LoopChanged(None, None));
                     original_queue = files.clone();
                     internal_queue = files;
@@ -260,9 +269,9 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                     }
                 }
                 PlayerCommand::SeekTo(pos) => {
+                    let seek_pos = Duration::from_secs_f32(pos);
                     if let Some(s) = &sink {
                         if !s.empty() {
-                            let seek_pos = Duration::from_secs_f32(pos);
                             pending_seek = Some(seek_pos);
                             if let Some(dur) = current_track_duration {
                                 if seek_pos < dur {
@@ -271,6 +280,11 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                             } else {
                                 let _ = s.try_seek(seek_pos);
                             }
+                        } else {
+                            // Sink is (nog) leeg — rodio laat de seek vallen.
+                            // Bewaar hem en pas toe zodra de track speelt
+                            // (belangrijk voor Play Loop / Enter: starten op A).
+                            pending_start_seek = Some((seek_pos, 33));
                         }
                     }
                     // Stuur de GEVRAAGDE positie (s.get_pos() is onbetrouwbaar als gepauzeerd)
@@ -362,6 +376,35 @@ pub fn run_audio_thread(rx: Receiver<PlayerCommand>, event_tx: Sender<PlayerEven
                         }
                     }
                 }
+            }
+        }
+
+        // 2b. Pending start-seek toepassen: zodra de (nieuwe) track speelt, de
+        //     bewaarde seek alsnog uitvoeren (Play Loop / Enter starten op A).
+        //     rodio laat een seek vallen zolang er geen sound actief is, dus
+        //     controleer via get_pos() of de seek echt is toegepast en herhaal.
+        if let Some((seek, attempts)) = pending_start_seek {
+            if let Some(s) = &sink {
+                if !s.empty() {
+                    let _ = s.try_seek(seek);
+                    let pos = s.get_pos();
+                    let applied = (pos.as_secs_f32() - seek.as_secs_f32()).abs() < 0.5;
+                    if applied {
+                        pending_start_seek = None;
+                    } else if attempts > 0 {
+                        pending_start_seek = Some((seek, attempts - 1));
+                    } else {
+                        log::warn!(
+                            "Kon start-seek naar {:.1}s niet toepassen (ongeschikt bestand?)",
+                            seek.as_secs_f32()
+                        );
+                        pending_start_seek = None;
+                    }
+                }
+            } else if attempts > 0 {
+                pending_start_seek = Some((seek, attempts - 1));
+            } else {
+                pending_start_seek = None;
             }
         }
 

@@ -638,7 +638,8 @@ impl eframe::App for MusicPlayerApp {
                             if b > a {
                                 if ui.button("▶ Play Loop").clicked() {
                                     if let Some(ref path) = self.waveform_state.path {
-                                        // Stuur naar main player met A-B loop
+                                        // Stuur naar main player met A-B loop,
+                                        // startend bij loop-punt A (niet bij 0:00).
                                         let _ = self
                                             .playback
                                             .player_tx
@@ -651,6 +652,10 @@ impl eframe::App for MusicPlayerApp {
                                             .playback
                                             .player_tx
                                             .send(PlayerCommand::SetLoopBAt(b));
+                                        let _ = self
+                                            .playback
+                                            .player_tx
+                                            .send(PlayerCommand::SeekTo(a));
                                     }
                                 }
                             }
@@ -729,7 +734,7 @@ impl eframe::App for MusicPlayerApp {
                     ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(
-                            "Toetsen: J/L = markers A/B (Shift = +0,05s) · Shift+←/→ = loop verplaatsen · Ctrl+D/Ctrl+Shift+D = lengte · C = centreren · Enter = herstart · ←/→ = playhead · ↑/↓ = ±2s · Ctrl+R = reset",
+                            "Toetsen: J/L = markers A/B (Shift = +0,05s) · Shift+←/→ = loop verplaatsen · Ctrl+D/Ctrl+Shift+D = lengte · C = centreren · Enter = herstart · ←/→ = playhead · ↑/↓ = ±2s · Ctrl+R = reset · Ctrl+sleep = loop verslepen",
                         )
                         .size(11.0)
                         .color(egui::Color32::from_gray(130)),
