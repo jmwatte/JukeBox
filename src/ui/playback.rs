@@ -17,6 +17,7 @@ pub struct PlaybackState {
     pub loop_b: Option<f32>,
     pub status_error: Option<String>,
     pub compact_mode: bool,
+    pub always_on_top: bool,
     pub _status_message: String,
 }
 
@@ -38,6 +39,7 @@ impl PlaybackState {
             loop_b: None,
             status_error: None,
             compact_mode: false,
+            always_on_top: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
         }
     }

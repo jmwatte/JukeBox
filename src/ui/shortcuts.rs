@@ -40,6 +40,7 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("LoopB".into(), "]".into());
     m.insert("ClearLoop".into(), "\\".into());
     m.insert("CompactToggle".into(), "F11".into());
+    m.insert("AlwaysOnTop".into(), "F12".into());
     m.insert("QueueToggle".into(), "Q".into());
     m.insert("NowPlaying".into(), "F2".into());
     m.insert("VolumeUp".into(), "=".into());
