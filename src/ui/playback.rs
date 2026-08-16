@@ -1,5 +1,10 @@
 use crate::player::{PlayerCommand, PlayerEvent, RepeatMode};
 use crossbeam_channel::{Receiver, Sender};
+use std::time::Instant;
+
+/// Statusboodschappen vervallen automatisch na dit aantal seconden, zodat
+/// ze niet eindeloos in de now-playing-balk blijven hangen.
+const STATUS_MSG_SECS: f64 = 4.0;
 
 pub struct PlaybackState {
     pub player_tx: Sender<PlayerCommand>,
@@ -19,6 +24,8 @@ pub struct PlaybackState {
     pub compact_mode: bool,
     pub always_on_top: bool,
     pub _status_message: String,
+    /// Tijdstip waarop de huidige statusboodschap is gezet (voor vervaltimer).
+    status_message_set_at: Option<Instant>,
 }
 
 impl PlaybackState {
@@ -41,6 +48,23 @@ impl PlaybackState {
             compact_mode: false,
             always_on_top: false,
             _status_message: "Bibliotheek opstarten...".to_string(),
+            status_message_set_at: None,
+        }
+    }
+
+    /// Zet een statusboodschap die na [`STATUS_MSG_SECS`] seconden vervalt.
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self._status_message = msg.into();
+        self.status_message_set_at = Some(Instant::now());
+    }
+
+    /// Wis de statusboodschap als de vervaltijd verstreken is.
+    pub fn expire_status(&mut self) {
+        if let Some(at) = self.status_message_set_at {
+            if at.elapsed().as_secs_f64() > STATUS_MSG_SECS {
+                self._status_message.clear();
+                self.status_message_set_at = None;
+            }
         }
     }
 }

@@ -122,7 +122,8 @@ impl MusicPlayerApp {
             self.filters.cached_filtered = None;
             self.filters.filter_path.clear();
             self.filters.filter_step = 0;
-            self.playback._status_message = format!("Scannen: {}", fresh_config.music_directory);
+            self.playback
+                .set_status(format!("Scannen: {}", fresh_config.music_directory));
             let tx = self.scanner_tx.clone();
             std::thread::spawn(move || {
                 crate::scanner::load_or_scan_library(
@@ -197,8 +198,10 @@ impl MusicPlayerApp {
                             loop_b_secs: b,
                         };
                         crate::loops::add_loop(&mut self.saved_loops, saved);
-                        self.playback._status_message =
-                            format!("Loop opgeslagen! ({} totaal)", self.saved_loops.len());
+                        self.playback.set_status(format!(
+                            "Loop opgeslagen! ({} totaal)",
+                            self.saved_loops.len()
+                        ));
                     }
                 }
             }
@@ -1039,20 +1042,20 @@ impl MusicPlayerApp {
         if plain(egui::Key::J) {
             if self.waveform_state.nudge_a(-0.05) {
                 self.sync_waveform_loop_to_player();
-                self.playback._status_message = format!(
+                self.playback.set_status(format!(
                     "Loop A: {:.2}s",
                     self.waveform_state.loop_a_secs.unwrap_or(0.0)
-                );
+                ));
             }
             return true;
         }
         if shift(egui::Key::J) {
             if self.waveform_state.nudge_a(0.05) {
                 self.sync_waveform_loop_to_player();
-                self.playback._status_message = format!(
+                self.playback.set_status(format!(
                     "Loop A: {:.2}s",
                     self.waveform_state.loop_a_secs.unwrap_or(0.0)
-                );
+                ));
             }
             return true;
         }
@@ -1061,20 +1064,20 @@ impl MusicPlayerApp {
         if plain(egui::Key::L) {
             if self.waveform_state.nudge_b(-0.05) {
                 self.sync_waveform_loop_to_player();
-                self.playback._status_message = format!(
+                self.playback.set_status(format!(
                     "Loop B: {:.2}s",
                     self.waveform_state.loop_b_secs.unwrap_or(0.0)
-                );
+                ));
             }
             return true;
         }
         if shift(egui::Key::L) {
             if self.waveform_state.nudge_b(0.05) {
                 self.sync_waveform_loop_to_player();
-                self.playback._status_message = format!(
+                self.playback.set_status(format!(
                     "Loop B: {:.2}s",
                     self.waveform_state.loop_b_secs.unwrap_or(0.0)
-                );
+                ));
             }
             return true;
         }
@@ -1088,7 +1091,7 @@ impl MusicPlayerApp {
                         seek(self, a);
                     }
                 }
-                self.playback._status_message = "Loop naar links verplaatst".to_string();
+                self.playback.set_status("Loop naar links verplaatst");
             }
             return true;
         }
@@ -1100,7 +1103,7 @@ impl MusicPlayerApp {
                         seek(self, a);
                     }
                 }
-                self.playback._status_message = "Loop naar rechts verplaatst".to_string();
+                self.playback.set_status("Loop naar rechts verplaatst");
             }
             return true;
         }
@@ -1109,14 +1112,14 @@ impl MusicPlayerApp {
         if ctrl(egui::Key::D) {
             if self.waveform_state.double_loop() {
                 self.sync_waveform_loop_to_player();
-                self.playback._status_message = "Loop lengte verdubbeld".to_string();
+                self.playback.set_status("Loop lengte verdubbeld");
             }
             return true;
         }
         if ctrl_shift(egui::Key::D) {
             if self.waveform_state.halve_loop() {
                 self.sync_waveform_loop_to_player();
-                self.playback._status_message = "Loop lengte gehalveerd".to_string();
+                self.playback.set_status("Loop lengte gehalveerd");
             }
             return true;
         }
@@ -1124,7 +1127,7 @@ impl MusicPlayerApp {
         // ── View centreren op loop: C ──
         if plain(egui::Key::C) {
             self.waveform_state.center_view_on_loop();
-            self.playback._status_message = "Weergave gecentreerd op loop".to_string();
+            self.playback.set_status("Weergave gecentreerd op loop");
             return true;
         }
 
@@ -1153,10 +1156,11 @@ impl MusicPlayerApp {
                             let _ = self.playback.player_tx.send(PlayerCommand::SeekTo(a));
                         }
                         self.waveform_state.center_view_on_pos(a);
-                        self.playback._status_message = format!("Loop herstart van {:.2}s", a);
+                        self.playback
+                            .set_status(format!("Loop herstart van {:.2}s", a));
                     }
                 } else {
-                    self.playback._status_message = "Geen A-B loop om te herstarten".to_string();
+                    self.playback.set_status("Geen A-B loop om te herstarten");
                 }
             }
             return true;
@@ -1168,8 +1172,8 @@ impl MusicPlayerApp {
                 let pos = self.playback.now_playing_position - 0.20;
                 seek(self, pos);
             } else {
-                self.playback._status_message =
-                    "Speel de track eerst af (Space) om te spoelen".to_string();
+                self.playback
+                    .set_status("Speel de track eerst af (Space) om te spoelen");
             }
             return true;
         }
@@ -1178,8 +1182,8 @@ impl MusicPlayerApp {
                 let pos = self.playback.now_playing_position + 0.20;
                 seek(self, pos);
             } else {
-                self.playback._status_message =
-                    "Speel de track eerst af (Space) om te spoelen".to_string();
+                self.playback
+                    .set_status("Speel de track eerst af (Space) om te spoelen");
             }
             return true;
         }
@@ -1190,8 +1194,8 @@ impl MusicPlayerApp {
                 let pos = self.playback.now_playing_position + 2.0;
                 seek(self, pos);
             } else {
-                self.playback._status_message =
-                    "Speel de track eerst af (Space) om te spoelen".to_string();
+                self.playback
+                    .set_status("Speel de track eerst af (Space) om te spoelen");
             }
             return true;
         }
@@ -1200,8 +1204,8 @@ impl MusicPlayerApp {
                 let pos = self.playback.now_playing_position - 2.0;
                 seek(self, pos);
             } else {
-                self.playback._status_message =
-                    "Speel de track eerst af (Space) om te spoelen".to_string();
+                self.playback
+                    .set_status("Speel de track eerst af (Space) om te spoelen");
             }
             return true;
         }
@@ -1210,7 +1214,7 @@ impl MusicPlayerApp {
         if ctrl(egui::Key::R) {
             self.waveform_state.zoom = 50.0;
             self.waveform_state.scroll_offset = 0.0;
-            self.playback._status_message = "Zoom/scroll gereset".to_string();
+            self.playback.set_status("Zoom/scroll gereset");
             return true;
         }
 

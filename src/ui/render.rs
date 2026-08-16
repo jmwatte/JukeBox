@@ -51,6 +51,10 @@ impl eframe::App for MusicPlayerApp {
             }
         }
 
+        // Statusboodschappen (bijv. "Loop herstart van ...") vervallen na een
+        // paar seconden, zodat ze niet blijven hangen in de now-playing-balk.
+        self.playback.expire_status();
+
         // --- ZOEK FUNCTIE (/) ---
         if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Slash)) {
             self.is_search_active = true;
@@ -363,16 +367,16 @@ impl eframe::App for MusicPlayerApp {
                     }
                 }
                 ScannerMessage::Progress(text) => {
-                    self.playback._status_message = text;
+                    self.playback.set_status(text);
                 }
                 ScannerMessage::ScanComplete => {
-                    self.playback._status_message = "Klaar!".to_string();
+                    self.playback.set_status("Klaar!");
                 }
                 ScannerMessage::LoopsRemapped(loops) => {
                     self.saved_loops = loops;
-                    self.playback._status_message =
-                        "Schijfletter gewijzigd — bibliotheek en loops opnieuw gekoppeld."
-                            .to_string();
+                    self.playback.set_status(
+                        "Schijfletter gewijzigd — bibliotheek en loops opnieuw gekoppeld.",
+                    );
                 }
                 ScannerMessage::MusicDirChanged(dir) => {
                     self.config.music_directory = dir;
@@ -683,10 +687,10 @@ impl eframe::App for MusicPlayerApp {
                                                 loop_b_secs: b,
                                             };
                                             crate::loops::add_loop(&mut self.saved_loops, saved);
-                                            self.playback._status_message = format!(
+                                            self.playback.set_status(format!(
                                                 "Loop opgeslagen! ({} totaal)",
                                                 self.saved_loops.len()
-                                            );
+                                            ));
                                         }
                                     }
                                 }
