@@ -60,45 +60,57 @@ Notities:
 
 ## Fase 2 — Audio-kern: rodio 0.19 → 0.22
 
-- [ ] `src/player.rs` migreren naar de nieuwe API:
-  - `Sink::try_new(&handle)` → `handle.play()` (retourneert `Player`)
-  - `try_seek(d)` → `seek(d)` (geeft `Result` terug)
-  - `get_pos`, `skip_one`, `empty`, `clear`, `append`, `set_volume`, `is_paused`, `play`
-    bestaan op `Player` onder dezelfde namen
-  - `Decoder::new` en `total_duration()` blijven, maar samples zijn nu `f32` — let op casts
-- [ ] `vendor/rodio/` + `[patch.crates-io]` verwijderen — onze twee patches
-      (`byte_len`-seek en `total_duration`-conversie) zitten upstream in 0.21+ ingebouwd
-- [ ] Validatie: `cargo test symphonia_flac_seek_works` (poortwachter seek + duur),
-      daarna `cargo test` volledig + release-build
-- [ ] Commit: `Upgrade rodio to 0.22, drop vendor patch`
+- [x] `src/player.rs` migreren naar de nieuwe API:
+  - `Sink::try_new(&handle)` → `handle.play()`-equivalent: `DeviceSinkBuilder::open_default_sink()`
+    + `Player::connect_new(handle.mixer())`; `OutputStream`/`OutputStreamHandle` bestaan niet meer
+  - `try_seek` heet in 0.22 **nog steeds** `try_seek` (geen `seek`)
+  - `get_pos`, `skip_one`, `empty`, `clear`, `append`, `set_volume`, `is_paused`, `play`, `pause`
+    bestaan op `Player` onder dezelfde namen — geen verdere wijzigingen nodig
+  - `Decoder::new(BufReader::new(f))` → `Decoder::try_from(f)` (zet automatisch byte_len +
+    seekable voor seek en duur)
+- [x] `vendor/rodio/` + `[patch.crates-io]` verwijderen — de byte_len- en
+      total_duration-fixes zitten upstream in 0.21+ ingebouwd
+- [x] Validatie: `symphonia_flac_seek_works` slaagt, 41/41 tests groen, release-build ok
+- [x] Commit: `Upgrade rodio to 0.22, drop vendor patch`
 
-## Fase 3 — Cache-format: bincode 1.3 → 3.0
+## Fase 3 — Cache-format: bincode 1.3 → 2.0
 
-- [ ] `src/scanner.rs` migreren (3 callsites: `serialize_into` ×2, `deserialize_from` ×1
+- [x] `src/scanner.rs` migreren (3 callsites: `serialize_into` ×2, `deserialize_from` ×1
       in `save_cache`/`load_or_scan_library`)
-  - bincode 2/3: `encode_to_vec`/`decode_from_slice` met `bincode::config::standard()`,
-    eigen `Encode`/`Decode`-traits (of serde-compat-feature)
-- [ ] Accepteer: **éénmalige herscan** — het cache-formaat breekt, de eerste start na de
-      upgrade scant opnieuw. De enige stap die dit kost.
-- [ ] Validatie: `cargo test`, start de app → cache wordt opnieuw opgebouwd
-- [ ] Commit: `Migrate bincode cache to 3.0`
+  - Gekozen: **bincode 2.0.1 + `serde`-feature + `config::legacy()`** i.p.v. bincode 3.0:
+    - serde-derives blijven werken (`bincode::serde::encode_into_std_write` /
+      `decode_from_std_read`)
+    - `legacy()` is byte-compatibel met bincode 1 → bestaande cache blijft leesbaar,
+      **geen herscan nodig**
+    - bincode 3.0 heeft géén serde-feature en zou een volledige rewrite van alle
+      datamodellen (Encode/Decode i.p.v. Serialize/Deserialize) vereisen zonder winst
+- [x] Validatie: `cargo test` (41/41), build ok
+- [x] Commit: `Migrate bincode cache to 2.0 with serde compat`
 
-## Fase 4 — UI-sprong: eframe/egui_extras 0.28 → 0.36 (grootste, apart project)
+## Fase 4 — UI-sprong: eframe/egui_extras 0.28 → 0.36 (grootste)
 
-- [ ] Branch/plan maken — sprong over 8 majors verdient eigen tijd
-- [ ] Compile-and-fix van `src/ui/*` (render, app, navigation, shortcuts, edit):
-      `Context`-API, widget-signaturen en kleur/`RichText`-API zijn veranderd
-- [ ] Toetsenmapping opnieuw valideren — `src/ui/shortcuts.rs` bevat de AZERTY-fixes
-      (`Key::Semicolon`/`Key::Quote`, `Comma`/`Period`-fallbacks); opnieuw testen tegen
-      de nieuwe egui-`Key`-enum
-- [ ] Handmatige UI-test: navigatie, filters, editor, albumhoezen (`image`/`egui_extras`)
-- [ ] Validatie: `cargo test` (incl. `ui::shortcuts::tests`), release-build, grondige handtest
-- [ ] Commit: `Upgrade eframe and egui_extras to 0.36` (of meerdere commits)
+- [x] `eframe::App::update(ctx, frame)` → `App::ui(ui, frame)` + `let ctx = ui.ctx().clone();`
+      (egui 0.36 herontwerp: root-UI i.p.v. alleen Context)
+- [x] Panels: `SidePanel`/`TopBottomPanel` → `Panel::left/right/top/bottom`;
+      `CentralPanel::show(ctx, …)` → `.show(ui, …)` (alle CentralPanels hadden early-return,
+      dus max. één per frame — geen ruimte-conflicten)
+- [x] `Window::new(...).show(ctx, …)` → `.show(&ctx, …)` (werkt onveranderd)
+- [x] Kleine API-hernoemingen: `default_width` → `default_size`, `id_source` → `id_salt`,
+      `child_ui` → `new_child(UiBuilder)`, `wants_keyboard_input` →
+      `egui_wants_keyboard_input`, `raw_scroll_delta` → `smooth_scroll_delta`,
+      `SelectableLabel::new` → `Button::new(...).selected(...)`, `ctx.run` → `ctx.run_ui`
+      (tests)
+- [x] Test-infra: `FullOutput.textures_delta.clear()` in test-helper (epaint 0.36 panikt
+      anders bij het droppen van de Context)
+- [x] Validatie: 41/41 tests groen (incl. AZERTY-shortcuts en FLAC-seek), release-build ok
+- [x] Commit: `Upgrade eframe and egui_extras to 0.36`
 
 ## Fase 5 — Afronding
 
 - [ ] Laatste volledige check: `cargo test` groen, `cargo build --release` zonder waarschuwingen
+      (al uitgevoerd na elke fase — nog een keer herbevestigen bij afsluiting)
 - [ ] `Cargo.toml` opschonen: rodio-patch-commentaar verwijderen, features/commentaar actueel
+      (deels al gedaan bij rodio; controleer de rest)
 - [ ] Smoke-test op de USB-schijf: opstarten met gewijzigde schijfletter → cache-remap
       werkt nog (geen herscan)
 - [ ] Commit: `Clean up Cargo.toml after dependency updates`
@@ -117,3 +129,18 @@ Notities:
 Alle fasen doorlopen → `Cargo.toml` bevat alleen actuele majors, `vendor/` is weg,
 alle 41+ tests slagen, en de release-build draait met seek, spoelen, loops en tags
 zoals nu.
+
+---
+
+## Vervolgstap (niet in dit traject): `loop-editor/`
+
+De map `loop-editor/` is een **apart project** (waveform loop-editor app) met een eigen
+`Cargo.toml` die nog de oude versies gebruikt: `eframe 0.28`, `rodio 0.19` (met
+`vendor/rubberband`), `rfd 0.14`, `soundtouch 0.5.4`, `rustfft 6.2`.
+
+- Het heeft een eigen dependency-tree (eigen `Cargo.lock`) en eigen code
+  (`src/waveform.rs`, `src/waveform_player.rs`, …)
+- Een upgrade volgt hetzelfde stappenplan als hierboven, maar moet apart worden
+  uitgevoerd: eerst rodio 0.22 (`Sink`→`Player`, `Decoder::try_from`), dan eframe 0.36
+  (`App::ui`, `Panel`, …)
+- Besluit van de gebruiker nodig: is de loop-editor nog in actief gebruik?
