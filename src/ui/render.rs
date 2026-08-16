@@ -1255,6 +1255,15 @@ impl eframe::App for MusicPlayerApp {
 
 impl MusicPlayerApp {
     #[allow(unused_variables)]
+    /// Maak een `file://`-URI die de egui_extras 0.36+ FileLoader op Windows accepteert.
+    ///
+    /// Sinds egui_extras 0.36 verwacht de loader de vorm `file:///C:/pad/...` (drie slashes,
+    /// forward slashes). Een URI als `file://C:\pad\...` wordt geïnterpreteerd als UNC-netwerkpad
+    /// (`\\C:\pad\...`) en faalt met "network path was not found (os error 53)".
+    fn cover_uri(path: &str) -> String {
+        format!("file:///{}", path.replace('\\', "/"))
+    }
+
     fn render_cover_view_inline(
         ui: &mut egui::Ui,
         _ctx: &egui::Context,
@@ -1313,7 +1322,6 @@ impl MusicPlayerApp {
                         .min(800.0); // Maximum flink verhoogd zodat ze de beschikbare real estate echt mogen pakken
 
                     let thumb_size = egui::vec2(thumb_w, thumb_w);
-                    let thumb_size = egui::vec2(thumb_w, thumb_w);
 
                     if num_albums == 1 {
                         ui.centered_and_justified(|ui| {
@@ -1321,7 +1329,7 @@ impl MusicPlayerApp {
                                 let big_w = (available_ui_width * 0.6).max(200.0).min(800.0);
                                 let resp = ui.add_sized(
                                     egui::vec2(big_w, big_w),
-                                    Image::new(format!("file://{}", path))
+                                    Image::new(Self::cover_uri(path))
                                         .show_loading_spinner(false)
                                         .sense(egui::Sense::click()),
                                 );
@@ -1344,7 +1352,7 @@ impl MusicPlayerApp {
                                         if let Some(path) = &album.cover_path {
                                             let resp = col_ui.add_sized(
                                                 thumb_size,
-                                                Image::new(format!("file://{}", path))
+                                                Image::new(Self::cover_uri(path))
                                                     .show_loading_spinner(false)
                                                     .sense(egui::Sense::click()),
                                             );
@@ -1382,7 +1390,7 @@ impl MusicPlayerApp {
                             let size_w = (available * 0.5).max(200.0).min(1200.0);
                             let _ = ui.add_sized(
                                 egui::vec2(size_w, size_w),
-                                Image::new(format!("file://{}", path)).show_loading_spinner(false),
+                                Image::new(Self::cover_uri(path)).show_loading_spinner(false),
                             );
                         }
                         ui.add_space(6.0);
