@@ -813,7 +813,9 @@ impl eframe::App for MusicPlayerApp {
         // Vroeger stond hier alleen een `return`, waardoor het hele venster
         // leeg (zwart) bleef — nu wordt een echte speler getoond.
         if self.playback.compact_mode {
-            egui::CentralPanel::default().show(ui, |ui| {
+            // no_frame(): geen randmarge, zodat de eigen titelbalk helemaal
+            // bovenaan het venster begint (geen zwarte lijn erboven).
+            egui::CentralPanel::no_frame().show(ui, |ui| {
                 self.render_compact_player(ui);
             });
             ctx.request_repaint();
@@ -1264,6 +1266,13 @@ impl eframe::App for MusicPlayerApp {
     }
 }
 
+/// Uitgerekende rechthoeken voor de minimalistische modus (F11).
+struct CompactLayout {
+    bar_rect: egui::Rect,
+    cover_rect: egui::Rect,
+    progress_rect: egui::Rect,
+}
+
 impl MusicPlayerApp {
     #[allow(unused_variables)]
     /// Maak een `file://`-URI die de egui_extras 0.36+ FileLoader op Windows accepteert.
@@ -1427,19 +1436,16 @@ impl MusicPlayerApp {
     /// bediening, zonder OS-titelbalk en zonder bibliotheek.
     fn render_compact_player(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let full = ui.max_rect();
+        let lay = Self::compact_layout(full);
 
         // ── Eigen titelbalk (vervangt de OS-balk in deze modus) ──
-        let bar_height = 26.0;
-        let bar_rect = egui::Rect::from_min_size(
-            ui.max_rect().min,
-            egui::vec2(ui.max_rect().width(), bar_height),
-        );
         ui.painter()
-            .rect_filled(bar_rect, 0.0, Color32::from_gray(30));
+            .rect_filled(lay.bar_rect, 0.0, Color32::from_gray(30));
 
         // Slepen om het venster te verplaatsen
         let bar_resp = ui.interact(
-            bar_rect,
+            lay.bar_rect,
             egui::Id::new("compact_drag_bar"),
             egui::Sense::drag(),
         );
@@ -1449,14 +1455,14 @@ impl MusicPlayerApp {
 
         ui.put(
             egui::Rect::from_min_size(
-                bar_rect.min + egui::vec2(8.0, 4.0),
-                egui::vec2(bar_rect.width() - 48.0, 20.0),
+                lay.bar_rect.min + egui::vec2(8.0, 4.0),
+                egui::vec2(lay.bar_rect.width() - 48.0, 20.0),
             ),
             egui::Label::new(RichText::new("JukeBoks").size(12.0).color(Color32::GRAY)),
         );
         let close_btn = ui.put(
             egui::Rect::from_min_size(
-                egui::pos2(bar_rect.right() - 24.0, bar_rect.top() + 2.0),
+                egui::pos2(lay.bar_rect.right() - 24.0, lay.bar_rect.top() + 2.0),
                 egui::vec2(22.0, 22.0),
             ),
             egui::Button::new(RichText::new("✕").size(13.0))
@@ -1467,105 +1473,93 @@ impl MusicPlayerApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        ui.add_space(bar_height + 6.0);
-        ui.vertical_centered(|ui| {
-            // ── Hoes van het huidige nummer ──
-            // De hoes vult alle beschikbare ruimte: vierkant, beperkt door de laagste
-            // van breedte en hoogte, minus de ruimte die de voortgangsbalk + tussenruimte
-            // onder de hoes nodig hebben. Zo blijven er geen lege zwarte stroken over.
-            let avail = ui.available_size();
-            let bar_h = 30.0;
-            let spacing = 12.0;
-            let cover_box = (avail.x.min(avail.y - bar_h - spacing))
-                .max(60.0)
-                .min(420.0);
-            let cover_box = egui::vec2(cover_box, cover_box);
-            let cover = self.find_cover_for_path(self.playback.now_playing_path.as_deref());
-            if let Some(path) = cover {
-                let resp = ui.add_sized(
-                    cover_box,
-                    Image::new(Self::cover_uri(&path))
-                        .fit_to_exact_size(cover_box)
-                        .show_loading_spinner(false)
-                        .sense(egui::Sense::click()),
-                );
-                if resp.double_clicked() {
-                    let _ = self.playback.player_tx.send(PlayerCommand::PlayPause);
-                }
-            } else {
-                ui.add_sized(
-                    cover_box,
-                    egui::Label::new(
-                        egui::RichText::new("🎵")
-                            .size(cover_box.x * 0.35)
-                            .color(Color32::from_gray(90)),
-                    )
-                    .selectable(false),
-                );
+        // ── Hoes van het huidige nummer ──
+        // De hoes vult alle beschikbare ruimte: vierkant, beperkt door de laagste
+        // van breedte en hoogte, minus de ruimte die de voortgangsbalk + tussenruimte
+        // onder de hoes nodig hebben. Zo blijven er geen lege zwarte stroken over.
+        let cover = self.find_cover_for_path(self.playback.now_playing_path.as_deref());
+        if let Some(path) = cover {
+            let resp = ui.put(
+                lay.cover_rect,
+                Image::new(Self::cover_uri(&path))
+                    .fit_to_exact_size(lay.cover_rect.size())
+                    .show_loading_spinner(false)
+                    .sense(egui::Sense::click()),
+            );
+            if resp.double_clicked() {
+                let _ = self.playback.player_tx.send(PlayerCommand::PlayPause);
             }
+        } else {
+            ui.put(
+                lay.cover_rect,
+                egui::Label::new(
+                    egui::RichText::new("🎵")
+                        .size(lay.cover_rect.width() * 0.35)
+                        .color(Color32::from_gray(90)),
+                )
+                .selectable(false),
+            );
+        }
 
-            ui.add_space(spacing);
-
-            // ── Titel bovenop de voortgangsbalk ──
-            let bar_w = ui.available_width().min(440.0);
-            let (bar_rect, _) =
-                ui.allocate_exact_size(egui::vec2(bar_w, bar_h), egui::Sense::hover());
+        // ── Titel bovenop de voortgangsbalk ──
+        ui.painter()
+            .rect_filled(lay.progress_rect, 4.0, Color32::from_gray(48));
+        let pos = self.playback.now_playing_position;
+        let dur = self.playback.now_playing_duration;
+        if dur > 0.0 {
+            let fraction = (pos / dur).clamp(0.0, 1.0);
+            let fill = egui::Rect::from_min_size(
+                lay.progress_rect.min,
+                egui::vec2(
+                    lay.progress_rect.width() * fraction,
+                    lay.progress_rect.height(),
+                ),
+            );
             ui.painter()
-                .rect_filled(bar_rect, 4.0, Color32::from_gray(48));
-            let pos = self.playback.now_playing_position;
-            let dur = self.playback.now_playing_duration;
-            if dur > 0.0 {
-                let fraction = (pos / dur).clamp(0.0, 1.0);
-                let fill =
-                    egui::Rect::from_min_size(bar_rect.min, egui::vec2(bar_w * fraction, bar_h));
-                ui.painter()
-                    .rect_filled(fill, 4.0, Color32::from_rgb(45, 95, 145));
-            }
+                .rect_filled(fill, 4.0, Color32::from_rgb(45, 95, 145));
+        }
 
-            // Titel gecentreerd op de balk (afgekapt als hij te lang is)
-            let title = self
-                .playback
-                .now_playing
-                .clone()
-                .unwrap_or_else(|| "Geen nummer geladen".to_string());
-            let mut job = egui::text::LayoutJob::default();
-            job.wrap = egui::text::TextWrapping::truncate_at_width(bar_w - 24.0);
-            job.append(
-                &title,
-                0.0,
-                egui::TextFormat::simple(egui::FontId::proportional(15.0), Color32::WHITE),
-            );
-            let galley = ui.painter().layout_job(job);
-            let text_pos = egui::pos2(
-                bar_rect.center().x - galley.size().x / 2.0,
-                bar_rect.center().y - galley.size().y / 2.0,
-            );
-            // Schaduw voor leesbaarheid, daarna de witte tekst
-            ui.painter().galley(
-                text_pos + egui::vec2(1.0, 1.0),
-                galley.clone(),
-                Color32::from_black_alpha(170),
-            );
-            ui.painter().galley(text_pos, galley, Color32::WHITE);
+        // Titel gecentreerd op de balk (afgekapt als hij te lang is)
+        let title = self
+            .playback
+            .now_playing
+            .clone()
+            .unwrap_or_else(|| "Geen nummer geladen".to_string());
+        let mut job = egui::text::LayoutJob::default();
+        job.wrap = egui::text::TextWrapping::truncate_at_width(lay.progress_rect.width() - 24.0);
+        job.append(
+            &title,
+            0.0,
+            egui::TextFormat::simple(egui::FontId::proportional(15.0), Color32::WHITE),
+        );
+        let galley = ui.painter().layout_job(job);
+        let text_pos = egui::pos2(
+            lay.progress_rect.center().x - galley.size().x / 2.0,
+            lay.progress_rect.center().y - galley.size().y / 2.0,
+        );
+        // Schaduw voor leesbaarheid, daarna de witte tekst
+        ui.painter().galley(
+            text_pos + egui::vec2(1.0, 1.0),
+            galley.clone(),
+            Color32::from_black_alpha(170),
+        );
+        ui.painter().galley(text_pos, galley, Color32::WHITE);
 
-            // ── Foutmelding ──
-            if let Some(ref err) = self.playback.status_error {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(format!("⚠ {}", err))
-                        .size(13.0)
-                        .color(Color32::from_rgb(255, 100, 100)),
-                );
-            }
-        });
+        // ── Foutmelding (onder de balk) ──
+        if let Some(ref err) = self.playback.status_error {
+            ui.painter().text(
+                egui::pos2(full.center().x, lay.progress_rect.bottom() + 12.0),
+                egui::Align2::CENTER_CENTER,
+                format!("⚠ {}", err),
+                egui::FontId::proportional(13.0),
+                Color32::from_rgb(255, 100, 100),
+            );
+        }
 
         // ── Resize-handle rechtsonder (altijd zichtbaar, bovenop de inhoud) ──
         let handle_size = 24.0;
         let handle_rect = egui::Rect::from_min_size(
-            egui::pos2(
-                ui.max_rect().right() - handle_size,
-                ui.max_rect().bottom() - handle_size,
-            ),
+            egui::pos2(full.right() - handle_size, full.bottom() - handle_size),
             egui::vec2(handle_size, handle_size),
         );
         let handle_resp = ui.interact(
@@ -1594,6 +1588,45 @@ impl MusicPlayerApp {
                 Color32::from_gray(140)
             },
         );
+    }
+
+    /// Berekent alle rechthoeken voor de minimalistische modus op basis van het
+    /// volledige venster. Pure functie, zodat de layout exact getest kan worden
+    /// (o.a. dat de hoes strak onder de titelbalk begint, zonder zwarte strook).
+    fn compact_layout(full: egui::Rect) -> CompactLayout {
+        let bar_height = 26.0;
+        let bar_rect = egui::Rect::from_min_size(full.min, egui::vec2(full.width(), bar_height));
+
+        // Inhoudsgebied: begint precies onder de titelbalk.
+        let content =
+            egui::Rect::from_min_max(egui::pos2(full.left(), full.top() + bar_height), full.max);
+        let avail_w = content.width();
+        let avail_h = content.height();
+
+        let bar_h = 30.0;
+        let spacing = 12.0;
+        let cover_size = (avail_w.min(avail_h - bar_h - spacing))
+            .max(60.0)
+            .min(420.0);
+        let cover_rect = egui::Rect::from_min_size(
+            egui::pos2(content.center().x - cover_size / 2.0, content.top()),
+            egui::vec2(cover_size, cover_size),
+        );
+
+        let bar_w = avail_w.min(440.0);
+        let progress_rect = egui::Rect::from_min_size(
+            egui::pos2(
+                content.center().x - bar_w / 2.0,
+                cover_rect.bottom() + spacing,
+            ),
+            egui::vec2(bar_w, bar_h),
+        );
+
+        CompactLayout {
+            bar_rect,
+            cover_rect,
+            progress_rect,
+        }
     }
 
     /// Zoek de albumhoes van het opgegeven trackpad in de actieve bibliotheek.
@@ -1851,5 +1884,89 @@ mod tests {
             rect,
             clip
         );
+    }
+
+    /// De minimalistische modus (F11) moet een strakke layout hebben: de hoes
+    /// begint precies onder de eigen titelbalk (geen zwarte strook), is vierkant
+    /// en de voortgangsbalk past samen met de hoes binnen het venster.
+    #[test]
+    fn minimal_mode_cover_starts_under_titlebar() {
+        for size in [
+            egui::vec2(300.0, 420.0), // smal venster
+            egui::vec2(400.0, 300.0), // breed, laag venster
+            egui::vec2(500.0, 250.0), // heel laag venster
+        ] {
+            let full = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            let lay = MusicPlayerApp::compact_layout(full);
+
+            // 1. Geen zwarte strook tussen titelbalk en hoes.
+            assert_eq!(
+                lay.cover_rect.top(),
+                lay.bar_rect.bottom(),
+                "hoes moet strak onder de titelbalk beginnen (size={size:?})"
+            );
+            // 2. Hoes is vierkant.
+            assert!(
+                (lay.cover_rect.width() - lay.cover_rect.height()).abs() <= 0.5,
+                "hoes moet vierkant zijn (size={size:?}): {:?}",
+                lay.cover_rect
+            );
+            // 3. Hoes valt binnen de breedte van het venster.
+            assert!(
+                lay.cover_rect.left() >= full.left() - 0.5
+                    && lay.cover_rect.right() <= full.right() + 0.5,
+                "hoes valt buiten de breedte (size={size:?}): {:?}",
+                lay.cover_rect
+            );
+            // 4. Voortgangsbalk zit onder de hoes en valt binnen het venster.
+            assert!(
+                lay.progress_rect.top() >= lay.cover_rect.bottom(),
+                "balk moet onder de hoes zitten (size={size:?})"
+            );
+            assert!(
+                lay.progress_rect.bottom() <= full.bottom() + 0.5,
+                "balk valt buiten het venster (size={size:?}): {:?}",
+                lay.progress_rect
+            );
+        }
+    }
+
+    /// Rooktest: de echte `render_compact_player` draait zonder panics op een
+    /// klein venster (met en zonder hoes in de bibliotheek).
+    #[test]
+    fn compact_player_renders_without_panicking() {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(300.0, 420.0),
+            )),
+            ..Default::default()
+        };
+        let (player_tx, _rx) = crossbeam_channel::unbounded();
+        let (ev_tx, ev_rx) = crossbeam_channel::unbounded();
+        let (sc_tx, _sc_rx) = crossbeam_channel::unbounded();
+        let (_sc2_tx, sc2_rx) = crossbeam_channel::unbounded();
+        let mut app = MusicPlayerApp::new(
+            crate::config::Config::default(),
+            player_tx,
+            ev_rx,
+            sc_tx,
+            sc2_rx,
+        );
+        app.playback.now_playing = Some("Test nummer".to_string());
+        app.playback.now_playing_position = 50.0;
+        app.playback.now_playing_duration = 100.0;
+        let _ = ev_tx;
+
+        let mut frames = 0;
+        let mut output = ctx.run_ui(raw, |ctx| {
+            egui::CentralPanel::no_frame().show(ctx, |ui| {
+                app.render_compact_player(ui);
+                frames += 1;
+            });
+        });
+        output.textures_delta.clear();
+        assert!(frames == 1, "render_compact_player moet exact 1x draaien");
     }
 }
