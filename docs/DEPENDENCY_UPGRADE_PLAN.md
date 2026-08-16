@@ -132,15 +132,9 @@ zoals nu.
 
 ---
 
-## Vervolgstap (niet in dit traject): `loop-editor/`
+## Vervolgstap (niet in dit traject): loop-editor is verhuisd
 
-De map `loop-editor/` is een **apart project** (waveform loop-editor app) met een eigen
-`Cargo.toml` die nog de oude versies gebruikt: `eframe 0.28`, `rodio 0.19` (met
-`vendor/rubberband`), `rfd 0.14`, `soundtouch 0.5.4`, `rustfft 6.2`.
-
-- Het heeft een eigen dependency-tree (eigen `Cargo.lock`) en eigen code
-  (`src/waveform.rs`, `src/waveform_player.rs`, …)
-- Een upgrade volgt hetzelfde stappenplan als hierboven, maar moet apart worden
-  uitgevoerd: eerst rodio 0.22 (`Sink`→`Player`, `Decoder::try_from`), dan eframe 0.36
-  (`App::ui`, `Panel`, …)
-- Besluit van de gebruiker nodig: is de loop-editor nog in actief gebruik?
+De map `loop-editor/` is **verwijderd** uit deze repo. Het waveform loop-editor werk
+wordt voortgezet in het aparte project **LoopMachine** (eigen repo), waar het zijn
+crate-upgrades al heeft doorlopen. Een eventuele dependency-upgrade voor de
+loop-editor code hoort dus thuis in dat project, niet hier.
