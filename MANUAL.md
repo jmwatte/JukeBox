@@ -80,7 +80,8 @@ Alle toetsen zijn aanpasbaar in `config.toml` onder `[shortcuts]`.
 | `M` | Markeer track voor batch-edit |
 | `Shift+M` | Wis alle markeringen |
 | `Z` | Browse selectie |
-| `O` | Open map van huidige track |
+| `O` | Open map van huidige track in Verkenner |
+| `Ctrl+C` | Kopieer pad van huidige track naar klembord |
 
 ### Systeem
 

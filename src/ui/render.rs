@@ -270,6 +270,10 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "OpenFolder")
                     ));
                     ui.label(format!(
+                        "• {} : Kopieer het pad van de huidige track",
+                        shortcuts::get_key_display(s, "CopyPath")
+                    ));
+                    ui.label(format!(
                         "• {} : Track Details & Tags bewerken",
                         shortcuts::get_key_display(s, "TrackDetails")
                     ));

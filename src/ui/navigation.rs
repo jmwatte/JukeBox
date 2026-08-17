@@ -3,7 +3,6 @@ use crate::ui::shortcuts;
 use crate::ui::types::{FilterNode, NavLevel, ViewMode};
 use eframe::egui;
 use std::fmt::Write;
-use std::path::Path;
 
 use super::app::MusicPlayerApp;
 
@@ -776,12 +775,25 @@ impl MusicPlayerApp {
             }
         }
 
-        // --- O: OPEN FOLDER ---
+        // --- O: OPEN FOLDER (map + bestand geselecteerd in Explorer) ---
         if shortcuts::check_action(&cfg, ctx, "OpenFolder") {
             if let Some(track_path) = self.get_current_track_path(&lib) {
-                if let Some(parent) = Path::new(&track_path).parent() {
-                    let _ = std::process::Command::new("explorer").arg(parent).spawn();
-                }
+                // /select,<pad> opent de map én markeert het bestand, zodat je
+                // meteen ziet welk nummer het is.
+                let _ = std::process::Command::new("explorer")
+                    .arg(format!("/select,{}", track_path))
+                    .spawn();
+            }
+        }
+
+        // --- CTRL+C: KOPIEER HET PAD VAN DE HUIDIGE TRACK ---
+        if shortcuts::check_action(&cfg, ctx, "CopyPath") {
+            let track_path = self
+                .get_current_track_path(&lib)
+                .or_else(|| self.playback.now_playing_path.clone());
+            if let Some(path) = track_path {
+                ctx.copy_text(path.clone());
+                self.playback.set_status("Pad gekopieerd naar klembord");
             }
         }
 

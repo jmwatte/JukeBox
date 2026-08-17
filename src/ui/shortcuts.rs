@@ -28,6 +28,7 @@ pub fn default_shortcuts() -> HashMap<String, String> {
     m.insert("MarkTrack".into(), "M".into());
     m.insert("ClearMarks".into(), "Shift+M".into());
     m.insert("OpenFolder".into(), "O".into());
+    m.insert("CopyPath".into(), "Ctrl+C".into());
     m.insert("SelectionBrowse".into(), "Z".into());
     m.insert("YearBrowse".into(), "Y".into());
     m.insert("ComposerBrowse".into(), "C".into());
