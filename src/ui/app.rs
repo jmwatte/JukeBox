@@ -649,17 +649,28 @@ impl MusicPlayerApp {
     }
 
     /// Open de "Favorieten"-view: een selectie-bibliotheek van alle favoriete
-    /// tracks (zelfde truc als Browse selectie / Z). Geeft niets terug als er
-    /// geen favorieten zijn.
+    /// tracks (zelfde truc als Browse selectie / Z). Is de favorietenlijst leeg,
+    /// dan toont de render een leeg-favorieten-scherm.
     pub fn open_favorites_view(&mut self) {
+        // Verlaat een open recente-lijst (die heeft voorrang in de render).
+        self.filters.recent_albums.clear();
+        self.favorites_view = true;
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.selected_album = 0;
+        self.selected_disk = 0;
+        self.selected_track = 0;
+        self.scroll_to_selection = true;
+
         if self.favorites.is_empty() {
+            // Geen favorieten: toon het lege-favorieten-scherm (geen
+            // gefilterde bibliotheek nodig).
+            self.filtered_library = None;
             self.playback.set_status(
                 "Nog geen favorieten — druk op F om het huidige niveau als favoriet te markeren",
             );
             return;
         }
-        // Verlaat een open recente-lijst (die heeft voorrang in de render).
-        self.filters.recent_albums.clear();
         let Some(lib) = self.active_library() else {
             self.playback.set_status("Bibliotheek is nog niet geladen");
             return;
@@ -667,13 +678,6 @@ impl MusicPlayerApp {
         let fav_set: HashSet<String> = self.favorites.iter().cloned().collect();
         let selection = Self::build_selection_library(lib, &fav_set);
         self.filtered_library = Some(selection);
-        self.current_level = NavLevel::Artist;
-        self.selected_artist = 0;
-        self.selected_album = 0;
-        self.selected_disk = 0;
-        self.selected_track = 0;
-        self.favorites_view = true;
-        self.scroll_to_selection = true;
         self.playback.set_status("⭐ Favorieten");
     }
 

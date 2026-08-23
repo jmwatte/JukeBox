@@ -942,6 +942,48 @@ impl eframe::App for MusicPlayerApp {
             return;
         };
 
+        // --- FAVORIETEN VIEW: lege of onopgeloste toestand ---
+        if self.favorites_view {
+            let favorites_panel = |ui: &mut egui::Ui, title: &str, hint: &str| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(40.0);
+                    ui.label(
+                        egui::RichText::new(title)
+                            .size(26.0)
+                            .color(egui::Color32::LIGHT_BLUE),
+                    );
+                    ui.add_space(10.0);
+                    ui.label(
+                        egui::RichText::new(hint)
+                            .size(15.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+            };
+            if self.favorites.is_empty() {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    favorites_panel(
+                        ui,
+                        "⭐ Nog geen favorieten",
+                        "Druk op F om het huidige niveau (artiest/album/track) als favoriet te markeren.\nEsc of Shift+F om terug te gaan.",
+                    );
+                });
+                ctx.request_repaint();
+                return;
+            }
+            if current_lib.artists.is_empty() {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    favorites_panel(
+                        ui,
+                        "Favorieten niet gevonden",
+                        "Geen van je favoriete nummers staat (nog) in de bibliotheek —\nmogelijk verplaatst of op een andere schijf. Esc of Shift+F om terug te gaan.",
+                    );
+                });
+                ctx.request_repaint();
+                return;
+            }
+        }
+
         // --- LEEGE BIBLIOTHEEK ---
         if current_lib.artists.is_empty()
             && self.filtered_library.is_none()

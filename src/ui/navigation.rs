@@ -91,7 +91,7 @@ impl MusicPlayerApp {
             }
 
             // 2. Dan search wissen
-            if self.is_search_active || self.filtered_library.is_some() {
+            if self.is_search_active || self.favorites_view || self.filtered_library.is_some() {
                 self.is_search_active = false;
                 self.filtered_library = None;
                 self.favorites_view = false; // verlaat ook de Favorieten-view
