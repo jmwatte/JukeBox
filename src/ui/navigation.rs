@@ -94,6 +94,7 @@ impl MusicPlayerApp {
             if self.is_search_active || self.filtered_library.is_some() {
                 self.is_search_active = false;
                 self.filtered_library = None;
+                self.favorites_view = false; // verlaat ook de Favorieten-view
                 self.search_query.clear();
                 self.current_level = NavLevel::Artist;
                 self.selected_artist = 0;
@@ -288,7 +289,45 @@ impl MusicPlayerApp {
                 self.selected_artist = 0;
                 self.scroll_to_selection = true;
             } else {
+                self.favorites_view = false; // verlaat een open Favorieten-view
                 self.enter_recent_mode();
+                if self.filters.recent_albums.is_empty() {
+                    // Geen albums gevonden: melden en gewoon in de normale view blijven.
+                    self.playback.set_status("Geen albums gevonden");
+                }
+            }
+            return;
+        }
+
+        // --- F: FAVORIET TOGGLE OP HUIDIG NIVEAU (artiest/album/disk/track) ---
+        if shortcuts::check_action(&cfg, ctx, "ToggleFavorite") {
+            let tracks = self
+                .filtered_library
+                .as_ref()
+                .or(self.filters.cached_filtered.as_ref())
+                .or(self.library.as_ref())
+                .map(|l| self.get_tracks_at_level(l, &self.current_level))
+                .unwrap_or_default();
+            if !tracks.is_empty() {
+                let added = crate::favorites::toggle_favorites(&mut self.favorites, &tracks);
+                if added {
+                    self.playback.set_status(format!(
+                        "⭐ Favoriet toegevoegd ({} track(s))",
+                        tracks.len()
+                    ));
+                } else {
+                    self.playback
+                        .set_status(format!("Favoriet verwijderd ({} track(s))", tracks.len()));
+                }
+            }
+        }
+
+        // --- SHIFT+F: FAVORIETEN VIEW ---
+        if shortcuts::check_action(&cfg, ctx, "FavoritesBrowse") {
+            if self.favorites_view {
+                self.close_favorites_view();
+            } else {
+                self.open_favorites_view();
             }
             return;
         }
@@ -330,7 +369,7 @@ impl MusicPlayerApp {
                 }
             }
             if shortcuts::check_action(&cfg, ctx, "Select") {
-                if let Some((_, album)) =
+                if let Some((_, _, album)) =
                     self.filters.recent_albums.get(self.filters.selected_recent)
                 {
                     let mut queue = Vec::new();

@@ -18,6 +18,7 @@ pub enum ScannerMessage {
     LibraryLoaded(Library),
     ScanComplete,
     LoopsRemapped(Vec<crate::loops::SavedLoop>),
+    FavoritesRemapped(Vec<String>),
     MusicDirChanged(String),
 }
 
@@ -218,6 +219,11 @@ pub fn load_or_scan_library(
                     if let Some(loops) = crate::loops::remap_loops(&cache.music_dir, &effective_dir)
                     {
                         let _ = tx.send(ScannerMessage::LoopsRemapped(loops));
+                    }
+                    if let Some(favs) =
+                        crate::favorites::remap_favorites(&cache.music_dir, &effective_dir)
+                    {
+                        let _ = tx.send(ScannerMessage::FavoritesRemapped(favs));
                     }
                     return;
                 }

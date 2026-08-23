@@ -274,6 +274,14 @@ impl eframe::App for MusicPlayerApp {
                         shortcuts::get_key_display(s, "CopyPath")
                     ));
                     ui.label(format!(
+                        "• {} : Zet huidig niveau als favoriet (artiest/album/track)",
+                        shortcuts::get_key_display(s, "ToggleFavorite")
+                    ));
+                    ui.label(format!(
+                        "• {} : Open/sluit de Favorieten-view",
+                        shortcuts::get_key_display(s, "FavoritesBrowse")
+                    ));
+                    ui.label(format!(
                         "• {} : Track Details & Tags bewerken",
                         shortcuts::get_key_display(s, "TrackDetails")
                     ));
@@ -381,6 +389,11 @@ impl eframe::App for MusicPlayerApp {
                     self.playback.set_status(
                         "Schijfletter gewijzigd — bibliotheek en loops opnieuw gekoppeld.",
                     );
+                }
+                ScannerMessage::FavoritesRemapped(favs) => {
+                    self.favorites = favs;
+                    self.playback
+                        .set_status("Schijfletter gewijzigd — favorieten opnieuw gekoppeld.");
                 }
                 ScannerMessage::MusicDirChanged(dir) => {
                     self.config.music_directory = dir;
@@ -1002,6 +1015,13 @@ impl eframe::App for MusicPlayerApp {
             return;
         }
 
+        // --- RECENT ALBUMS VIEW (platte "Nieuwste albums"-lijst) ---
+        if !self.filters.recent_albums.is_empty() {
+            self.render_recent_albums_view(ui);
+            ctx.request_repaint();
+            return;
+        }
+
         // --- PICKER VIEWS ---
 
         if self.is_picker_active() {
@@ -1199,6 +1219,7 @@ impl eframe::App for MusicPlayerApp {
         let mut cl = self.current_level.clone();
         let mut sts = self.scroll_to_selection;
         let vm = self.view_mode.clone();
+        let fav_set: std::collections::HashSet<String> = self.favorites.iter().cloned().collect();
 
         egui::CentralPanel::default().show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1210,7 +1231,18 @@ impl eframe::App for MusicPlayerApp {
                     );
                     ui.separator();
                 }
-                if has_filter {
+                if self.favorites_view {
+                    ui.label(
+                        RichText::new("⭐ Favorieten")
+                            .color(Color32::LIGHT_BLUE)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(" (Esc of Shift+F om terug) ")
+                            .size(12.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                } else if has_filter {
                     let hit_count: usize = current_lib
                         .artists
                         .iter()
@@ -1276,6 +1308,7 @@ impl eframe::App for MusicPlayerApp {
                         &mut sts,
                         &mut cl,
                         &mut self.selected_tracks,
+                        &fav_set,
                     );
                 }
             }
@@ -1677,6 +1710,109 @@ impl MusicPlayerApp {
         None
     }
 
+    /// Toon de platte "Nieuwste albums"-lijst (gesorteerd nieuwste eerst).
+    fn render_recent_albums_view(&mut self, ui: &mut egui::Ui) {
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("🕒 Nieuwste albums").size(16.0).strong());
+                ui.label(
+                    RichText::new("  (Esc of B om terug) · Enter of dubbelklik speelt het album")
+                        .size(12.0)
+                        .color(Color32::GRAY),
+                );
+            });
+            ui.separator();
+
+            let sel = self.filters.selected_recent;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let mut scroll_to: Option<egui::Rect> = None;
+                let mut play_queue: Option<Vec<String>> = None;
+                let row_height = 52.0;
+                for (idx, (ts, artist, album)) in self.filters.recent_albums.iter().enumerate() {
+                    let is_sel = idx == sel;
+                    let (rect, resp) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), row_height),
+                        egui::Sense::click(),
+                    );
+                    if is_sel {
+                        ui.painter().rect_filled(
+                            rect,
+                            3.0,
+                            Color32::from_rgba_premultiplied(80, 120, 200, 55),
+                        );
+                    }
+                    // Hoesje links
+                    let thumb_rect = egui::Rect::from_min_size(
+                        rect.min + egui::vec2(4.0, 4.0),
+                        egui::vec2(row_height - 8.0, row_height - 8.0),
+                    );
+                    if let Some(ref cover) = album.cover_path {
+                        ui.put(
+                            thumb_rect,
+                            Image::new(Self::cover_uri(cover))
+                                .fit_to_exact_size(thumb_rect.size())
+                                .show_loading_spinner(false),
+                        );
+                    } else {
+                        ui.put(
+                            thumb_rect,
+                            egui::Label::new(
+                                RichText::new("🎵").size(20.0).color(Color32::from_gray(90)),
+                            ),
+                        );
+                    }
+                    // Artiest – album
+                    let text = format!("{}  –  {}", artist, album.title);
+                    ui.painter().text(
+                        egui::pos2(rect.min.x + row_height + 4.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        text,
+                        egui::FontId::proportional(15.0),
+                        if is_sel {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_gray(220)
+                        },
+                    );
+                    // Toevoegdatum rechts
+                    ui.painter().text(
+                        egui::pos2(rect.right() - 10.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        format_added_date(*ts),
+                        egui::FontId::proportional(12.0),
+                        Color32::from_gray(140),
+                    );
+                    if resp.clicked() {
+                        self.filters.selected_recent = idx;
+                    }
+                    if resp.double_clicked() {
+                        let mut queue = Vec::new();
+                        for disk in &album.disks {
+                            for track in &disk.tracks {
+                                queue.push(track.path.clone());
+                            }
+                        }
+                        play_queue = Some(queue);
+                    }
+                    if is_sel && self.scroll_to_selection {
+                        scroll_to = Some(rect);
+                    }
+                }
+                if let Some(rect) = scroll_to {
+                    ui.scroll_to_rect(rect, None);
+                }
+                if let Some(queue) = play_queue {
+                    let _ = self
+                        .playback
+                        .player_tx
+                        .send(PlayerCommand::ReplaceQueue(queue));
+                    self.playback.set_status("Album afspelen");
+                }
+            });
+            self.scroll_to_selection = false;
+        });
+    }
+
     fn render_tracklist_view_inline(
         ui: &mut egui::Ui,
         _ctx: &egui::Context,
@@ -1688,6 +1824,7 @@ impl MusicPlayerApp {
         scroll_to_selection: &mut bool,
         current_level: &mut NavLevel,
         selected_tracks: &mut std::collections::HashSet<String>,
+        favorites: &std::collections::HashSet<String>,
     ) {
         ScrollArea::vertical().show(ui, |ui| {
             ui.with_layout(
@@ -1808,6 +1945,7 @@ impl MusicPlayerApp {
                         {
                             let is_selected = i == *selected_track;
                             let is_marked = selected_tracks.contains(&track.path);
+                            let is_favorite = favorites.contains(&track.path);
 
                             // Bouw de labeltekst met tracknummer, titel en duur
                             let track_num_str = if track.track_number > 0 {
@@ -1815,6 +1953,7 @@ impl MusicPlayerApp {
                             } else {
                                 String::new()
                             };
+                            let fav_str = if is_favorite { "⭐ " } else { "" };
                             let mark_str = if is_marked { "☑ " } else { "" };
                             let dur_str = if track.duration_secs > 0 {
                                 let mins = track.duration_secs / 60;
@@ -1823,8 +1962,10 @@ impl MusicPlayerApp {
                             } else {
                                 String::new()
                             };
-                            let text =
-                                format!("{}{}{}{}", track_num_str, mark_str, track.title, dur_str);
+                            let text = format!(
+                                "{}{}{}{}{}",
+                                track_num_str, fav_str, mark_str, track.title, dur_str
+                            );
 
                             let label = egui::Button::new(RichText::new(&text).size(16.0))
                                 .selected(is_selected);
@@ -1843,6 +1984,27 @@ impl MusicPlayerApp {
             );
         });
     }
+}
+
+/// Eenvoudige datumweergave (dd-mm-jjjj) uit een unix-timestamp. Geeft een
+/// lege string voor timestamps van 0 (onbekende toevoegdatum).
+fn format_added_date(ts: u64) -> String {
+    if ts == 0 {
+        return String::new();
+    }
+    let days = (ts / 86_400) as i64;
+    // Howard Hinnant's "civil_from_days" — geen externe datumcrate nodig.
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:02}-{:02}-{}", d, m, y)
 }
 
 #[cfg(test)]
@@ -1995,5 +2157,17 @@ mod tests {
         });
         output.textures_delta.clear();
         assert!(frames == 1, "render_compact_player moet exact 1x draaien");
+    }
+
+    #[test]
+    fn added_date_epoch() {
+        assert_eq!(format_added_date(0), "");
+        assert_eq!(format_added_date(86_400), "02-01-1970");
+    }
+
+    #[test]
+    fn added_date_modern() {
+        // 2026-03-12 (20524 dagen sinds 1970-01-01)
+        assert_eq!(format_added_date(20_524 * 86_400), "12-03-2026");
     }
 }

@@ -57,7 +57,7 @@ Alle toetsen zijn aanpasbaar in `config.toml` onder `[shortcuts]`.
 | `Y` | Bladeren op jaartal |
 | `C` | Bladeren op componist |
 | `S` | Sorteer op datum (aflopend) |
-| `B` | Nieuwste albums (Recent) |
+| `B` | Nieuwste albums (platte lijst, nieuwste eerst) |
 | `R` | Willekeurig album |
 | `/` | Zoeken in bibliotheek |
 
@@ -82,6 +82,8 @@ Alle toetsen zijn aanpasbaar in `config.toml` onder `[shortcuts]`.
 | `Z` | Browse selectie |
 | `O` | Open map van huidige track in Verkenner |
 | `Ctrl+C` | Kopieer pad van huidige track naar klembord |
+| `F` | Zet huidig niveau als favoriet (artiest/album/disk/track) |
+| `Shift+F` | Open/sluit de Favorieten-view (⭐) |
 
 ### Systeem
 

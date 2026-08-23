@@ -74,6 +74,10 @@ pub struct MusicPlayerApp {
     // Loop bibliotheek
     pub saved_loops: Vec<SavedLoop>,
     pub show_loop_library: bool,
+
+    // Favorieten (set van track-paden, persistent in favorites.json)
+    pub favorites: Vec<String>,
+    pub favorites_view: bool,
 }
 
 impl MusicPlayerApp {
@@ -136,6 +140,8 @@ impl MusicPlayerApp {
             waveform_state: crate::waveform::WaveformState::default(),
             saved_loops: crate::loops::load_loops(),
             show_loop_library: false,
+            favorites: crate::favorites::load_favorites(),
+            favorites_view: false,
         };
 
         // Valideer shortcuts bij opstarten
@@ -632,14 +638,55 @@ impl MusicPlayerApp {
             let mut flat_albums = Vec::new();
             for artist in &lib.artists {
                 for album in &artist.albums {
-                    flat_albums.push((album.added_timestamp, album.clone()));
+                    flat_albums.push((album.added_timestamp, artist.name.clone(), album.clone()));
                 }
             }
-            flat_albums.sort_by(|a, b| b.1.added_timestamp.cmp(&a.1.added_timestamp));
+            flat_albums.sort_by(|a, b| b.0.cmp(&a.0));
             flat_albums.truncate(500);
             self.filters.recent_albums = flat_albums;
             self.filters.selected_recent = 0;
         }
+    }
+
+    /// Open de "Favorieten"-view: een selectie-bibliotheek van alle favoriete
+    /// tracks (zelfde truc als Browse selectie / Z). Geeft niets terug als er
+    /// geen favorieten zijn.
+    pub fn open_favorites_view(&mut self) {
+        if self.favorites.is_empty() {
+            self.playback.set_status(
+                "Nog geen favorieten — druk op F om het huidige niveau als favoriet te markeren",
+            );
+            return;
+        }
+        // Verlaat een open recente-lijst (die heeft voorrang in de render).
+        self.filters.recent_albums.clear();
+        let Some(lib) = self.active_library() else {
+            self.playback.set_status("Bibliotheek is nog niet geladen");
+            return;
+        };
+        let fav_set: HashSet<String> = self.favorites.iter().cloned().collect();
+        let selection = Self::build_selection_library(lib, &fav_set);
+        self.filtered_library = Some(selection);
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.selected_album = 0;
+        self.selected_disk = 0;
+        self.selected_track = 0;
+        self.favorites_view = true;
+        self.scroll_to_selection = true;
+        self.playback.set_status("⭐ Favorieten");
+    }
+
+    /// Sluit de "Favorieten"-view en keer terug naar de normale bibliotheek.
+    pub fn close_favorites_view(&mut self) {
+        self.favorites_view = false;
+        self.filtered_library = None;
+        self.current_level = NavLevel::Artist;
+        self.selected_artist = 0;
+        self.selected_album = 0;
+        self.selected_disk = 0;
+        self.selected_track = 0;
+        self.scroll_to_selection = true;
     }
 
     #[allow(dead_code)]
