@@ -144,7 +144,29 @@ impl MusicPlayerApp {
             favorites_view: false,
         };
 
-        // Valideer shortcuts bij opstarten
+        // Nieuwe shortcut-acties (bv. recent toegevoegde toetsen zoals F en
+        // Shift+F) ontbreken nog in een bestaande config.toml. Voeg ze
+        // automatisch toe, zodat ze meteen werken zonder dat de gebruiker
+        // eerst de reparatieknop in het helpscherm hoeft te klikken.
+        let defaults = crate::ui::shortcuts::default_shortcuts();
+        let mut config_changed = false;
+        for (action, default_key) in &defaults {
+            if !app.config.shortcuts.contains_key(action) {
+                app.config
+                    .shortcuts
+                    .insert(action.clone(), default_key.clone());
+                config_changed = true;
+            }
+        }
+        if config_changed {
+            if let Ok(toml_str) = toml::to_string(&app.config) {
+                let _ = std::fs::write("config.toml", toml_str);
+            }
+            log::info!("Config bijgewerkt: ontbrekende shortcut-acties toegevoegd.");
+        }
+
+        // Valideer de overgebleven shortcuts — echte conflicten (dubbele toets,
+        // ongeldige waarde) worden in het helpscherm getoond.
         let errors = crate::ui::shortcuts::validate_shortcuts(&app.config.shortcuts);
         if !errors.is_empty() {
             app.config_errors = errors;
