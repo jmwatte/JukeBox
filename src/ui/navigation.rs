@@ -1272,3 +1272,99 @@ impl MusicPlayerApp {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::player::PlayerEvent;
+    use crossbeam_channel::unbounded;
+    use eframe::egui::{Event, Key, Modifiers};
+
+    fn test_app() -> MusicPlayerApp {
+        let (player_tx, _prx) = unbounded();
+        let (_ptx, player_event_rx) = unbounded();
+        let (scanner_tx, _srx) = unbounded();
+        let (_stx, scanner_rx) = unbounded();
+        MusicPlayerApp::new(
+            crate::config::Config::default(),
+            player_tx,
+            player_event_rx,
+            scanner_tx,
+            scanner_rx,
+        )
+    }
+
+    /// Draai een frame met een Shift+F-toets en roep de navigatie aan.
+    #[test]
+    fn shift_f_opens_favorites_view_without_adding_favorite() {
+        // Zorg dat een oud test-artefact (favorites.json van een vorige run)
+        // de test niet beïnvloedt.
+        let _ = std::fs::remove_file("favorites.json");
+
+        let mut app = test_app();
+        // Minimale bibliotheek: 1 artiest met 1 album en 1 track. Zo kan ook
+        // gecontroleerd worden dat Shift+F NIET de losse F-toets (favoriet
+        // toevoegen) triggert.
+        app.library = Some(crate::models::Library {
+            artists: vec![crate::models::Artist {
+                name: "Testartiest".to_string(),
+                albums: vec![crate::models::Album {
+                    title: "Testalbum".to_string(),
+                    cover_path: None,
+                    disks: vec![crate::models::Disk {
+                        name: String::new(),
+                        tracks: vec![crate::models::Track {
+                            path: "H:/music/Test/Testalbum/01 Nummer.flac".to_string(),
+                            title: "Nummer".to_string(),
+                            artist: None,
+                            album_artist: None,
+                            track_number: 1,
+                            disc_number: 1,
+                            duration_secs: 180,
+                            genre: None,
+                            year: None,
+                            composer: None,
+                        }],
+                    }],
+                    added_timestamp: 0,
+                }],
+            }],
+        });
+
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            events: vec![
+                // Eerst meldt de OS de modifier, daarna de toets zelf.
+                Event::ModifiersChanged(Modifiers {
+                    shift: true,
+                    ..Default::default()
+                }),
+                Event::Key {
+                    key: Key::F,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers {
+                        shift: true,
+                        ..Default::default()
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |_| {});
+        out.textures_delta.clear();
+
+        app.handle_keyboard_navigation(&ctx);
+        assert!(
+            app.favorites_view,
+            "Shift+F moet de Favorieten-view openen (favorites_view)"
+        );
+        assert!(
+            app.favorites.is_empty(),
+            "Shift+F mag geen favorieten toevoegen — de losse F-toets mag niet meevuren. Got: {:?}",
+            app.favorites
+        );
+        let _ = std::fs::remove_file("favorites.json");
+    }
+}

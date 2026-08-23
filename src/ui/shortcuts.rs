@@ -144,13 +144,22 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
             let c = s.chars().next().unwrap();
             if c.is_ascii_uppercase() {
                 let key = char_to_key(c).unwrap_or(Key::A);
-                ctx.input(|i| i.key_pressed(key))
+                ctx.input(|i| {
+                    // Geen modifiers: anders vuren Shift+F/Ctrl+S enz. óók de
+                    // losse lettertoets (F → favoriet toevoegen, S → sorteren).
+                    i.key_pressed(key)
+                        && !i.modifiers.shift
+                        && !i.modifiers.ctrl
+                        && !i.modifiers.alt
+                })
             } else {
                 let lower = c.to_ascii_lowercase();
                 let lower_key = char_to_key(lower).unwrap_or(Key::A);
-                // Check both the key AND text event for robustness
                 ctx.input(|i| {
-                    i.key_pressed(lower_key)
+                    (i.key_pressed(lower_key)
+                        && !i.modifiers.shift
+                        && !i.modifiers.ctrl
+                        && !i.modifiers.alt)
                         || i.events
                             .iter()
                             .any(|e| matches!(e, egui::Event::Text(t) if t == s))
@@ -415,5 +424,53 @@ mod tests {
         shortcuts.insert("Rewind".to_string(), ";".to_string());
         let ctx = run_events(press(Key::Semicolon, ";"));
         assert!(check_action(&shortcuts, &ctx, "Rewind"));
+    }
+
+    #[test]
+    fn shift_f_does_not_trigger_plain_f() {
+        // Regressie: Shift+F vuurde vroeger óók de losse F (favoriet toevoegen)
+        // omdat de letter-arm geen modifiers controleerde.
+        let mods = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let ctx = run_events(vec![
+            egui::Event::ModifiersChanged(mods),
+            Event::Key {
+                key: Key::F,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            },
+        ]);
+        assert!(
+            !key_pressed(&ctx, "F"),
+            "Shift+F mag de losse F niet triggeren"
+        );
+        assert!(key_pressed(&ctx, "Shift+F"), "Shift+F moet wel werken");
+    }
+
+    #[test]
+    fn ctrl_s_does_not_trigger_plain_s() {
+        let mods = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let ctx = run_events(vec![
+            egui::Event::ModifiersChanged(mods),
+            Event::Key {
+                key: Key::S,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            },
+        ]);
+        assert!(
+            !key_pressed(&ctx, "S"),
+            "Ctrl+S mag de losse S niet triggeren"
+        );
+        assert!(key_pressed(&ctx, "Ctrl+S"), "Ctrl+S moet wel werken");
     }
 }
