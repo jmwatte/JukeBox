@@ -814,25 +814,42 @@ impl MusicPlayerApp {
             }
         }
 
-        // --- O: OPEN FOLDER (map + bestand geselecteerd in Explorer) ---
+        // --- O: OPEN FOLDER (map + bestand geselecteerd in Verkenner) ---
         if shortcuts::check_action(&cfg, ctx, "OpenFolder") {
-            if let Some(track_path) = self.get_current_track_path(&lib) {
-                // /select,<pad> opent de map én markeert het bestand, zodat je
-                // meteen ziet welk nummer het is.
-                let _ = std::process::Command::new("explorer")
-                    .arg(format!("/select,{}", track_path))
-                    .spawn();
+            // Net als Ctrl+C: bij voorkeur de map van het nummer dat *speelt*,
+            // en anders die van de selectie (als er niets speelt).
+            let track_path = self
+                .playback
+                .now_playing_path
+                .clone()
+                .or_else(|| self.get_current_track_path(&lib));
+            match track_path {
+                Some(track_path) => {
+                    reveal_in_file_manager(&track_path);
+                    self.playback
+                        .set_status("Map van de track geopend in Verkenner");
+                }
+                None => self
+                    .playback
+                    .set_status("Geen track om de map van te openen"),
             }
         }
 
         // --- CTRL+C: KOPIEER HET PAD VAN DE HUIDIGE TRACK ---
         if shortcuts::check_action(&cfg, ctx, "CopyPath") {
+            // Bij voorkeur het pad van het nummer dat *speelt* (dat is wat de
+            // gebruiker verwacht); val terug op de selectie als er niets speelt.
             let track_path = self
-                .get_current_track_path(&lib)
-                .or_else(|| self.playback.now_playing_path.clone());
-            if let Some(path) = track_path {
-                ctx.copy_text(path.clone());
-                self.playback.set_status("Pad gekopieerd naar klembord");
+                .playback
+                .now_playing_path
+                .clone()
+                .or_else(|| self.get_current_track_path(&lib));
+            match track_path {
+                Some(path) => {
+                    ctx.copy_text(path);
+                    self.playback.set_status("Pad gekopieerd naar klembord");
+                }
+                None => self.playback.set_status("Geen pad om te kopiëren"),
             }
         }
 
@@ -1270,6 +1287,30 @@ impl MusicPlayerApp {
         }
 
         false
+    }
+}
+
+/// Open de bestandsbeheerder met `path` geselecteerd.
+///
+/// Op Windows via `explorer /select,"<pad>"`. Bewust met `raw_arg`: bij `.arg()`
+/// zet Rust zelf quotes om het argument zodra het spaties bevat
+/// (`"/select,C:\a b\c.mp3"`). Verkenner herkent `/select,` dan niet (het moet
+/// aan het begin staan) en opent de standaardmap (Documenten). Met `raw_arg`
+/// bouwen we de gedocumenteerde vorm `/select,"C:\a b\c.mp3"` exact zelf.
+fn reveal_in_file_manager(path: &str) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("explorer")
+            .raw_arg(format!("/select,\"{}\"", path))
+            .spawn();
+    }
+    #[cfg(not(windows))]
+    {
+        let dir = std::path::Path::new(path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
 }
 

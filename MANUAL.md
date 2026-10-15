@@ -80,8 +80,8 @@ Alle toetsen zijn aanpasbaar in `config.toml` onder `[shortcuts]`.
 | `M` | Markeer track voor batch-edit |
 | `Shift+M` | Wis alle markeringen |
 | `Z` | Browse selectie |
-| `O` | Open map van huidige track in Verkenner |
-| `Ctrl+C` | Kopieer pad van huidige track naar klembord |
+| `O` | Open map van de spelende track in Verkenner |
+| `Ctrl+C` | Kopieer pad van de spelende track naar klembord |
 | `F` | Zet huidig niveau als favoriet (artiest/album/disk/track) |
 | `Shift+F` | Open/sluit de Favorieten-view (⭐) |
 

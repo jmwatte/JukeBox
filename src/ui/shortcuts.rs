@@ -121,6 +121,22 @@ fn key_pressed(ctx: &egui::Context, key_str: &str) -> bool {
         "\\" => punctuation(ctx, &[Key::Backslash], &["\\"]),
         "," => punctuation(ctx, &[Key::Comma], &[","]),
         "." => punctuation(ctx, &[Key::Period], &["."]),
+        // Ctrl+C/X/V: egui-winit vertaalt deze op Windows naar de speciale
+        // Event::Copy/Cut/Paste en stuurt daarbij géén Event::Key meer mee
+        // (zie egui-winit `on_keyboard_input`). Zonder deze takken zouden zulke
+        // shortcuts dus nooit vuren, ook al staat er "Ctrl+C" in de config.
+        "Ctrl+C" => ctx.input(|i| {
+            i.key_pressed(Key::C) && i.modifiers.ctrl
+                || i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+        }),
+        "Ctrl+X" => ctx.input(|i| {
+            i.key_pressed(Key::X) && i.modifiers.ctrl
+                || i.events.iter().any(|e| matches!(e, egui::Event::Cut))
+        }),
+        "Ctrl+V" => ctx.input(|i| {
+            i.key_pressed(Key::V) && i.modifiers.ctrl
+                || i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)))
+        }),
         // Shift+Letter combinaties (generiek)
         s if s.starts_with("Shift+") && s.len() == 7 => {
             let c = s.chars().nth(6).unwrap();
@@ -472,5 +488,44 @@ mod tests {
             "Ctrl+S mag de losse S niet triggeren"
         );
         assert!(key_pressed(&ctx, "Ctrl+S"), "Ctrl+S moet wel werken");
+    }
+
+    #[test]
+    fn ctrl_c_detected_via_copy_event() {
+        // egui-winit vertaalt Ctrl+C op Windows naar Event::Copy en stuurt géén
+        // Key::C-event meer mee; de shortcut moet dat event herkennen.
+        let ctx = run_events(vec![egui::Event::Copy]);
+        assert!(
+            key_pressed(&ctx, "Ctrl+C"),
+            "Ctrl+C moet via Event::Copy werken"
+        );
+    }
+
+    #[test]
+    fn check_action_for_copy_path_via_copy_event() {
+        let mut shortcuts = HashMap::new();
+        shortcuts.insert("CopyPath".to_string(), "Ctrl+C".to_string());
+        let ctx = run_events(vec![egui::Event::Copy]);
+        assert!(check_action(&shortcuts, &ctx, "CopyPath"));
+    }
+
+    #[test]
+    fn ctrl_c_still_detected_via_key_event() {
+        // Backends die wél een gewoon Ctrl+Key-event sturen moeten blijven werken.
+        let mods = egui::Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let ctx = run_events(vec![
+            egui::Event::ModifiersChanged(mods),
+            Event::Key {
+                key: Key::C,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: mods,
+            },
+        ]);
+        assert!(key_pressed(&ctx, "Ctrl+C"));
     }
 }
